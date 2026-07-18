@@ -5,12 +5,69 @@
 #include "waylaunch/clipboard.h"
 #include "waylaunch/calculator.h"
 #include "waylaunch/app_launcher.h"
+#include "waylaunch/subprocess.h"
 #include <xkbcommon/xkbcommon.h>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <system_error>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <cstdio>
+#include <cstdlib>
 
 namespace waylaunch {
+
+namespace {
+
+bool ui_dbg() { static bool v = std::getenv("WAYLAUNCH_DEBUG") != nullptr; return v; }
+
+
+// Percent-encode a filesystem path for use in a file:// URI. Keeps the
+// unreserved set (RFC 3986) plus '/' so directory separators stay readable.
+std::string percent_encode_path(const std::string& path) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(path.size());
+    for (unsigned char c : path) {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+            c == '.' || c == '~' || c == '/') {
+            out += static_cast<char>(c);
+        } else {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 0x0F];
+        }
+    }
+    return out;
+}
+
+// Launch a command fully detached from waylaunch (double-fork + setsid) using an
+// argv vector, so arguments are never re-parsed by a shell. The intermediate
+// child is reaped immediately; the grandchild is reparented to init.
+void spawn_detached(const std::vector<std::string>& argv) {
+    if (argv.empty()) return;
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        if (fork() == 0) {
+            std::vector<char*> c_argv;
+            c_argv.reserve(argv.size() + 1);
+            for (const auto& s : argv) c_argv.push_back(const_cast<char*>(s.c_str()));
+            c_argv.push_back(nullptr);
+            execvp(c_argv[0], c_argv.data());
+            _exit(127);
+        }
+        _exit(0);
+    } else if (pid > 0) {
+        int status;
+        waitpid(pid, &status, 0);
+    }
+}
+
+} // namespace
 
 LauncherUI::LauncherUI() = default;
 LauncherUI::~LauncherUI() = default;
@@ -42,7 +99,18 @@ bool LauncherUI::init(Config& config) {
 }
 
 void LauncherUI::run() {
-    wayland_->run();
+    // Drive Wayland ourselves so that *every* event batch is followed by a
+    // repaint when the UI is dirty. Previously rendering was scattered across
+    // individual handlers, so key presses that only changed the query (e.g.
+    // typing in Applications mode) updated state but never repainted — the
+    // overlay looked frozen while holding an exclusive keyboard grab.
+    // The first paint is triggered by the layer-surface configure event
+    // (on_redraw), which is the earliest point a buffer may legally be committed.
+    wayland_->set_running(true);
+    while (wayland_->is_running()) {
+        if (wayland_->dispatch() < 0) break;
+        if (needs_redraw_) render_frame();
+    }
 }
 
 void LauncherUI::quit() {
@@ -208,13 +276,64 @@ void LauncherUI::launch_selected() {
     }
     if (items_.empty() || selected_index_ >= static_cast<int>(items_.size())) return;
     const auto& item = items_[selected_index_];
+    if (ui_dbg()) fprintf(stderr, "[ui] launch mode=%d name='%s' path='%s'\n",
+                          static_cast<int>(current_mode_), item.name.c_str(), item.path.c_str());
+
+    // Custom command (future [[commands]] entries) takes precedence.
     if (!item.action_command.empty()) {
-        std::string cmd = item.action_command + " &";
-        system(cmd.c_str());
+        spawn_detached({"/bin/sh", "-c", item.action_command});
+    } else if (current_mode_ == LauncherModeType::Applications) {
+        // For applications, item.path holds the .desktop Exec line (field codes
+        // already stripped). It is a command to run, NOT a file — execute it via
+        // a shell so arguments and env prefixes work. Using xdg-open here is what
+        // produced "xdg-open: file 'alacritty' does not exist".
+        if (!item.path.empty()) spawn_detached({"/bin/sh", "-c", item.path});
     } else if (!item.path.empty()) {
-        std::string cmd = "xdg-open \"" + item.path + "\" &";
-        system(cmd.c_str());
+        // Files / FileContents: item.path is a real filesystem path — open it
+        // with the user's default handler.
+        spawn_detached({"xdg-open", item.path});
     }
+    quit();
+}
+
+void LauncherUI::open_file_location(int index) {
+    if (index < 0 || index >= static_cast<int>(items_.size())) return;
+
+    // Only file-backed results have a real location to reveal. Applications
+    // store an exec command in `path`, and the calculator has no path — for
+    // those, right-click is a no-op ("where necessary").
+    if (current_mode_ != LauncherModeType::Files &&
+        current_mode_ != LauncherModeType::FileContents) {
+        return;
+    }
+
+    const std::string& raw = items_[index].path;
+    if (raw.empty()) return;
+
+    std::error_code ec;
+    std::filesystem::path abs = std::filesystem::absolute(raw, ec);
+    if (ec) abs = raw;
+    if (!std::filesystem::exists(abs, ec)) return;
+
+    // Preferred: the freedesktop FileManager1 D-Bus interface, which opens the
+    // enclosing folder AND selects the file (Nautilus, Dolphin, Nemo, PCManFM,
+    // Thunar, …). This is the faithful "reveal in Finder" behaviour.
+    if (Subprocess::command_exists("gdbus")) {
+        std::string uri = "file://" + percent_encode_path(abs.string());
+        auto r = Subprocess::run({
+            "gdbus", "call", "--session",
+            "--dest", "org.freedesktop.FileManager1",
+            "--object-path", "/org/freedesktop/FileManager1",
+            "--method", "org.freedesktop.FileManager1.ShowItems",
+            "['" + uri + "']", ""});
+        if (r.exit_code == 0) { quit(); return; }
+    }
+
+    // Fallback: open the enclosing directory with the default handler. The file
+    // itself won't be pre-selected, but its location is shown.
+    std::string dir = abs.parent_path().string();
+    if (dir.empty()) dir = ".";
+    spawn_detached({"xdg-open", dir});
     quit();
 }
 
@@ -223,6 +342,7 @@ void LauncherUI::launch_selected() {
 // ---------------------------------------------------------------------------
 
 void LauncherUI::on_key(uint32_t keysym, uint32_t utf32, bool pressed) {
+    if (ui_dbg()) fprintf(stderr, "[ui] on_key sym=0x%x utf32=%u pressed=%d\n", keysym, utf32, pressed);
     if (!pressed) return;
 
     bool ctrl = wayland_->kbd_.state && xkb_state_mod_name_is_active(
@@ -275,13 +395,34 @@ void LauncherUI::on_key(uint32_t keysym, uint32_t utf32, bool pressed) {
 }
 
 void LauncherUI::on_mouse(double x, double y, uint32_t button, bool pressed) {
+    if (ui_dbg()) fprintf(stderr, "[ui] on_mouse x=%.0f y=%.0f btn=0x%x pressed=%d\n", x, y, button, pressed);
     if (!pressed) return;
-    if (button != 0x110) return;
-    int idx = hit_test(x, y);
-    if (idx >= 0 && idx < static_cast<int>(items_.size())) {
-        if (idx == selected_index_) launch_selected();
-        else select_item(idx);
+
+    constexpr uint32_t BTN_LEFT = 0x110;
+    constexpr uint32_t BTN_RIGHT = 0x111;
+
+    // Click anywhere outside the panel dismisses the launcher (Spotlight-style).
+    if (button == BTN_LEFT) {
+        int pw = layout_.win_w;
+        int ph = panel_height();
+        int px = (wayland_->surface_width() - pw) / 2;
+        int py = layout_.margin_top;
+        if (x < px || x > px + pw || y < py || y > py + ph) { quit(); return; }
     }
+
+    int idx = hit_test(x, y);
+    if (idx < 0 || idx >= static_cast<int>(items_.size())) return;
+
+    if (button == BTN_RIGHT) {
+        // Right-click reveals the item's location in the file manager.
+        select_item(idx);
+        open_file_location(idx);
+        return;
+    }
+
+    if (button != BTN_LEFT) return;
+    if (idx == selected_index_) launch_selected();
+    else select_item(idx);
 }
 
 void LauncherUI::on_axis(double, double, int32_t axis, double value) {
@@ -301,7 +442,7 @@ void LauncherUI::on_redraw() {
 int LauncherUI::hit_test(double x, double y) const {
     int ph = panel_height();
     int pw = layout_.win_w;
-    int px = (wayland_->output_width() - pw) / 2;
+    int px = (wayland_->surface_width() - pw) / 2;
     int py = layout_.margin_top;
 
     if (x < px || x > px + pw || y < py || y > py + ph) return -1;
@@ -342,7 +483,7 @@ void LauncherUI::render_frame() {
 
     int ph = panel_height();
     int pw = layout_.win_w;
-    int px = (wayland_->output_width() - pw) / 2;
+    int px = (bw - pw) / 2;   // centre within the surface we actually draw into
     int py = layout_.margin_top;
 
     // Drop shadow + panel background (translucent like Spotlight's blurred glass).

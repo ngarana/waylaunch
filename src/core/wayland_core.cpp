@@ -7,6 +7,10 @@
 #include <vector>
 #include <xkbcommon/xkbcommon.h>
 #include <cairo/cairo.h>
+#include <cstdio>
+#include <cstdlib>
+
+namespace { bool wl_dbg() { static bool v = std::getenv("WAYLAUNCH_DEBUG") != nullptr; return v; } }
 
 extern "C" {
 #include "xdg-shell-client-protocol.h"
@@ -161,6 +165,8 @@ static const wl_pointer_listener pointer_listener = {
 // Seat
 static void seat_capabilities_cb(void* data, wl_seat* seat, uint32_t caps) {
     auto* self = static_cast<WaylandCore*>(data);
+    if (wl_dbg()) fprintf(stderr, "[wl] seat caps=%u (kbd=%d ptr=%d)\n", caps,
+                          !!(caps & WL_SEAT_CAPABILITY_KEYBOARD), !!(caps & WL_SEAT_CAPABILITY_POINTER));
     if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !self->keyboard_) {
         self->keyboard_ = wl_seat_get_keyboard(seat);
         wl_keyboard_add_listener(self->keyboard_, &keyboard_listener, self);
@@ -265,19 +271,27 @@ bool WaylandCore::init() {
 
 #ifdef HAS_LAYER_SHELL
     if (layer_shell_) {
-        wl_output* output = outputs_.empty() ? nullptr : outputs_.front().output;
+        // Full-width strip anchored to the top of the active output, rendered on
+        // the OVERLAY layer with no decorations — this is what makes it read as a
+        // Spotlight overlay rather than a normal window. Passing a null output
+        // lets the compositor place it on the currently focused monitor.
         layer_surface_ = zwlr_layer_shell_v1_get_layer_surface(
-            layer_shell_, surface_, output,
+            layer_shell_, surface_, nullptr,
             ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "waylaunch");
 
         if (layer_surface_) {
+            // OVERLAY_HEIGHT: tall enough for the search field + a full result
+            // list; the area below the panel stays transparent.
+            const int32_t OVERLAY_HEIGHT = 760;
             zwlr_layer_surface_v1_set_keyboard_interactivity(
                 layer_surface_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
             zwlr_layer_surface_v1_set_anchor(layer_surface_,
                 ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
                 ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
                 ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-            zwlr_layer_surface_v1_set_size(layer_surface_, 0, 500);
+            zwlr_layer_surface_v1_set_size(layer_surface_, 0, OVERLAY_HEIGHT);
+            // -1: render at the very top, ignoring other exclusive zones (bars),
+            // so the panel can sit high like macOS Spotlight.
             zwlr_layer_surface_v1_set_exclusive_zone(layer_surface_, -1);
 
             static const zwlr_layer_surface_v1_listener ls_listener = {
@@ -296,9 +310,13 @@ bool WaylandCore::init() {
                 },
             };
             zwlr_layer_surface_v1_add_listener(layer_surface_, &ls_listener, this);
+
+            // Seed a sane size for the first buffer; the configure event will
+            // report the real width (full output) before anything is drawn.
+            pending_width_ = output_width();
+            pending_height_ = OVERLAY_HEIGHT;
+
             wl_surface_commit(surface_);
-            pending_width_ = 800;
-            pending_height_ = 500;
             return true;
         }
     }
@@ -330,6 +348,9 @@ void WaylandCore::run() {
     while (running_ && wl_display_dispatch(display_) != -1) {}
 }
 
+int WaylandCore::dispatch() { return wl_display_dispatch(display_); }
+void WaylandCore::set_running(bool v) { running_ = v; }
+
 void WaylandCore::quit() { running_ = false; }
 bool WaylandCore::is_running() const { return running_; }
 
@@ -337,6 +358,8 @@ OutputInfo& WaylandCore::primary_output() { return outputs_.front(); }
 int32_t WaylandCore::primary_scale() const { return outputs_.empty() ? 1 : outputs_.front().scale; }
 int32_t WaylandCore::output_width() const { return outputs_.empty() ? 1920 : outputs_.front().width; }
 int32_t WaylandCore::output_height() const { return outputs_.empty() ? 1080 : outputs_.front().height; }
+int32_t WaylandCore::surface_width() const { return pending_width_ > 0 ? pending_width_ : output_width(); }
+int32_t WaylandCore::surface_height() const { return pending_height_ > 0 ? pending_height_ : output_height(); }
 wl_display* WaylandCore::display() const { return display_; }
 wl_surface* WaylandCore::surface() const { return surface_; }
 
@@ -410,6 +433,7 @@ void WaylandCore::set_close_handler(CloseHandler h) { close_handler_ = std::move
 void WaylandCore::set_redraw_handler(RedrawHandler h) { redraw_handler_ = std::move(h); }
 
 void WaylandCore::handle_keymap(uint32_t format, int32_t fd, uint32_t size) {
+    if (wl_dbg()) fprintf(stderr, "[wl] keymap format=%u size=%u\n", format, size);
     if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) { close(fd); return; }
     char* map = static_cast<char*>(mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0));
     if (kbd_.keymap) xkb_keymap_unref(kbd_.keymap);
@@ -421,6 +445,7 @@ void WaylandCore::handle_keymap(uint32_t format, int32_t fd, uint32_t size) {
 }
 
 void WaylandCore::handle_key(uint32_t, uint32_t time, uint32_t key, uint32_t state) {
+    if (wl_dbg()) fprintf(stderr, "[wl] key code=%u state=%u (xkb_state=%p)\n", key, state, (void*)kbd_.state);
     if (!kbd_.state) return;
     xkb_keysym_t keysym = xkb_state_key_get_one_sym(kbd_.state, key + 8);
     uint32_t utf32 = xkb_state_key_get_utf32(kbd_.state, key + 8);

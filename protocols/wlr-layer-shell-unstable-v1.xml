@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="zwlr_layer_shell_v1">
+  <copyright>
+    Copyright © 2017-2018 Drew DeVault
+    Copyright © 2018 Daniel Kolesa
+    Copyright © 2018 Joshua Wong
+
+    Permission to use, copy, modify, distribute, and sell this
+    software and its documentation for any purpose is hereby granted
+    without fee, provided that the above copyright notice appear in
+    all copies and that both that copyright notice and this permission
+    notice appear in supporting documentation, and that the name of
+    the copyright holders not be used in advertising or publicity
+    pertaining to distribution of the software without specific,
+    written prior permission. The copyright holders make no
+    representations about the suitability of this software for any
+    purpose. It is provided "as is" without express or implied
+    warranty.
+
+    THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
+    SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+    AND FITNESS. IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE
+    FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES, OR ANY
+    DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+    WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS
+    ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+    PERFORMANCE OF THIS SOFTWARE.
+  </copyright>
+
+  <interface name="zwlr_layer_shell_v1" version="1" summary="create surfaces that are layers of a full-screen composition">
+    <description summary="create surfaces that are layers of a full-screen composition">
+      The purpose of this interface is to enable shell components
+      to be able to create surfaces that are layered above normal
+      application surfaces, with the keyboard being exclusive to
+      a layer surface when it is focused.
+    </description>
+
+    <enum name="layer">
+      <entry name="background" value="0" summary="actually a background layer"/>
+      <entry name="bottom" value="1" summary="between background and normal"/>
+      <entry name="top" value="2" summary="between normal and overlay"/>
+      <entry name="overlay" value="3" summary="actually an overlay"/>
+    </enum>
+
+    <request name="get_layer_surface">
+      <description summary="create a layer surface from a surface">
+        Create a layer surface.
+      </description>
+      <arg name="id" type="new_id" interface="zwlr_layer_surface_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="output" type="object" interface="wl_output" allow-null="true"/>
+      <arg name="layer" type="uint" enum="layer"/>
+      <arg name="ns" type="string"/>
+    </request>
+  </interface>
+
+  <interface name="zwlr_layer_surface_v1" version="1" summary="a layer surface">
+    <description summary="a layer surface">
+      A layer surface is an interface for creating surfaces that
+      are layered above normal application surfaces.
+    </description>
+
+    <enum name="keyboard_interactivity">
+      <entry name="none" value="0" summary="no keyboard focus"/>
+      <entry name="exclusive" value="1" summary="exclusive keyboard focus"/>
+      <entry name="on_demand" value="2" summary="keyboard focus when the surface is focused"/>
+    </enum>
+
+    <enum name="anchor" bitfield="true">
+      <entry name="top" value="1" summary="the top edge of the anchor rectangle"/>
+      <entry name="bottom" value="2" summary="the bottom edge of the anchor rectangle"/>
+      <entry name="left" value="4" summary="the left edge of the anchor rectangle"/>
+      <entry name="right" value="8" summary="the right edge of the anchor rectangle"/>
+    </enum>
+
+    <request name="set_size">
+      <description summary="set the size of the surface">
+        Set the width and height of the surface.
+      </description>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </request>
+
+    <request name="set_anchor">
+      <description summary="set the anchor of the surface">
+        Set which edge(s) the surface is anchored to.
+      </description>
+      <arg name="anchor" type="uint" enum="anchor"/>
+    </request>
+
+    <request name="set_exclusive_zone">
+      <description summary="set the exclusive zone of the surface">
+        Set the exclusive zone of the surface.
+      </description>
+      <arg name="zone" type="int"/>
+    </request>
+
+    <request name="set_margin">
+      <description summary="set a margin from the anchor point">
+        Requests that the surface be placed some distance away from the anchor
+        point on the output, in surface-local coordinates.
+      </description>
+      <arg name="top" type="int"/>
+      <arg name="right" type="int"/>
+      <arg name="bottom" type="int"/>
+      <arg name="left" type="int"/>
+    </request>
+
+    <request name="set_keyboard_interactivity">
+      <description summary="set keyboard interactivity">
+        Set the keyboard interactivity mode.
+      </description>
+      <arg name="keyboard_interactivity" type="uint" enum="keyboard_interactivity"/>
+    </request>
+
+    <request name="get_popup">
+      <description summary="assign a xdg_popup to this layer surface">
+        Get a popup handle.
+      </description>
+      <arg name="popup" type="object" interface="xdg_popup"/>
+    </request>
+
+    <request name="ack_configure">
+      <description summary="ack a configure event">
+        Ack a configure event.
+      </description>
+      <arg name="serial" type="uint"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the layer_surface">
+        This request destroys the layer surface.
+      </description>
+    </request>
+
+    <event name="configure">
+      <description summary="suggest a surface configuration">
+        The compositor sends a configure event.
+      </description>
+      <arg name="serial" type="uint"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </event>
+
+    <event name="closed">
+      <description summary="the surface has been closed">
+        The surface has been closed.
+      </description>
+    </event>
+  </interface>
+</protocol>
