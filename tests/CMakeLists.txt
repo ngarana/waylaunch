@@ -11,6 +11,9 @@ pkg_check_modules(XKBCOMMON REQUIRED xkbcommon)
 pkg_check_modules(CAIRO REQUIRED cairo)
 pkg_check_modules(PANGO REQUIRED pangocairo)
 pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
+pkg_check_modules(GDK_PIXBUF REQUIRED gdk-pixbuf-2.0)
+pkg_check_modules(GTK REQUIRED gtk+-3.0)
+pkg_check_modules(LIBRSVG REQUIRED librsvg-2.0)
 
 # Find toml++ and nlohmann-json
 find_package(tomlplusplus 3 CONFIG REQUIRED)
@@ -93,6 +96,9 @@ target_include_directories(waylaunch_core PUBLIC
     ${CAIRO_INCLUDE_DIRS}
     ${PANGO_INCLUDE_DIRS}
     ${FONTCONFIG_INCLUDE_DIRS}
+    ${GDK_PIXBUF_INCLUDE_DIRS}
+    ${GTK_INCLUDE_DIRS}
+    ${LIBRSVG_INCLUDE_DIRS}
 )
 
 target_link_libraries(waylaunch_core PUBLIC
@@ -101,6 +107,9 @@ target_link_libraries(waylaunch_core PUBLIC
     ${CAIRO_LIBRARIES}
     ${PANGO_LIBRARIES}
     ${FONTCONFIG_LIBRARIES}
+    ${GDK_PIXBUF_LIBRARIES}
+    ${GTK_LIBRARIES}
+    ${LIBRSVG_LIBRARIES}
     tomlplusplus::tomlplusplus
     nlohmann_json::nlohmann_json
     rt

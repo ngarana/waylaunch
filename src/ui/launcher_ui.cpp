@@ -1,7 +1,6 @@
 #include "waylaunch/launcher_ui.h"
 #include "waylaunch/wayland_core.h"
 #include "waylaunch/renderer.h"
-#include "waylaunch/search_manager.h"
 #include "waylaunch/config.h"
 #include "waylaunch/clipboard.h"
 #include "waylaunch/calculator.h"
@@ -32,19 +31,13 @@ bool LauncherUI::init(Config& config) {
         search_->set_search_path(config.get().search.paths[0].path);
     }
 
-    wayland_->set_key_handler([this](uint32_t keysym, uint32_t utf32, bool pressed) {
-        on_key(keysym, utf32, pressed);
-    });
-    wayland_->set_mouse_handler([this](double x, double y, uint32_t button, bool pressed) {
-        on_mouse(x, y, button, pressed);
-    });
-    wayland_->set_axis_handler([this](double x, double y, int32_t axis, double value) {
-        on_axis(x, y, axis, value);
-    });
+    wayland_->set_key_handler([this](uint32_t k, uint32_t u, bool p) { on_key(k, u, p); });
+    wayland_->set_mouse_handler([this](double x, double y, uint32_t b, bool p) { on_mouse(x, y, b, p); });
+    wayland_->set_axis_handler([this](double x, double y, int32_t a, double v) { on_axis(x, y, a, v); });
     wayland_->set_close_handler([this]() { on_close(); });
     wayland_->set_redraw_handler([this]() { on_redraw(); });
 
-    set_mode(LauncherModeType::Applications);
+    refresh_applications();
     return true;
 }
 
@@ -56,6 +49,36 @@ void LauncherUI::quit() {
     wayland_->quit();
 }
 
+// ---------------------------------------------------------------------------
+// Theme
+// ---------------------------------------------------------------------------
+
+Theme LauncherUI::build_theme() const {
+    const auto& tc = config_->get().theme;
+    Theme t;
+    t.background = Color::from_hex(tc.colors.background);
+    t.background_alt = Color::from_hex(tc.colors.background_alt);
+    t.foreground = Color::from_hex(tc.colors.foreground);
+    t.text_muted = Color::from_hex(tc.colors.text_muted);
+    t.accent = Color::from_hex(tc.colors.accent);
+    t.accent_hover = Color::from_hex(tc.colors.accent_hover);
+    t.error = Color::from_hex(tc.colors.error);
+    t.warning = Color::from_hex(tc.colors.warning);
+    t.success = Color::from_hex(tc.colors.success);
+    t.border = Color::from_hex(tc.colors.border);
+    t.selection = Color::from_hex(tc.colors.selection);
+    t.corner_radius = tc.corner_radius;
+    t.opacity = tc.opacity;
+    t.input_font = RenderFontConfig{tc.input_font.family, tc.input_font.size};
+    t.result_font = RenderFontConfig{tc.result_font.family, tc.result_font.size};
+    t.result_detail_font = RenderFontConfig{tc.result_detail_font.family, tc.result_detail_font.size};
+    return t;
+}
+
+// ---------------------------------------------------------------------------
+// Modes / search
+// ---------------------------------------------------------------------------
+
 void LauncherUI::set_mode(LauncherModeType mode) {
     current_mode_ = mode;
     query_.clear();
@@ -65,38 +88,31 @@ void LauncherUI::set_mode(LauncherModeType mode) {
     items_.clear();
     needs_redraw_ = true;
 
-    switch (mode) {
-        case LauncherModeType::Applications: {
-            AppLauncher app;
-            app.set_search_paths(config_->get().search.paths.empty()
-                ? std::vector<std::string>{}
-                : [&]() {
-                    std::vector<std::string> paths;
-                    for (auto& p : config_->get().search.paths) {
-                        if (p.type == "desktop") paths.push_back(p.path);
-                    }
-                    return paths;
-                }());
-            app.scan();
-            auto entries = app.search("");
-            items_.clear();
-            for (auto& e : entries) {
-                ListItem li;
-                li.name = e.name;
-                li.path = e.exec;
-                li.description = e.comment;
-                li.icon_name = e.icon;
-                items_.push_back(std::move(li));
-            }
-            break;
-        }
-        case LauncherModeType::Files:
-        case LauncherModeType::FileContents:
-            update_search();
-            break;
-        case LauncherModeType::Calculator:
-            break;
+    if (mode == LauncherModeType::Applications) refresh_applications();
+    else if (mode != LauncherModeType::Calculator) update_search();
+}
+
+void LauncherUI::refresh_applications() {
+    AppLauncher app;
+    std::vector<std::string> paths;
+    for (auto& p : config_->get().search.paths) {
+        if (p.type == "desktop") paths.push_back(p.path);
     }
+    app.set_search_paths(paths);
+    app.scan();
+    auto entries = app.search(query_);
+    items_.clear();
+    for (auto& e : entries) {
+        ListItem li;
+        li.name = e.name;
+        li.path = e.exec;
+        li.description = e.comment;
+        li.icon_name = e.icon;
+        items_.push_back(std::move(li));
+    }
+    selected_index_ = 0;
+    scroll_offset_ = 0;
+    needs_redraw_ = true;
 }
 
 void LauncherUI::toggle_mode() {
@@ -104,10 +120,111 @@ void LauncherUI::toggle_mode() {
     set_mode(static_cast<LauncherModeType>(m));
 }
 
+void LauncherUI::update_search() {
+    if (current_mode_ == LauncherModeType::Calculator) {
+        items_.clear();
+        needs_redraw_ = true;
+        return;
+    }
+    if (current_mode_ == LauncherModeType::Applications) {
+        refresh_applications();
+        return;
+    }
+
+    SearchMode mode = (current_mode_ == LauncherModeType::FileContents) ? SearchMode::FileContents : SearchMode::Files;
+    search_->search(query_, mode, [this](std::vector<SearchResult> results) {
+        update_items(results);
+    });
+}
+
+void LauncherUI::update_items(const std::vector<SearchResult>& results) {
+    items_.clear();
+    for (const auto& r : results) {
+        ListItem item;
+        item.name = r.display_name;
+        item.path = r.path;
+        item.description = r.display_path.empty() ? r.description : r.display_path;
+        item.icon_name = r.icon_name;
+        item.score = r.score;
+        items_.push_back(std::move(item));
+    }
+    selected_index_ = 0;
+    scroll_offset_ = 0;
+    needs_redraw_ = true;
+    render_frame();
+}
+
+// ---------------------------------------------------------------------------
+// Selection
+// ---------------------------------------------------------------------------
+
+int LauncherUI::visible_row_count() const {
+    return std::min(static_cast<int>(items_.size()) - scroll_offset_, layout_.max_rows);
+}
+
+int LauncherUI::panel_height() const {
+    if (items_.empty() && current_mode_ != LauncherModeType::Calculator) {
+        return layout_.search_h + layout_.row_h;  // search + empty hint
+    }
+    int rows = static_cast<int>(items_.size());
+    if (current_mode_ == LauncherModeType::Calculator) rows = 1;
+    int shown = std::min(rows, layout_.max_rows + 1);  // +1 for the top-hit hero
+    int h = layout_.search_h;
+    h += layout_.section_pad;                 // TOP HIT header
+    h += layout_.row_h + layout_.section_pad; // hero
+    if (shown > 1) {
+        h += layout_.section_pad;             // group header
+        h += (shown - 1) * layout_.row_h;
+    }
+    h += layout_.pad_x;
+    return h;
+}
+
+void LauncherUI::select_item(int index) {
+    if (items_.empty()) return;
+    int max = static_cast<int>(items_.size()) - 1;
+    selected_index_ = std::max(0, std::min(index, max));
+    if (selected_index_ < scroll_offset_) scroll_offset_ = selected_index_;
+    else if (selected_index_ >= scroll_offset_ + visible_row_count()) {
+        scroll_offset_ = selected_index_ - visible_row_count() + 1;
+    }
+    needs_redraw_ = true;
+    render_frame();
+}
+
+void LauncherUI::autocomplete() {
+    if (items_.empty()) return;
+    query_ = items_[selected_index_].name;
+    cursor_pos_ = query_.size();
+    update_search();
+}
+
+void LauncherUI::launch_selected() {
+    if (current_mode_ == LauncherModeType::Calculator) {
+        Calculator calc;
+        auto result = calc.evaluate(query_);
+        if (result.valid) { Clipboard::copy_text(result.result); quit(); }
+        return;
+    }
+    if (items_.empty() || selected_index_ >= static_cast<int>(items_.size())) return;
+    const auto& item = items_[selected_index_];
+    if (!item.action_command.empty()) {
+        std::string cmd = item.action_command + " &";
+        system(cmd.c_str());
+    } else if (!item.path.empty()) {
+        std::string cmd = "xdg-open \"" + item.path + "\" &";
+        system(cmd.c_str());
+    }
+    quit();
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard / mouse
+// ---------------------------------------------------------------------------
+
 void LauncherUI::on_key(uint32_t keysym, uint32_t utf32, bool pressed) {
     if (!pressed) return;
 
-    // Handle Ctrl+J/K for vim-style navigation
     bool ctrl = wayland_->kbd_.state && xkb_state_mod_name_is_active(
         wayland_->kbd_.state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE);
 
@@ -118,27 +235,16 @@ void LauncherUI::on_key(uint32_t keysym, uint32_t utf32, bool pressed) {
         if (keysym == XKB_KEY_p) { select_item(selected_index_ - 1); return; }
     }
 
-    // Direct key bindings
-    if (keysym == XKB_KEY_Return) {
-        if (current_mode_ == LauncherModeType::Calculator) {
-            Calculator calc;
-            auto result = calc.evaluate(query_);
-            if (result.valid) { Clipboard::copy_text(result.result); quit(); }
-        } else {
-            launch_selected();
-        }
-        return;
-    }
+    if (keysym == XKB_KEY_Return) { launch_selected(); return; }
     if (keysym == XKB_KEY_Escape) { quit(); return; }
     if (keysym == XKB_KEY_Up) { select_item(selected_index_ - 1); return; }
     if (keysym == XKB_KEY_Down) { select_item(selected_index_ + 1); return; }
-    if (keysym == XKB_KEY_Tab) { toggle_mode(); return; }
-    if (keysym == XKB_KEY_Page_Up) { select_item(selected_index_ - 10); return; }
-    if (keysym == XKB_KEY_Page_Down) { select_item(selected_index_ + 10); return; }
+    if (keysym == XKB_KEY_Tab) { autocomplete(); return; }
+    if (keysym == XKB_KEY_Page_Up) { select_item(selected_index_ - layout_.max_rows); return; }
+    if (keysym == XKB_KEY_Page_Down) { select_item(selected_index_ + layout_.max_rows); return; }
     if (keysym == XKB_KEY_Home) { select_item(0); return; }
     if (keysym == XKB_KEY_End) { select_item(static_cast<int>(items_.size()) - 1); return; }
 
-    // Text input
     if (utf32 >= 32 && utf32 < 0x110000) {
         char utf8[5] = {0};
         if (utf32 < 0x80) { utf8[0] = static_cast<char>(utf32); }
@@ -170,23 +276,15 @@ void LauncherUI::on_key(uint32_t keysym, uint32_t utf32, bool pressed) {
 
 void LauncherUI::on_mouse(double x, double y, uint32_t button, bool pressed) {
     if (!pressed) return;
-
-    // BTN_LEFT = 0x110
-    if (button == 0x110) {
-        int idx = hit_test(x, y);
-        if (idx >= 0 && idx < static_cast<int>(items_.size())) {
-            if (idx == selected_index_) {
-                launch_selected();
-            } else {
-                select_item(idx);
-            }
-        }
+    if (button != 0x110) return;
+    int idx = hit_test(x, y);
+    if (idx >= 0 && idx < static_cast<int>(items_.size())) {
+        if (idx == selected_index_) launch_selected();
+        else select_item(idx);
     }
-    // BTN_RIGHT = 0x111 - could open actions menu in the future
 }
 
 void LauncherUI::on_axis(double, double, int32_t axis, double value) {
-    // axis 0 = vertical scroll, value > 0 = scroll down
     if (axis == 0) {
         if (value < 0) select_item(selected_index_ - 3);
         else if (value > 0) select_item(selected_index_ + 3);
@@ -200,107 +298,32 @@ void LauncherUI::on_redraw() {
     render_frame();
 }
 
-void LauncherUI::update_search() {
-    if (current_mode_ == LauncherModeType::Calculator) {
-        // Evaluate as expression and show result preview
-        Calculator calc;
-        auto result = calc.evaluate(query_);
-        items_.clear();
-        if (result.valid) {
-            ListItem li;
-            li.name = "= " + result.result;
-            li.path = result.result;
-            items_.push_back(std::move(li));
-        }
-        selected_index_ = 0;
-        scroll_offset_ = 0;
-        needs_redraw_ = true;
-        return;
-    }
-
-    if (current_mode_ == LauncherModeType::Applications) {
-        // Re-scan and filter
-        AppLauncher app;
-        std::vector<std::string> paths;
-        for (auto& p : config_->get().search.paths) {
-            if (p.type == "desktop") paths.push_back(p.path);
-        }
-        app.set_search_paths(paths);
-        app.scan();
-        auto entries = app.search(query_);
-        items_.clear();
-        for (auto& e : entries) {
-            ListItem li;
-            li.name = e.name;
-            li.path = e.exec;
-            li.description = e.comment;
-            li.icon_name = e.icon;
-            items_.push_back(std::move(li));
-        }
-        selected_index_ = 0;
-        scroll_offset_ = 0;
-        needs_redraw_ = true;
-        return;
-    }
-
-    SearchMode mode = (current_mode_ == LauncherModeType::FileContents) ? SearchMode::FileContents : SearchMode::Files;
-    search_->search(query_, mode, [this](std::vector<SearchResult> results) {
-        update_items(results);
-    });
-}
-
-void LauncherUI::update_items(const std::vector<SearchResult>& results) {
-    items_.clear();
-    for (const auto& r : results) {
-        ListItem item;
-        item.name = r.display_name;
-        item.path = r.path;
-        item.description = r.snippet;
-        item.icon_name = r.icon_name;
-        item.score = r.score;
-        items_.push_back(std::move(item));
-    }
-    selected_index_ = 0;
-    scroll_offset_ = 0;
-    needs_redraw_ = true;
-    // Trigger a redraw from the UI thread
-    render_frame();
-}
-
-void LauncherUI::select_item(int index) {
-    if (items_.empty()) return;
-    int max = static_cast<int>(items_.size()) - 1;
-    selected_index_ = std::max(0, std::min(index, max));
-    const LayoutMetrics layout{};
-    if (selected_index_ < scroll_offset_) scroll_offset_ = selected_index_;
-    else if (selected_index_ >= scroll_offset_ + layout.max_visible_items) {
-        scroll_offset_ = selected_index_ - layout.max_visible_items + 1;
-    }
-    needs_redraw_ = true;
-    render_frame();
-}
-
-void LauncherUI::launch_selected() {
-    if (items_.empty() || selected_index_ >= static_cast<int>(items_.size())) return;
-    const auto& item = items_[selected_index_];
-    if (!item.action_command.empty()) {
-        std::string cmd = item.action_command + " &";
-        system(cmd.c_str());
-    } else if (!item.path.empty()) {
-        std::string cmd = "xdg-open \"" + item.path + "\" &";
-        system(cmd.c_str());
-    }
-    quit();
-}
-
 int LauncherUI::hit_test(double x, double y) const {
-    const LayoutMetrics layout{};
-    int items_y = layout.padding + layout.input_height + layout.padding;
-    if (y < items_y || y > items_y + layout.max_visible_items * layout.item_height) return -1;
-    int idx = static_cast<int>((y - items_y) / layout.item_height) + scroll_offset_;
-    if (idx >= 0 && idx < static_cast<int>(items_.size())) return idx;
+    int ph = panel_height();
+    int pw = layout_.win_w;
+    int px = (wayland_->output_width() - pw) / 2;
+    int py = layout_.margin_top;
+
+    if (x < px || x > px + pw || y < py || y > py + ph) return -1;
+    int ly = static_cast<int>(y) - py;
+
+    if (ly <= layout_.search_h) return -1;  // search field itself
+
+    int yy = layout_.search_h + layout_.section_pad;
+    // top hit hero
+    if (ly >= yy && ly < yy + layout_.row_h) {
+        return scroll_offset_ + 0;
+    }
+    yy += layout_.row_h + layout_.section_pad;
+    yy += layout_.section_pad;  // group header
+    int idx = static_cast<int>((ly - yy) / layout_.row_h) + scroll_offset_ + 1;
+    if (idx >= scroll_offset_ + 1 && idx < scroll_offset_ + 1 + visible_row_count()) return idx;
     return -1;
 }
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
 
 void LauncherUI::render_frame() {
     if (!needs_redraw_) return;
@@ -308,43 +331,162 @@ void LauncherUI::render_frame() {
     Buffer* buf = wayland_->acquire_buffer();
     if (!buf) return;
 
-    const auto& tc = config_->get().theme;
+    Theme t = build_theme();
+    int bw = buf->width;
+    int bh = buf->height;
 
-    Theme t;
-    t.background = Color::from_hex(tc.colors.background);
-    t.background_alt = Color::from_hex(tc.colors.background_alt);
-    t.foreground = Color::from_hex(tc.colors.foreground);
-    t.text_muted = Color::from_hex(tc.colors.text_muted);
-    t.accent = Color::from_hex(tc.colors.accent);
-    t.accent_hover = Color::from_hex(tc.colors.accent_hover);
-    t.error = Color::from_hex(tc.colors.error);
-    t.warning = Color::from_hex(tc.colors.warning);
-    t.success = Color::from_hex(tc.colors.success);
-    t.border = Color::from_hex(tc.colors.border);
-    t.selection = Color::from_hex(tc.colors.selection);
-    t.corner_radius = tc.corner_radius;
-    t.opacity = tc.opacity;
-    t.input_font = RenderFontConfig{tc.input_font.family, tc.input_font.size};
-    t.result_font = RenderFontConfig{tc.result_font.family, tc.result_font.size};
-    t.result_detail_font = RenderFontConfig{tc.result_detail_font.family, tc.result_detail_font.size};
+    renderer_->begin(buf->data, buf->stride, bw, bh);
 
-    LayoutMetrics layout;
-    std::vector<RenderItem> render_items;
-    for (size_t i = 0; i < items_.size(); i++) {
-        RenderItem ri;
-        ri.segments.push_back({items_[i].name, t.foreground});
-        if (!items_[i].description.empty()) {
-            ri.segments.push_back({" - " + items_[i].description, t.text_muted});
+    // Clear the whole buffer transparent; the panel is drawn on top.
+    renderer_->clear(Color::from_rgba(0, 0, 0, 0));
+
+    int ph = panel_height();
+    int pw = layout_.win_w;
+    int px = (wayland_->output_width() - pw) / 2;
+    int py = layout_.margin_top;
+
+    // Drop shadow + panel background (translucent like Spotlight's blurred glass).
+    renderer_->rounded_rect(px - 2, py + 4, pw + 4, ph + 4, layout_.corner_radius + 2,
+                            Color::from_rgba(0, 0, 0, 0.35));
+    Color panel = t.background;
+    renderer_->rounded_rect(px, py, pw, ph, layout_.corner_radius,
+                            Color::from_rgba(panel.r, panel.g, panel.b, 0.92));
+
+    // Hairline border
+    renderer_->fill_rect(px, py, pw, 1, Color::from_rgba(t.border.r, t.border.g, t.border.b, 0.6));
+    renderer_->fill_rect(px, py + ph - 1, pw, 1, Color::from_rgba(t.border.r, t.border.g, t.border.b, 0.6));
+
+    // --- Search field ---
+    int glyph_size = 26;
+    int gx = px + layout_.search_pad_x;
+    int gy = py + (layout_.search_h - glyph_size) / 2;
+    renderer_->draw_search_glyph(gx, gy, glyph_size, Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.9));
+
+    int text_x = gx + glyph_size + 14;
+    RenderFontConfig sf = t.input_font;
+    sf.size = 22;
+    if (query_.empty()) {
+        renderer_->draw_text(text_x, py + (layout_.search_h - static_cast<int>(sf.size)) / 2,
+                             config_->get().search.placeholder, sf,
+                             Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.8));
+    } else {
+        renderer_->draw_text(text_x, py + (layout_.search_h - static_cast<int>(sf.size)) / 2,
+                             query_, sf, Color::from_rgba(1, 1, 1, 1));
+        // caret
+        if (cursor_pos_ < query_.size()) {
+            int caret_x = text_x + renderer_->text_width(query_.substr(0, cursor_pos_), sf);
+            renderer_->fill_rect(caret_x + 1, py + 14, 2, layout_.search_h - 28, t.accent);
         }
-        ri.selected = (static_cast<int>(i) == selected_index_);
-        ri.icon_name = items_[i].icon_name;
-        render_items.push_back(std::move(ri));
     }
 
-    renderer_->render_into(
-        buf->data, buf->stride, buf->width, buf->height, wayland_->primary_scale(),
-        t, layout, query_, cursor_pos_, render_items, scroll_offset_, selected_index_);
+    // divider under search
+    renderer_->fill_rect(px, py + layout_.search_h, pw, 1, Color::from_rgba(t.border.r, t.border.g, t.border.b, 0.35));
 
+    // --- Calculator mode ---
+    if (current_mode_ == LauncherModeType::Calculator) {
+        Calculator calc;
+        auto result = calc.evaluate(query_);
+        int cy = py + layout_.search_h + layout_.section_pad;
+        renderer_->draw_icon(px + layout_.pad_x, cy + (layout_.row_h - layout_.icon_size) / 2,
+                             layout_.icon_size, "accessories-calculator", "Calc", t.accent);
+        int tx = px + layout_.pad_x + layout_.icon_size + layout_.icon_pad;
+        RenderFontConfig cf = t.result_font;
+        cf.size = 20; cf.bold = true;
+        if (query_.empty()) {
+            renderer_->draw_text(tx, cy + (layout_.row_h - 20) / 2, "Type a calculation…",
+                                 t.result_detail_font, t.text_muted);
+        } else if (result.valid) {
+            renderer_->draw_text(tx, cy + (layout_.row_h - 20) / 2, "= " + result.result,
+                                 cf, Color::from_rgba(1, 1, 1, 1));
+            // action hint on the right
+            renderer_->draw_text(px + pw - layout_.pad_x - 180, cy + (layout_.row_h - 14) / 2,
+                                 "⏎ Copy result", t.result_detail_font, t.text_muted);
+        } else {
+            renderer_->draw_text(tx, cy + (layout_.row_h - 20) / 2, "Invalid expression",
+                                 t.result_detail_font, t.error);
+        }
+        renderer_->end();
+        wayland_->submit_buffer(buf, 0, 0);
+        needs_redraw_ = false;
+        return;
+    }
+
+    // --- Empty state ---
+    if (items_.empty()) {
+        int ey = py + layout_.search_h + layout_.row_h / 2 - 8;
+        renderer_->draw_text(px + layout_.pad_x, ey, "No results", t.result_font, t.text_muted);
+        renderer_->end();
+        wayland_->submit_buffer(buf, 0, 0);
+        needs_redraw_ = false;
+        return;
+    }
+
+    int yy = py + layout_.search_h + layout_.section_pad;
+
+    // Section header: TOP HIT
+    renderer_->draw_text(px + layout_.pad_x, yy, "TOP HIT",
+                         t.result_detail_font, Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.7));
+    yy += layout_.section_pad;
+
+    // Hero (index 0)
+    {
+        const auto& it = items_[scroll_offset_ + 0 < static_cast<int>(items_.size()) ? scroll_offset_ + 0 : 0];
+        int row = scroll_offset_;
+        bool sel = (row == selected_index_);
+        int rx = px + layout_.pad_x;
+        int ry = yy;
+        int ic = layout_.icon_size + 6;
+        if (sel) renderer_->rounded_rect(rx - 6, ry - 2, pw - 2 * layout_.pad_x + 12, layout_.row_h, 8,
+                                         Color::from_rgba(t.selection.r, t.selection.g, t.selection.b, 0.55));
+        renderer_->draw_icon(rx, ry + (layout_.row_h - ic) / 2, ic, it.icon_name, it.name, t.accent);
+        int tx = rx + ic + layout_.icon_pad;
+        renderer_->draw_text(tx, ry + 6, it.name, t.result_font, Color::from_rgba(1, 1, 1, 1));
+        if (!it.description.empty())
+            renderer_->draw_text(tx, ry + 6 + static_cast<int>(t.result_font.size) + 2,
+                                 it.description, t.result_detail_font, t.text_muted);
+    }
+    yy += layout_.row_h + layout_.section_pad;
+
+    // Group header
+    const char* group = (current_mode_ == LauncherModeType::Applications) ? "APPLICATIONS"
+                      : (current_mode_ == LauncherModeType::FileContents) ? "CONTENT"
+                      : "FILES";
+    renderer_->draw_text(px + layout_.pad_x, yy, group,
+                         t.result_detail_font, Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.7));
+    yy += layout_.section_pad;
+
+    int count = visible_row_count();
+    for (int i = 0; i < count; i++) {
+        int row = scroll_offset_ + 1 + i;
+        if (row >= static_cast<int>(items_.size())) break;
+        const auto& it = items_[row];
+        bool sel = (row == selected_index_);
+        int rx = px + layout_.pad_x;
+        int ry = yy + i * layout_.row_h;
+        if (sel) renderer_->rounded_rect(rx - 6, ry - 2, pw - 2 * layout_.pad_x + 12, layout_.row_h, 8,
+                                         Color::from_rgba(t.selection.r, t.selection.g, t.selection.b, 0.55));
+        renderer_->draw_icon(rx, ry + (layout_.row_h - layout_.icon_size) / 2, layout_.icon_size,
+                             it.icon_name, it.name, t.accent);
+        int tx = rx + layout_.icon_size + layout_.icon_pad;
+        renderer_->draw_text(tx, ry + (layout_.row_h - static_cast<int>(t.result_font.size)) / 2 - 6,
+                             it.name, t.result_font, Color::from_rgba(1, 1, 1, 1));
+        if (!it.description.empty())
+            renderer_->draw_text(tx, ry + (layout_.row_h - static_cast<int>(t.result_font.size)) / 2 + 10,
+                                 it.description, t.result_detail_font, t.text_muted);
+    }
+
+    // Scrollbar if overflowing
+    int total = static_cast<int>(items_.size());
+    if (total > layout_.max_rows + 1) {
+        int track_y = py + layout_.search_h + 8;
+        int track_h = ph - layout_.search_h - 16;
+        int thumb_h = std::max(24, track_h * (layout_.max_rows + 1) / total);
+        int thumb_y = track_y + (scroll_offset_ * (track_h - thumb_h)) / std::max(1, total - (layout_.max_rows + 1));
+        renderer_->rounded_rect(px + pw - 6, thumb_y, 4, thumb_h, 2,
+                                Color::from_rgba(t.accent.r, t.accent.g, t.accent.b, 0.7));
+    }
+
+    renderer_->end();
     wayland_->submit_buffer(buf, 0, 0);
     needs_redraw_ = false;
 }

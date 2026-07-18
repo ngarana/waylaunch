@@ -4,6 +4,11 @@
 #include <cstring>
 #include <algorithm>
 #include <cmath>
+#include <string>
+#include <unordered_map>
+#include <memory>
+#include <gdk-pixbuf/gdk-pixbuf.h>
+#include <gtk/gtk.h>
 
 namespace waylaunch {
 
@@ -168,6 +173,180 @@ void Renderer::draw_scrollbar(int x, int y, int h, int total_items, int visible_
     int thumb_y = y + (scroll_offset * (h - thumb_height)) / (total_items - visible_items);
     fill_rect(x, y, 4, h, Color{color.r, color.g, color.b, color.a * 0.2});
     rounded_rect(x, thumb_y, 4, thumb_height, 2, color);
+}
+
+void Renderer::draw_search_glyph(int cx, int cy, int size, const Color& color) {
+    if (!cairo_) return;
+    cairo_t* cr = cairo_->cr;
+    double r = size / 2.0;
+    cairo_set_line_width(cr, std::max(1.5, size * 0.12));
+    cairo_set_source_rgba(cr, color.r, color.g, color.b, color.a);
+
+    // lens
+    cairo_arc(cr, cx + r * 0.55, cy + r * 0.55, r * 0.6, 0, 2 * M_PI);
+    cairo_stroke(cr);
+
+    // handle
+    cairo_move_to(cr, cx + r * 1.15, cy + r * 1.15);
+    cairo_line_to(cr, cx + r * 1.7, cy + r * 1.7);
+    cairo_stroke(cr);
+}
+
+void Renderer::round_rect_path(cairo_t* cr, int x, int y, int w, int h, int radius) {
+    double r = std::min({static_cast<double>(radius), w / 2.0, h / 2.0});
+    if (r < 1.0) { cairo_rectangle(cr, x, y, w, h); return; }
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, x + w - r, y + r, r, -M_PI / 2, 0);
+    cairo_arc(cr, x + w - r, y + h - r, r, 0, M_PI / 2);
+    cairo_arc(cr, x + r, y + h - r, r, M_PI / 2, M_PI);
+    cairo_arc(cr, x + r, y + r, r, M_PI, 3 * M_PI / 2);
+    cairo_close_path(cr);
+}
+
+int Renderer::text_width(const std::string& text, const RenderFontConfig& font) {
+    if (!cairo_ || text.empty()) return 0;
+    PangoLayout* layout = pango_cairo_create_layout(cairo_->cr);
+    PangoFontDescription* desc = pango_font_description_new();
+    pango_font_description_set_family(desc, font.family.c_str());
+    pango_font_description_set_size(desc, static_cast<int>(font.size * PANGO_SCALE));
+    if (font.bold) pango_font_description_set_weight(desc, PANGO_WEIGHT_BOLD);
+    pango_layout_set_font_description(layout, desc);
+    pango_layout_set_text(layout, text.c_str(), -1);
+    PangoRectangle ink;
+    pango_layout_get_pixel_extents(layout, &ink, nullptr);
+    pango_font_description_free(desc);
+    g_object_unref(layout);
+    return ink.width;
+}
+
+namespace {
+// tiny RAII for gdk pixbuf
+struct PixbufDeleter { void operator()(GdkPixbuf* p) { if (p) g_object_unref(p); } };
+using PixbufPtr = std::unique_ptr<GdkPixbuf, PixbufDeleter>;
+
+// cache of loaded cairo surfaces keyed by "name@size"
+struct IconCache {
+    std::unordered_map<std::string, cairo_surface_t*> map;
+    ~IconCache() { for (auto& kv : map) cairo_surface_destroy(kv.second); }
+};
+IconCache& icon_cache() { static IconCache c; return c; }
+
+std::string monogram_of(const std::string& label) {
+    for (char c : label) {
+        if (std::isalpha((unsigned char)c)) {
+            char buf[2] = { static_cast<char>(std::toupper((unsigned char)c)), 0 };
+            return std::string(buf);
+        }
+    }
+    return label.empty() ? "#" : label.substr(0, 1);
+}
+} // namespace
+
+cairo_surface_t* Renderer::load_icon_surface(const std::string& icon_name, int size) {
+    if (icon_name.empty()) return nullptr;
+    std::string key = icon_name + "@" + std::to_string(size);
+    auto it = icon_cache().map.find(key);
+    if (it != icon_cache().map.end()) return it->second;
+
+    cairo_surface_t* result = nullptr;
+
+    auto pixbuf_to_surface = [](GdkPixbuf* pb) -> cairo_surface_t* {
+        int w = gdk_pixbuf_get_width(pb);
+        int h = gdk_pixbuf_get_height(pb);
+        cairo_surface_t* s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+        if (!s || cairo_surface_status(s) != CAIRO_STATUS_SUCCESS) return nullptr;
+        unsigned char* dst = cairo_image_surface_get_data(s);
+        int dstride = cairo_image_surface_get_stride(s);
+        const unsigned char* src = gdk_pixbuf_get_pixels(pb);
+        int sstride = gdk_pixbuf_get_rowstride(pb);
+        int nch = gdk_pixbuf_get_n_channels(pb);
+        bool has_alpha = gdk_pixbuf_get_has_alpha(pb);
+        cairo_surface_flush(s);
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                const unsigned char* p = src + y * sstride + x * nch;
+                unsigned char* d = dst + y * dstride + x * 4;
+                unsigned char a = has_alpha ? p[3] : 255;
+                // un-premultiply not needed: store straight ARGB
+                d[0] = p[0]; d[1] = p[1]; d[2] = p[2]; d[3] = a;
+            }
+        }
+        cairo_surface_mark_dirty(s);
+        return s;
+    };
+
+    // 1) Direct file path (png/svg)
+    if (!icon_name.empty() && (icon_name[0] == '/' || icon_name.find('.') != std::string::npos)) {
+        GError* err = nullptr;
+        PixbufPtr pb(gdk_pixbuf_new_from_file_at_size(icon_name.c_str(), size, size, &err));
+        if (err) { g_error_free(err); err = nullptr; }
+        if (pb) result = pixbuf_to_surface(pb.get());
+    }
+
+    // 2) Freedesktop icon theme lookup via GTK (no screen needed)
+    if (!result) {
+        GtkIconTheme* theme = gtk_icon_theme_new();
+        if (theme) {
+            const char* name = std::getenv("GTK_ICON_THEME");
+            if (name) gtk_icon_theme_set_custom_theme(theme, name);
+            GdkPixbuf* raw = gtk_icon_theme_load_icon_for_scale(
+                theme, icon_name.c_str(), size, 1,
+                static_cast<GtkIconLookupFlags>(GTK_ICON_LOOKUP_USE_BUILTIN), nullptr);
+            if (raw) {
+                PixbufPtr pb(raw);
+                result = pixbuf_to_surface(pb.get());
+            }
+            g_object_unref(theme);
+        }
+    }
+
+    icon_cache().map[key] = result;
+    return result;
+}
+
+void Renderer::draw_icon(int x, int y, int size, const std::string& icon_name,
+                         const std::string& label, const Color& accent) {
+    if (!cairo_) return;
+    cairo_surface_t* surf = load_icon_surface(icon_name, size);
+
+    int radius = std::max(4, size / 5);
+    if (!surf) {
+        // monogram placeholder: rounded square accent-tinted
+        Color bg{accent.r, accent.g, accent.b, 0.18};
+        rounded_rect(x, y, size, size, radius, bg);
+        Color fg{accent.r, accent.g, accent.b, 1.0};
+        std::string m = monogram_of(label.empty() ? icon_name : label);
+        RenderFontConfig f{"Sans", static_cast<double>(size) * 0.5, true, false};
+        PangoLayout* layout = pango_cairo_create_layout(cairo_->cr);
+        PangoFontDescription* desc = pango_font_description_new();
+        pango_font_description_set_family(desc, f.family.c_str());
+        pango_font_description_set_size(desc, static_cast<int>(f.size * PANGO_SCALE));
+        pango_font_description_set_weight(desc, PANGO_WEIGHT_BOLD);
+        pango_layout_set_font_description(layout, desc);
+        pango_layout_set_text(layout, m.c_str(), -1);
+        PangoRectangle ink;
+        pango_layout_get_pixel_extents(layout, &ink, nullptr);
+        cairo_set_source_rgba(cairo_->cr, fg.r, fg.g, fg.b, fg.a);
+        cairo_move_to(cairo_->cr, x + (size - ink.width) / 2 - ink.x, y + (size - ink.height) / 2 - ink.y);
+        pango_cairo_show_layout(cairo_->cr, layout);
+        pango_font_description_free(desc);
+        g_object_unref(layout);
+        return;
+    }
+
+    // clip to rounded rect and paint the icon scaled to size
+    cairo_save(cairo_->cr);
+    round_rect_path(cairo_->cr, x, y, size, size, radius);
+    cairo_clip(cairo_->cr);
+    int sw = cairo_image_surface_get_width(surf);
+    int sh = cairo_image_surface_get_height(surf);
+    double scale = std::min(static_cast<double>(size) / sw, static_cast<double>(size) / sh);
+    double dw = sw * scale, dh = sh * scale;
+    cairo_translate(cairo_->cr, x + (size - dw) / 2, y + (size - dh) / 2);
+    cairo_scale(cairo_->cr, scale, scale);
+    cairo_set_source_surface(cairo_->cr, surf, 0, 0);
+    cairo_paint(cairo_->cr);
+    cairo_restore(cairo_->cr);
 }
 
 void Renderer::render_into(uint8_t* buffer_data, int buffer_stride,

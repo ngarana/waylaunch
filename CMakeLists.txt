@@ -14,6 +14,9 @@ pkg_check_modules(XKBCOMMON REQUIRED xkbcommon)
 pkg_check_modules(CAIRO REQUIRED cairo)
 pkg_check_modules(PANGO REQUIRED pangocairo)
 pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
+pkg_check_modules(GDK_PIXBUF REQUIRED gdk-pixbuf-2.0)
+pkg_check_modules(GTK REQUIRED gtk+-3.0)
+pkg_check_modules(LIBRSVG REQUIRED librsvg-2.0)
 
 # Generate Wayland protocol sources
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
@@ -122,6 +125,9 @@ target_include_directories(waylaunch PRIVATE
     ${CAIRO_INCLUDE_DIRS}
     ${PANGO_INCLUDE_DIRS}
     ${FONTCONFIG_INCLUDE_DIRS}
+    ${GDK_PIXBUF_INCLUDE_DIRS}
+    ${GTK_INCLUDE_DIRS}
+    ${LIBRSVG_INCLUDE_DIRS}
 )
 
 target_link_libraries(waylaunch PRIVATE
@@ -131,6 +137,9 @@ target_link_libraries(waylaunch PRIVATE
     ${CAIRO_LIBRARIES}
     ${PANGO_LIBRARIES}
     ${FONTCONFIG_LIBRARIES}
+    ${GDK_PIXBUF_LIBRARIES}
+    ${GTK_LIBRARIES}
+    ${LIBRSVG_LIBRARIES}
     rt   # for shm_open
     m    # math
 )
@@ -142,6 +151,9 @@ target_compile_options(waylaunch PRIVATE
     ${CAIRO_CFLAGS}
     ${PANGO_CFLAGS}
     ${FONTCONFIG_CFLAGS}
+    ${GDK_PIXBUF_CFLAGS}
+    ${GTK_CFLAGS}
+    ${LIBRSVG_CFLAGS}
     -Wall -Wextra -Wpedantic
 )
 
