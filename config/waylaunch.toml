@@ -1,0 +1,191 @@
+# waylaunch configuration file
+# Place this file at ~/.config/waylaunch/config.toml
+
+[general]
+name = "waylaunch"
+version = 1
+debug = false
+
+[window]
+width = 700
+height = 500
+position = "center"
+margin = 100
+corner_radius = 12
+opacity = 0.95
+always_on_top = true
+decorations = false
+
+[theme]
+name = "dark"
+mode = "dark"
+custom_path = ""
+
+[theme.colors]
+background = "#1e1e2e"
+background_alt = "#313244"
+foreground = "#cdd6f4"
+text_muted = "#6c7086"
+accent = "#89b4fa"
+accent_hover = "#b4d0fb"
+error = "#f38ba8"
+warning = "#fab387"
+success = "#a6e3a1"
+border = "#45475a"
+selection = "#45475a"
+
+[theme.input_font]
+family = "JetBrains Mono"
+size = 14.0
+weight = "normal"
+style = "normal"
+
+[theme.result_font]
+family = "Sans"
+size = 13.0
+weight = "normal"
+style = "normal"
+
+[theme.result_detail_font]
+family = "Sans"
+size = 11.0
+weight = "normal"
+style = "normal"
+
+[search]
+match_mode = "fuzzy"
+case_sensitive = false
+max_results = 20
+show_icons = true
+debounce_ms = 150
+placeholder = "Search..."
+history_enabled = true
+history_max = 100
+
+[[search.paths]]
+path = "/usr/share/applications"
+type = "desktop"
+enabled = true
+
+[[search.paths]]
+path = "~/.local/share/applications"
+type = "desktop"
+enabled = true
+
+[[search.file_patterns]]
+extension = "*.pdf"
+icon = "application-pdf"
+label = "PDF Documents"
+
+[[search.file_patterns]]
+extension = "*.txt"
+icon = "text-plain"
+label = "Text Files"
+
+[[search.file_patterns]]
+extension = "*.{jpg,jpeg,png,gif,svg,webp}"
+icon = "image-x-generic"
+label = "Images"
+
+# Key bindings
+[[bindings.keys]]
+key = "Return"
+action = "launch"
+description = "Launch selected item"
+
+[[bindings.keys]]
+key = "Escape"
+action = "close"
+description = "Close launcher"
+
+[[bindings.keys]]
+key = "Up"
+action = "select_previous"
+description = "Move selection up"
+
+[[bindings.keys]]
+key = "Down"
+action = "select_next"
+description = "Move selection down"
+
+[[bindings.keys]]
+key = "Tab"
+action = "auto_complete"
+description = "Auto-complete from best match"
+
+[[bindings.keys]]
+key = "j"
+modifiers = ["Control"]
+action = "select_next"
+description = "Move selection down (vim)"
+
+[[bindings.keys]]
+key = "k"
+modifiers = ["Control"]
+action = "select_previous"
+description = "Move selection up (vim)"
+
+[[bindings.keys]]
+key = "Tab"
+modifiers = ["Shift"]
+action = "switch_mode_backward"
+description = "Switch to previous mode"
+
+[[bindings.keys]]
+key = "Tab"
+action = "switch_mode_forward"
+description = "Switch to next mode"
+
+# Launcher modes
+[modes]
+default = "applications"
+
+[[modes.list]]
+id = "applications"
+name = "Apps"
+icon = "view-apps-symbolic"
+description = "Search installed applications"
+enabled = true
+
+[[modes.list]]
+id = "files"
+name = "Files"
+icon = "folder-documents-symbolic"
+description = "Search files and directories"
+enabled = true
+
+[[modes.list]]
+id = "contents"
+name = "Content"
+icon = "edit-find"
+description = "Search file contents with ripgrep"
+enabled = true
+
+[[modes.list]]
+id = "calculator"
+name = "Calc"
+icon = "accessories-calculator-symbolic"
+description = "Quick calculations"
+enabled = true
+
+# Custom commands
+[[commands]]
+name = "Lock Screen"
+command = "loginctl lock-session"
+icon = "system-lock-screen"
+shortcut = "super+l"
+category = "system"
+
+[[commands]]
+name = "Power Off"
+command = "systemctl poweroff"
+icon = "system-shutdown"
+shortcut = ""
+category = "system"
+
+# Platform settings
+[platform]
+compositor = "auto"
+use_layer_shell = true
+show_on_all_workspaces = true
+notifications = true
