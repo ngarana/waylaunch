@@ -81,9 +81,6 @@ size   = 11.5
 # ============================================================================
 [search]
 placeholder    = "Spotlight Search"
-show_icons     = true
-debounce_ms    = 150         # wait after a keystroke before re-querying files
-max_results    = 20          # overall cap across all groups
 
 # Turn individual result providers on/off.
 applications   = true        # .desktop apps (matched by name/comment)
@@ -121,22 +118,6 @@ enabled = true
 path    = "/usr/local/share/applications"
 type    = "desktop"
 enabled = true
-
-# Optional: icon/label hints for file types shown in results & the preview pane.
-[[search.file_patterns]]
-extension = "*.pdf"
-icon      = "application-pdf"
-label     = "PDF Document"
-
-[[search.file_patterns]]
-extension = "*.{jpg,jpeg,png,gif,svg,webp}"
-icon      = "image-x-generic"
-label     = "Image"
-
-[[search.file_patterns]]
-extension = "*.{txt,md,org}"
-icon      = "text-plain"
-label     = "Document"
 
 
 # ============================================================================

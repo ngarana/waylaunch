@@ -104,7 +104,6 @@ set(SOURCES
     src/core/wayland_core.cpp
     src/ui/renderer.cpp
     src/ui/launcher_ui.cpp
-    src/search/search_manager.cpp
     src/search/subprocess.cpp
     src/modes/app_launcher.cpp
     src/modes/calculator.cpp
@@ -176,7 +175,3 @@ install(FILES doc/waylaunch.1 DESTINATION ${CMAKE_INSTALL_PREFIX}/share/man/man1
 # toml++ (system package)
 find_package(tomlplusplus 3 CONFIG REQUIRED)
 target_link_libraries(waylaunch PRIVATE tomlplusplus::tomlplusplus)
-
-# nlohmann/json (system package, for ripgrep JSON parsing)
-find_package(nlohmann_json 3 CONFIG REQUIRED)
-target_link_libraries(waylaunch PRIVATE nlohmann_json::nlohmann_json)

@@ -1,6 +1,5 @@
 #include "waylaunch/config.h"
 #include <fstream>
-#include <sstream>
 #include <filesystem>
 #include <cstdlib>
 #include <iostream>
@@ -62,17 +61,6 @@ bool Config::load(const std::string& path) {
             config_.general.debug = get_bool(*general, "debug", config_.general.debug);
         }
 
-        if (auto win = tbl["window"].as_table()) {
-            config_.window.width = get_int(*win, "width", config_.window.width);
-            config_.window.height = get_int(*win, "height", config_.window.height);
-            config_.window.position = get_str(*win, "position", config_.window.position);
-            config_.window.margin = get_int(*win, "margin", config_.window.margin);
-            config_.window.corner_radius = get_int(*win, "corner_radius", config_.window.corner_radius);
-            config_.window.opacity = get_double(*win, "opacity", config_.window.opacity);
-            config_.window.always_on_top = get_bool(*win, "always_on_top", config_.window.always_on_top);
-            config_.window.decorations = get_bool(*win, "decorations", config_.window.decorations);
-        }
-
         if (auto theme = tbl["theme"].as_table()) {
             config_.theme.name = get_str(*theme, "name", config_.theme.name);
             config_.theme.mode = get_str(*theme, "mode", config_.theme.mode);
@@ -99,8 +87,8 @@ bool Config::load(const std::string& path) {
                 config_.theme.result_font.family = get_str(*font, "family", config_.theme.result_font.family);
                 config_.theme.result_font.size = get_double(*font, "size", config_.theme.result_font.size);
             }
-            config_.theme.corner_radius = get_int(*theme, "corner_radius", config_.window.corner_radius);
-            config_.theme.opacity = get_double(*theme, "opacity", config_.window.opacity);
+            config_.theme.corner_radius = get_int(*theme, "corner_radius", config_.theme.corner_radius);
+            config_.theme.opacity = get_double(*theme, "opacity", config_.theme.opacity);
         }
 
         if (auto ap = tbl["appearance"].as_table()) {
@@ -120,11 +108,6 @@ bool Config::load(const std::string& path) {
         }
 
         if (auto search = tbl["search"].as_table()) {
-            config_.search.match_mode = get_str(*search, "match_mode", config_.search.match_mode);
-            config_.search.case_sensitive = get_bool(*search, "case_sensitive", config_.search.case_sensitive);
-            config_.search.max_results = get_int(*search, "max_results", config_.search.max_results);
-            config_.search.show_icons = get_bool(*search, "show_icons", config_.search.show_icons);
-            config_.search.debounce_ms = get_int(*search, "debounce_ms", config_.search.debounce_ms);
             config_.search.placeholder = get_str(*search, "placeholder", config_.search.placeholder);
 
             config_.search.enable_applications = get_bool(*search, "applications", config_.search.enable_applications);
@@ -156,55 +139,6 @@ bool Config::load(const std::string& path) {
                     }
                 }
             }
-            if (auto patterns = (*search)["file_patterns"].as_array()) {
-                for (auto& entry : *patterns) {
-                    if (auto tbl2 = entry.as_table()) {
-                        FilePattern fp;
-                        fp.extension = get_str(*tbl2, "extension");
-                        fp.icon = get_str(*tbl2, "icon");
-                        fp.label = get_str(*tbl2, "label");
-                        config_.search.file_patterns.push_back(std::move(fp));
-                    }
-                }
-            }
-        }
-
-        if (auto bindings = tbl["bindings"].as_table()) {
-            if (auto keys = (*bindings)["keys"].as_array()) {
-                for (auto& entry : *keys) {
-                    if (auto tbl2 = entry.as_table()) {
-                        KeyBinding kb;
-                        kb.key = get_str(*tbl2, "key");
-                        kb.action = get_str(*tbl2, "action");
-                        kb.description = get_str(*tbl2, "description");
-                        if (auto mods = (*tbl2)["modifiers"].as_array()) {
-                            for (auto& m : *mods) {
-                                if (auto s = m.value<std::string>()) {
-                                    if (!kb.modifiers.empty()) kb.modifiers += "|";
-                                    kb.modifiers += *s;
-                                }
-                            }
-                        }
-                        config_.bindings.push_back(std::move(kb));
-                    }
-                }
-            }
-        }
-
-        if (auto modes = tbl["modes"].as_table()) {
-            if (auto list = (*modes)["list"].as_array()) {
-                for (auto& entry : *list) {
-                    if (auto tbl2 = entry.as_table()) {
-                        LauncherMode lm;
-                        lm.id = get_str(*tbl2, "id");
-                        lm.name = get_str(*tbl2, "name");
-                        lm.icon = get_str(*tbl2, "icon");
-                        lm.description = get_str(*tbl2, "description");
-                        lm.enabled = get_bool(*tbl2, "enabled", true);
-                        config_.modes.push_back(std::move(lm));
-                    }
-                }
-            }
         }
 
         if (auto commands = tbl["commands"].as_array()) {
@@ -219,13 +153,6 @@ bool Config::load(const std::string& path) {
                     config_.commands.push_back(std::move(cmd));
                 }
             }
-        }
-
-        if (auto platform = tbl["platform"].as_table()) {
-            config_.platform.compositor = get_str(*platform, "compositor", config_.platform.compositor);
-            config_.platform.use_layer_shell = get_bool(*platform, "use_layer_shell", config_.platform.use_layer_shell);
-            config_.platform.show_on_all_workspaces = get_bool(*platform, "show_on_all_workspaces", config_.platform.show_on_all_workspaces);
-            config_.platform.notifications = get_bool(*platform, "notifications", config_.platform.notifications);
         }
 
         return true;
