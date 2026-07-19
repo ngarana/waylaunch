@@ -9,14 +9,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(PkgConfig REQUIRED)
 
 pkg_check_modules(WAYLAND REQUIRED wayland-client)
-pkg_check_modules(WAYLAND_CURSOR REQUIRED wayland-cursor)
 pkg_check_modules(XKBCOMMON REQUIRED xkbcommon)
 pkg_check_modules(CAIRO REQUIRED cairo)
 pkg_check_modules(PANGO REQUIRED pangocairo)
 pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
 pkg_check_modules(GDK_PIXBUF REQUIRED gdk-pixbuf-2.0)
 pkg_check_modules(GTK REQUIRED gtk+-3.0)
-pkg_check_modules(LIBRSVG REQUIRED librsvg-2.0)
 
 # Generate Wayland protocol sources
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
@@ -55,21 +53,6 @@ else()
     set(HAS_LAYER_SHELL FALSE)
 endif()
 
-# wlr-foreign-toplevel protocol
-set(FOREIGN_TOPLEVEL_XML ${CMAKE_SOURCE_DIR}/protocols/wlr-foreign-toplevel-management-unstable-v1.xml)
-if(EXISTS ${FOREIGN_TOPLEVEL_XML})
-    add_custom_command(
-        OUTPUT ${PROTOCOL_BUILD_DIR}/wlr-foreign-toplevel-protocol.c ${PROTOCOL_BUILD_DIR}/wlr-foreign-toplevel-client-protocol.h
-        COMMAND ${WAYLAND_SCANNER} private-code ${FOREIGN_TOPLEVEL_XML} ${PROTOCOL_BUILD_DIR}/wlr-foreign-toplevel-protocol.c
-        COMMAND ${WAYLAND_SCANNER} client-header ${FOREIGN_TOPLEVEL_XML} ${PROTOCOL_BUILD_DIR}/wlr-foreign-toplevel-client-protocol.h
-        DEPENDS ${FOREIGN_TOPLEVEL_XML}
-    )
-    set(HAS_FOREIGN_TOPLEVEL TRUE)
-else()
-    message(WARNING "wlr-foreign-toplevel protocol XML not found, foreign-toplevel support disabled")
-    set(HAS_FOREIGN_TOPLEVEL FALSE)
-endif()
-
 # wlr-screencopy protocol (for client-side backdrop blur / glassmorphism)
 set(SCREENCOPY_XML ${CMAKE_SOURCE_DIR}/protocols/wlr-screencopy-unstable-v1.xml)
 if(EXISTS ${SCREENCOPY_XML})
@@ -94,9 +77,6 @@ endif()
 if(HAS_SCREENCOPY)
     list(APPEND PROTOCOL_SOURCES ${PROTOCOL_BUILD_DIR}/wlr-screencopy-protocol.c)
 endif()
-if(HAS_FOREIGN_TOPLEVEL)
-    list(APPEND PROTOCOL_SOURCES ${PROTOCOL_BUILD_DIR}/wlr-foreign-toplevel-protocol.c)
-endif()
 
 # Main sources
 set(SOURCES
@@ -119,49 +99,40 @@ target_include_directories(waylaunch PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${PROTOCOL_BUILD_DIR}
     ${WAYLAND_INCLUDE_DIRS}
-    ${WAYLAND_CURSOR_INCLUDE_DIRS}
     ${XKBCOMMON_INCLUDE_DIRS}
     ${CAIRO_INCLUDE_DIRS}
     ${PANGO_INCLUDE_DIRS}
     ${FONTCONFIG_INCLUDE_DIRS}
     ${GDK_PIXBUF_INCLUDE_DIRS}
     ${GTK_INCLUDE_DIRS}
-    ${LIBRSVG_INCLUDE_DIRS}
 )
 
 target_link_libraries(waylaunch PRIVATE
     ${WAYLAND_LIBRARIES}
-    ${WAYLAND_CURSOR_LIBRARIES}
     ${XKBCOMMON_LIBRARIES}
     ${CAIRO_LIBRARIES}
     ${PANGO_LIBRARIES}
     ${FONTCONFIG_LIBRARIES}
     ${GDK_PIXBUF_LIBRARIES}
     ${GTK_LIBRARIES}
-    ${LIBRSVG_LIBRARIES}
     rt   # for shm_open
     m    # math
 )
 
 target_compile_options(waylaunch PRIVATE
     ${WAYLAND_CFLAGS}
-    ${WAYLAND_CURSOR_CFLAGS}
     ${XKBCOMMON_CFLAGS}
     ${CAIRO_CFLAGS}
     ${PANGO_CFLAGS}
     ${FONTCONFIG_CFLAGS}
     ${GDK_PIXBUF_CFLAGS}
     ${GTK_CFLAGS}
-    ${LIBRSVG_CFLAGS}
     -Wall -Wextra -Wpedantic
 )
 
 # Add compile definitions for protocol support
 if(HAS_LAYER_SHELL)
     target_compile_definitions(waylaunch PRIVATE HAS_LAYER_SHELL)
-endif()
-if(HAS_FOREIGN_TOPLEVEL)
-    target_compile_definitions(waylaunch PRIVATE HAS_FOREIGN_TOPLEVEL)
 endif()
 if(HAS_SCREENCOPY)
     target_compile_definitions(waylaunch PRIVATE HAS_SCREENCOPY)

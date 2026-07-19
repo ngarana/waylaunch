@@ -17,9 +17,6 @@ extern "C" {
 #ifdef HAS_LAYER_SHELL
 #include "wlr-layer-shell-client-protocol.h"
 #endif
-#ifdef HAS_FOREIGN_TOPLEVEL
-#include "wlr-foreign-toplevel-client-protocol.h"
-#endif
 #ifdef HAS_SCREENCOPY
 #include "wlr-screencopy-client-protocol.h"
 #endif
@@ -229,11 +226,6 @@ static void registry_global_cb(void* data, wl_registry* reg, uint32_t name, cons
         self->layer_shell_ = static_cast<zwlr_layer_shell_v1*>(wl_registry_bind(reg, name, &zwlr_layer_shell_v1_interface, 1));
     }
 #endif
-#ifdef HAS_FOREIGN_TOPLEVEL
-    else if (std::strcmp(interface, zwlr_foreign_toplevel_manager_v1_interface.name) == 0) {
-        self->toplevel_manager_ = static_cast<zwlr_foreign_toplevel_manager_v1*>(wl_registry_bind(reg, name, &zwlr_foreign_toplevel_manager_v1_interface, 1));
-    }
-#endif
 #ifdef HAS_SCREENCOPY
     else if (std::strcmp(interface, zwlr_screencopy_manager_v1_interface.name) == 0) {
         self->screencopy_manager_ = static_cast<zwlr_screencopy_manager_v1*>(wl_registry_bind(reg, name, &zwlr_screencopy_manager_v1_interface, 1));
@@ -365,7 +357,6 @@ void WaylandCore::run() {
     while (running_ && wl_display_dispatch(display_) != -1) {}
 }
 
-int WaylandCore::dispatch() { return wl_display_dispatch(display_); }
 void WaylandCore::set_running(bool v) { running_ = v; }
 void WaylandCore::set_want_backdrop(bool v) { want_backdrop_ = v; }
 
@@ -429,12 +420,6 @@ void WaylandCore::submit_buffer(Buffer* buf, int x, int y) {
     wl_surface_commit(surface_);
 }
 
-void WaylandCore::damage_full() {
-    wl_surface_damage_buffer(surface_, 0, 0, pending_width_, pending_height_);
-}
-
-void WaylandCore::commit() { wl_surface_commit(surface_); }
-
 void WaylandCore::handle_buffer_release(wl_buffer* wl_buf) {
     for (auto& buf : buffers_) {
         if (buf->wl_buf == wl_buf) {
@@ -486,12 +471,6 @@ void WaylandCore::handle_modifiers(uint32_t md, uint32_t ml, uint32_t mk, uint32
     xkb_state_update_mask(kbd_.state, md, ml, mk, 0, 0, g);
     if (modifiers_handler_) modifiers_handler_(md);
 }
-
-void WaylandCore::handle_pointer_enter(uint32_t, wl_surface*, double, double) {}
-void WaylandCore::handle_pointer_leave(uint32_t, wl_surface*) {}
-void WaylandCore::handle_pointer_motion(uint32_t, double, double) {}
-void WaylandCore::handle_pointer_button(uint32_t, uint32_t, uint32_t, uint32_t) {}
-void WaylandCore::handle_pointer_axis(uint32_t, uint32_t, double) {}
 
 void WaylandCore::handle_output_geometry(int32_t, int32_t, int32_t w, int32_t h, int32_t, int32_t) {
     if (!outputs_.empty()) {
