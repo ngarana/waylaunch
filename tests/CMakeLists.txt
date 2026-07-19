@@ -25,12 +25,6 @@ set(WAYLAUNCH_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/../include)
 # Collect test sources
 set(TEST_SOURCES
     test_main.cpp
-    test_file_model.cpp
-    test_file_ops.cpp
-    test_tags.cpp
-    test_keyboard_shortcuts.cpp
-    test_search.cpp
-    test_ui_components.cpp
 )
 
 # Create test executable
@@ -69,23 +63,9 @@ target_compile_options(waylaunch_tests PRIVATE
 
 # Build the library from sources that don't depend on Wayland window
 add_library(waylaunch_core STATIC
-    ${CMAKE_SOURCE_DIR}/../src/browser/file_model.cpp
-    ${CMAKE_SOURCE_DIR}/../src/browser/file_ops.cpp
-    ${CMAKE_SOURCE_DIR}/../src/browser/tags.cpp
-    ${CMAKE_SOURCE_DIR}/../src/browser/batch_rename.cpp
-    ${CMAKE_SOURCE_DIR}/../src/browser/drag_drop.cpp
-    ${CMAKE_SOURCE_DIR}/../src/core/keyboard_shortcuts.cpp
     ${CMAKE_SOURCE_DIR}/../src/search/search_manager.cpp
     ${CMAKE_SOURCE_DIR}/../src/search/subprocess.cpp
-    ${CMAKE_SOURCE_DIR}/../src/search/finder_search.cpp
     ${CMAKE_SOURCE_DIR}/../src/ui/renderer.cpp
-    ${CMAKE_SOURCE_DIR}/../src/ui/sort_menu.cpp
-    ${CMAKE_SOURCE_DIR}/../src/ui/tabs.cpp
-    ${CMAKE_SOURCE_DIR}/../src/ui/sidebar.cpp
-    ${CMAKE_SOURCE_DIR}/../src/ui/toolbar.cpp
-    ${CMAKE_SOURCE_DIR}/../src/ui/status_bar.cpp
-    ${CMAKE_SOURCE_DIR}/../src/ui/preview.cpp
-    ${CMAKE_SOURCE_DIR}/../src/ui/info_panel.cpp
     ${CMAKE_SOURCE_DIR}/../src/config/config.cpp
 )
 

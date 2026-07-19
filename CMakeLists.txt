@@ -70,12 +70,29 @@ else()
     set(HAS_FOREIGN_TOPLEVEL FALSE)
 endif()
 
+# wlr-screencopy protocol (for client-side backdrop blur / glassmorphism)
+set(SCREENCOPY_XML ${CMAKE_SOURCE_DIR}/protocols/wlr-screencopy-unstable-v1.xml)
+if(EXISTS ${SCREENCOPY_XML})
+    add_custom_command(
+        OUTPUT ${PROTOCOL_BUILD_DIR}/wlr-screencopy-protocol.c ${PROTOCOL_BUILD_DIR}/wlr-screencopy-client-protocol.h
+        COMMAND ${WAYLAND_SCANNER} private-code ${SCREENCOPY_XML} ${PROTOCOL_BUILD_DIR}/wlr-screencopy-protocol.c
+        COMMAND ${WAYLAND_SCANNER} client-header ${SCREENCOPY_XML} ${PROTOCOL_BUILD_DIR}/wlr-screencopy-client-protocol.h
+        DEPENDS ${SCREENCOPY_XML}
+    )
+    set(HAS_SCREENCOPY TRUE)
+else()
+    set(HAS_SCREENCOPY FALSE)
+endif()
+
 # Collect generated protocol sources
 set(PROTOCOL_SOURCES
     ${PROTOCOL_BUILD_DIR}/xdg-shell-protocol.c
 )
 if(HAS_LAYER_SHELL)
     list(APPEND PROTOCOL_SOURCES ${PROTOCOL_BUILD_DIR}/wlr-layer-shell-protocol.c)
+endif()
+if(HAS_SCREENCOPY)
+    list(APPEND PROTOCOL_SOURCES ${PROTOCOL_BUILD_DIR}/wlr-screencopy-protocol.c)
 endif()
 if(HAS_FOREIGN_TOPLEVEL)
     list(APPEND PROTOCOL_SOURCES ${PROTOCOL_BUILD_DIR}/wlr-foreign-toplevel-protocol.c)
@@ -85,30 +102,13 @@ endif()
 set(SOURCES
     src/main.cpp
     src/core/wayland_core.cpp
-    src/core/keyboard_shortcuts.cpp
     src/ui/renderer.cpp
     src/ui/launcher_ui.cpp
-    src/ui/view_modes.cpp
-    src/ui/sidebar.cpp
-    src/ui/toolbar.cpp
-    src/ui/preview.cpp
-    src/ui/sort_menu.cpp
-    src/ui/tabs.cpp
-    src/ui/info_panel.cpp
-    src/ui/status_bar.cpp
     src/search/search_manager.cpp
-    src/search/finder_search.cpp
     src/search/subprocess.cpp
     src/modes/app_launcher.cpp
-    src/modes/file_search.cpp
-    src/modes/content_search.cpp
     src/modes/calculator.cpp
     src/modes/clipboard.cpp
-    src/browser/file_model.cpp
-    src/browser/file_ops.cpp
-    src/browser/tags.cpp
-    src/browser/batch_rename.cpp
-    src/browser/drag_drop.cpp
     src/config/config.cpp
     ${PROTOCOL_SOURCES}
 )
@@ -163,6 +163,9 @@ if(HAS_LAYER_SHELL)
 endif()
 if(HAS_FOREIGN_TOPLEVEL)
     target_compile_definitions(waylaunch PRIVATE HAS_FOREIGN_TOPLEVEL)
+endif()
+if(HAS_SCREENCOPY)
+    target_compile_definitions(waylaunch PRIVATE HAS_SCREENCOPY)
 endif()
 
 # Install
