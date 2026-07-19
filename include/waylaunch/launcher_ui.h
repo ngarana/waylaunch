@@ -127,6 +127,10 @@ private:
     bool needs_redraw_ = true;
     bool blur_enabled_ = false;   // compositor backdrop blur (Hyprland) → glass panel
 
+    // SIGINT/SIGTERM → the run() poll loop (the overlay grabs the keyboard, so
+    // it must exit cleanly on a kill signal, not just on Esc).
+    int signal_fd_ = -1;
+
     // Async file search (worker thread → main loop via eventfd).
     int results_fd_ = -1;
     std::thread file_thread_;

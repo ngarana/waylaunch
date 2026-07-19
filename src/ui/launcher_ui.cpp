@@ -11,6 +11,7 @@
 #include <xkbcommon/xkbcommon.h>
 #include <wayland-client.h>
 #include <algorithm>
+#include <csignal>
 #include <cstring>
 #include <filesystem>
 #include <system_error>
@@ -30,6 +31,18 @@ namespace waylaunch {
 namespace {
 
 bool ui_dbg() { static bool v = std::getenv("WAYLAUNCH_DEBUG") != nullptr; return v; }
+
+// Signal → event-loop wakeup. A SIGINT/SIGTERM handler writes to this eventfd so
+// run()'s poll loop can exit cleanly. Static because a handler carries no state;
+// there is only ever one LauncherUI.
+int g_signal_fd = -1;
+void on_terminate_signal(int) {
+    if (g_signal_fd >= 0) {
+        uint64_t one = 1;
+        ssize_t w = write(g_signal_fd, &one, sizeof(one));   // async-signal-safe
+        (void)w;
+    }
+}
 
 std::string to_lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
@@ -195,6 +208,8 @@ LauncherUI::~LauncherUI() {
     file_cv_.notify_all();
     if (file_thread_.joinable()) file_thread_.join();
     if (results_fd_ >= 0) close(results_fd_);
+    g_signal_fd = -1;   // stop the handler before the fd goes away
+    if (signal_fd_ >= 0) close(signal_fd_);
 }
 
 bool LauncherUI::init(Config& config) {
@@ -280,6 +295,15 @@ bool LauncherUI::init(Config& config) {
     results_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     file_thread_ = std::thread([this]() { file_worker_loop(); });
 
+    // Exit the poll loop cleanly on SIGINT/SIGTERM (not just on Esc).
+    signal_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    g_signal_fd = signal_fd_;
+    struct sigaction sa{};
+    sa.sa_handler = on_terminate_signal;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
+
     if (!initial_query_.empty()) {
         query_ = initial_query_;
         cursor_pos_ = query_.size();
@@ -299,9 +323,10 @@ void LauncherUI::run() {
     wl_display* dpy = wayland_->display();
     int wlfd = wl_display_get_fd(dpy);
 
-    struct pollfd fds[2];
+    struct pollfd fds[3];
     fds[0].fd = wlfd;         fds[0].events = POLLIN;
     fds[1].fd = results_fd_;  fds[1].events = POLLIN;
+    fds[2].fd = signal_fd_;   fds[2].events = POLLIN;
 
     while (wayland_->is_running()) {
         // Canonical libwayland poll integration.
@@ -309,8 +334,8 @@ void LauncherUI::run() {
             wl_display_dispatch_pending(dpy);
         wl_display_flush(dpy);
 
-        fds[0].revents = fds[1].revents = 0;
-        int n = poll(fds, 2, -1);
+        fds[0].revents = fds[1].revents = fds[2].revents = 0;
+        int n = poll(fds, 3, -1);
         if (n < 0) {
             wl_display_cancel_read(dpy);
             if (errno == EINTR) continue;
@@ -328,6 +353,11 @@ void LauncherUI::run() {
             uint64_t v;
             while (read(results_fd_, &v, sizeof(v)) == static_cast<ssize_t>(sizeof(v))) {}
             apply_file_results();
+        }
+
+        if (fds[2].revents & POLLIN) {   // SIGINT/SIGTERM → exit cleanly
+            quit();
+            break;
         }
 
         if (needs_redraw_) render_frame();

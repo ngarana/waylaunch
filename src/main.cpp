@@ -1,25 +1,11 @@
 #include "waylaunch/config.h"
 #include "waylaunch/launcher_ui.h"
 #include <iostream>
-#include <signal.h>
 #include <string>
 
-static volatile sig_atomic_t running = 1;
-
-void signal_handler(int) { running = 0; }
-
-void setup_signals() {
-    struct sigaction sa{};
-    sa.sa_handler = signal_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sigaction(SIGINT, &sa, nullptr);
-    sigaction(SIGTERM, &sa, nullptr);
-}
-
+// SIGINT/SIGTERM are handled inside LauncherUI::run() (wired into its poll loop),
+// so the keyboard-grabbing overlay exits cleanly on a kill signal.
 int main(int argc, char* argv[]) {
-    setup_signals();
-
     waylaunch::Config config;
     std::string config_path;
     std::string initial_query;
