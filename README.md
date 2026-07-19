@@ -12,7 +12,9 @@ A minimal, fast, keyboard-first Wayland-native launcher inspired by macOS Spotli
 - **Custom Commands** — user-defined shell commands in the config file (Lock Screen, Sleep, etc.), matched by name.
 - **Preview Pane** — two-column layout: results on the left, preview with details on the right. Right-click reveals files/apps in the file manager.
 - **TOML Configuration** — modern, human-readable format with sane defaults.
-- **Theming** — customizable Catppuccin-inspired dark palette, fonts, and layout.
+- **Config Save** — snapshot current config (including merged defaults) with `waylaunch --save [path]`.
+- **Theming** — customizable Catppuccin-inspired dark palette, fonts (family, size, weight, style), and layout.
+- **Clipboard Integration** — file paths copied as `text/uri-list` on open; paste into search with `Ctrl+V`.
 - **Keyboard-First** — navigate with arrows, vim/emacs bindings, tab-complete app names.
 
 ## Dependencies
@@ -69,6 +71,9 @@ waylaunch -c /path/to/config.toml
 # Prefill the search query
 waylaunch -q "fire"
 
+# Save current config (merged defaults + overrides) to a file
+waylaunch --save [path]
+
 # Debug output to stderr
 waylaunch --debug
 ```
@@ -103,6 +108,12 @@ background = "#1e1e2e"
 foreground = "#cdd6f4"
 accent     = "#89b4fa"
 
+[theme.result_font]
+family = "Sans"
+size   = 14.0
+weight = "normal"      # normal | bold
+style  = "normal"      # normal | italic | oblique
+
 [[commands]]
 name    = "Lock Screen"
 command = "loginctl lock-session"
@@ -127,6 +138,7 @@ icon    = "system-lock-screen"
 | `Return` | Activate selected (launch app, open file, copy result, run command) |
 | `Up` / `Down` | Navigate results |
 | `Ctrl+J` / `Ctrl+K` | Vim-style navigation |
+| `Ctrl+V` | Paste from clipboard into search field |
 | `Tab` | Autocomplete app name |
 | `PageUp` / `PageDown` | Jump by group |
 | `Home` / `End` | First / last result |
@@ -143,12 +155,11 @@ src/
 │   ├── renderer.cpp         # Cairo/Pango rendering, backdrop blur, icon cache
 │   └── launcher_ui.cpp      # Main UI, event loop, unified search, worker thread
 ├── search/
-│   ├── search_manager.cpp   # Search orchestration (unused currently)
 │   └── subprocess.cpp       # Pipe-based subprocess management
 ├── modes/
 │   ├── app_launcher.cpp     # .desktop file scanning and filtering
 │   ├── calculator.cpp       # Recursive-descent expression parser
-│   └── clipboard.cpp        # wl-copy integration
+│   └── clipboard.cpp        # wl-copy / wl-paste integration
 └── config/
     └── config.cpp           # TOML configuration parser
 ```
@@ -158,7 +169,6 @@ src/
 - **wlr-layer-shell** — Overlay panel with keyboard grab (wlroots compositors)
 - **xdg-shell** — Fallback windowed mode (all compositors)
 - **wlr-screencopy** — Desktop capture for client-side glassmorphism
-- **wlr-foreign-toplevel** — Window management (unused currently)
 
 ## License
 
