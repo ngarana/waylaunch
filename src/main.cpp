@@ -23,14 +23,18 @@ int main(int argc, char* argv[]) {
 
     waylaunch::Config config;
     std::string config_path;
+    std::string initial_query;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if ((arg == "--config" || arg == "-c") && i + 1 < argc) {
             config_path = argv[++i];
+        } else if ((arg == "--query" || arg == "-q") && i + 1 < argc) {
+            initial_query = argv[++i];
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "waylaunch - Wayland native launcher\nUsage: waylaunch [options]\n"
                       << "  -c, --config <path>  Config file path\n"
+                      << "  -q, --query <text>   Prefill the search query\n"
                       << "  -h, --help           Show help\n"
                       << "  -v, --version        Show version\n";
             return 0;
@@ -48,6 +52,7 @@ int main(int argc, char* argv[]) {
     }
 
     waylaunch::LauncherUI launcher;
+    if (!initial_query.empty()) launcher.set_initial_query(initial_query);
     if (!launcher.init(config)) {
         std::cerr << "Error: Failed to initialize launcher\n";
         return 1;

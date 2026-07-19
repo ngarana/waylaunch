@@ -1,191 +1,200 @@
-# waylaunch configuration file
-# Place this file at ~/.config/waylaunch/config.toml
+# ============================================================================
+#  waylaunch — macOS Spotlight for Wayland
+# ----------------------------------------------------------------------------
+#  Install to:  ~/.config/waylaunch/config.toml
+#  (or pass an explicit path with:  waylaunch --config /path/to/file.toml)
+#
+#  Every value below is the built-in default — delete any key to fall back to
+#  it. The file is grouped by what it controls: [general] runtime, [appearance]
+#  the panel look, [theme] colors/fonts, [search] what the one query returns,
+#  and [[commands]] custom actions. Keybindings are fixed (see the bottom).
+# ============================================================================
 
 [general]
-name = "waylaunch"
+name    = "waylaunch"
 version = 1
-debug = false
+debug   = false           # true → verbose stderr (also: waylaunch --debug)
 
-[window]
-width = 700
-height = 500
-position = "center"
-margin = 100
-corner_radius = 12
-opacity = 0.95
-always_on_top = true
-decorations = false
 
+# ============================================================================
+#  [appearance] — Spotlight panel geometry and the frosted-glass effect.
+#  These drive the actual on-screen layout (two-column: results + preview).
+# ============================================================================
+[appearance]
+width          = 720      # panel width in px
+margin_top     = 150      # gap from the top of the screen (Spotlight sits high)
+corner_radius  = 16       # panel corner rounding
+search_height  = 64       # height of the large search field
+row_height     = 56       # height of one result row
+icon_size      = 34       # result/app icon size
+list_width     = 402      # width of the left result column inside `width`
+max_per_group  = 6        # max rows shown per category (Apps / Files ...)
+
+# Frosted glass. waylaunch captures the desktop and blurs it client-side, so
+# it looks like Spotlight even on compositors with blur globally disabled.
+#   "auto" → use glass if a backdrop can be captured, else an opaque panel
+#   "on"   → force glass
+#   "off"  → always opaque (cheapest; no screen capture at all)
+blur           = "auto"
+panel_opacity  = 0.58     # panel tint alpha when blurred but no captured backdrop
+opaque_opacity = 0.96     # panel alpha when glass is unavailable / "off"
+backdrop_tint  = 0.55     # darkening laid over the captured+blurred backdrop
+
+
+# ============================================================================
+#  [theme] — colors and fonts. Defaults are a Catppuccin-ish dark palette.
+# ============================================================================
 [theme]
-name = "dark"
-mode = "dark"
+name        = "dark"
+mode        = "dark"
 custom_path = ""
 
 [theme.colors]
-background = "#1e1e2e"
-background_alt = "#313244"
-foreground = "#cdd6f4"
-text_muted = "#6c7086"
-accent = "#89b4fa"
-accent_hover = "#b4d0fb"
-error = "#f38ba8"
-warning = "#fab387"
-success = "#a6e3a1"
-border = "#45475a"
-selection = "#45475a"
+background     = "#1e1e2e"   # panel base (tinted by [appearance] over glass)
+background_alt = "#313244"   # section header / subtle fills
+foreground     = "#cdd6f4"   # primary text
+text_muted     = "#6c7086"   # subtitles, section labels, placeholder
+accent         = "#89b4fa"   # selection highlight, caret
+accent_hover   = "#b4d0fb"
+error          = "#f38ba8"
+warning        = "#fab387"
+success        = "#a6e3a1"
+border         = "#45475a"   # hairline separators
+selection      = "#45475a"   # selected-row background
 
-[theme.input_font]
-family = "JetBrains Mono"
-size = 14.0
-weight = "normal"
-style = "normal"
+[theme.input_font]           # the big query field
+family = "SF Pro Display, Inter, Sans"
+size   = 22.0
 
-[theme.result_font]
-family = "Sans"
-size = 13.0
-weight = "normal"
-style = "normal"
+[theme.result_font]          # result row primary label
+family = "SF Pro Text, Inter, Sans"
+size   = 14.0
 
-[theme.result_detail_font]
-family = "Sans"
-size = 11.0
-weight = "normal"
-style = "normal"
+[theme.result_detail_font]   # subtitles / preview metadata
+family = "SF Pro Text, Inter, Sans"
+size   = 11.5
 
+
+# ============================================================================
+#  [search] — the unified query. One search box returns apps, files, a
+#  calculator result and custom commands together, grouped and ranked.
+# ============================================================================
 [search]
-match_mode = "fuzzy"
-case_sensitive = false
-max_results = 20
-show_icons = true
-debounce_ms = 150
-placeholder = "Search..."
-history_enabled = true
-history_max = 100
+placeholder    = "Spotlight Search"
+show_icons     = true
+debounce_ms    = 150         # wait after a keystroke before re-querying files
+max_results    = 20          # overall cap across all groups
 
+# Turn individual result providers on/off.
+applications   = true        # .desktop apps (matched by name/comment)
+files          = true        # async file/folder search (needs the `fd` binary)
+calculator     = true        # a math expression becomes the Top Hit
+commands       = true        # the [[commands]] entries below
+
+# --- File search (uses `fd`; falls back to nothing if `fd` is absent) -------
+# Roots to search. "~" expands to $HOME. If empty, non-desktop [[search.paths]]
+# are used, and failing that, $HOME.
+file_roots       = ["~"]
+# Directories never descended into (fd --exclude patterns). If you leave this
+# empty, waylaunch applies a sensible built-in noise list.
+file_excludes    = [
+    ".git", "node_modules", ".cache", "target", ".venv",
+    "__pycache__", ".cargo", ".rustup", "go/pkg", ".local/share/Trash",
+]
+file_min_query   = 2         # min characters typed before file search fires
+max_file_results = 6         # files kept after ranking (prefix > substring,
+                             # shallower + more-recent scores higher)
+
+# Application scan locations (type = "desktop"). These are scanned once at
+# startup. Non-"desktop" entries can seed file_roots when file_roots is empty.
 [[search.paths]]
-path = "/usr/share/applications"
-type = "desktop"
+path    = "/usr/share/applications"
+type    = "desktop"
 enabled = true
 
 [[search.paths]]
-path = "~/.local/share/applications"
-type = "desktop"
+path    = "~/.local/share/applications"
+type    = "desktop"
 enabled = true
 
+[[search.paths]]
+path    = "/usr/local/share/applications"
+type    = "desktop"
+enabled = true
+
+# Optional: icon/label hints for file types shown in results & the preview pane.
 [[search.file_patterns]]
 extension = "*.pdf"
-icon = "application-pdf"
-label = "PDF Documents"
-
-[[search.file_patterns]]
-extension = "*.txt"
-icon = "text-plain"
-label = "Text Files"
+icon      = "application-pdf"
+label     = "PDF Document"
 
 [[search.file_patterns]]
 extension = "*.{jpg,jpeg,png,gif,svg,webp}"
-icon = "image-x-generic"
-label = "Images"
+icon      = "image-x-generic"
+label     = "Image"
 
-# Key bindings
-[[bindings.keys]]
-key = "Return"
-action = "launch"
-description = "Launch selected item"
+[[search.file_patterns]]
+extension = "*.{txt,md,org}"
+icon      = "text-plain"
+label     = "Document"
 
-[[bindings.keys]]
-key = "Escape"
-action = "close"
-description = "Close launcher"
 
-[[bindings.keys]]
-key = "Up"
-action = "select_previous"
-description = "Move selection up"
-
-[[bindings.keys]]
-key = "Down"
-action = "select_next"
-description = "Move selection down"
-
-[[bindings.keys]]
-key = "Tab"
-action = "auto_complete"
-description = "Auto-complete from best match"
-
-[[bindings.keys]]
-key = "j"
-modifiers = ["Control"]
-action = "select_next"
-description = "Move selection down (vim)"
-
-[[bindings.keys]]
-key = "k"
-modifiers = ["Control"]
-action = "select_previous"
-description = "Move selection up (vim)"
-
-[[bindings.keys]]
-key = "Tab"
-modifiers = ["Shift"]
-action = "switch_mode_backward"
-description = "Switch to previous mode"
-
-[[bindings.keys]]
-key = "Tab"
-action = "switch_mode_forward"
-description = "Switch to next mode"
-
-# Launcher modes
-[modes]
-default = "applications"
-
-[[modes.list]]
-id = "applications"
-name = "Apps"
-icon = "view-apps-symbolic"
-description = "Search installed applications"
-enabled = true
-
-[[modes.list]]
-id = "files"
-name = "Files"
-icon = "folder-documents-symbolic"
-description = "Search files and directories"
-enabled = true
-
-[[modes.list]]
-id = "contents"
-name = "Content"
-icon = "edit-find"
-description = "Search file contents with ripgrep"
-enabled = true
-
-[[modes.list]]
-id = "calculator"
-name = "Calc"
-icon = "accessories-calculator-symbolic"
-description = "Quick calculations"
-enabled = true
-
-# Custom commands
+# ============================================================================
+#  [[commands]] — custom actions that appear as results when their name
+#  matches the query. `command` runs via /bin/sh -c when you press Return.
+#  Add as many blocks as you like.
+# ============================================================================
 [[commands]]
-name = "Lock Screen"
-command = "loginctl lock-session"
-icon = "system-lock-screen"
-shortcut = "super+l"
-category = "system"
+name     = "Lock Screen"
+command  = "loginctl lock-session"
+icon     = "system-lock-screen"
+category = "System"
 
 [[commands]]
-name = "Power Off"
-command = "systemctl poweroff"
-icon = "system-shutdown"
-shortcut = ""
-category = "system"
+name     = "Sleep"
+command  = "systemctl suspend"
+icon     = "system-suspend"
+category = "System"
 
-# Platform settings
+[[commands]]
+name     = "Log Out"
+command  = "loginctl terminate-session $XDG_SESSION_ID"
+icon     = "system-log-out"
+category = "System"
+
+[[commands]]
+name     = "Restart"
+command  = "systemctl reboot"
+icon     = "system-reboot"
+category = "System"
+
+[[commands]]
+name     = "Power Off"
+command  = "systemctl poweroff"
+icon     = "system-shutdown"
+category = "System"
+
+
+# ============================================================================
+#  [platform] — Wayland integration.
+# ============================================================================
 [platform]
-compositor = "auto"
-use_layer_shell = true
+compositor             = "auto"   # informational
+use_layer_shell        = true     # overlay layer + keyboard grab (needed for
+                                  # the focus/dismiss behaviour Spotlight has)
 show_on_all_workspaces = true
-notifications = true
+notifications          = true
+
+
+# ============================================================================
+#  Keybindings (fixed — not user-configurable yet)
+#  ----------------------------------------------------------------------------
+#    Type            filter results live
+#    Down / Ctrl-J   next result          Up / Ctrl-K   previous result
+#    PageUp/PageDown jump by a group      Tab           autocomplete app name
+#    Return          activate  (app: launch · file: open · calc: copy result
+#                               · command: run)
+#    Right-click     reveal in file manager  (files/folders, and an app's
+#                                             .desktop file)
+#    Esc             dismiss
+# ============================================================================

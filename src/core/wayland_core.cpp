@@ -20,6 +20,9 @@ extern "C" {
 #ifdef HAS_FOREIGN_TOPLEVEL
 #include "wlr-foreign-toplevel-client-protocol.h"
 #endif
+#ifdef HAS_SCREENCOPY
+#include "wlr-screencopy-client-protocol.h"
+#endif
 }
 
 namespace waylaunch {
@@ -231,6 +234,11 @@ static void registry_global_cb(void* data, wl_registry* reg, uint32_t name, cons
         self->toplevel_manager_ = static_cast<zwlr_foreign_toplevel_manager_v1*>(wl_registry_bind(reg, name, &zwlr_foreign_toplevel_manager_v1_interface, 1));
     }
 #endif
+#ifdef HAS_SCREENCOPY
+    else if (std::strcmp(interface, zwlr_screencopy_manager_v1_interface.name) == 0) {
+        self->screencopy_manager_ = static_cast<zwlr_screencopy_manager_v1*>(wl_registry_bind(reg, name, &zwlr_screencopy_manager_v1_interface, 1));
+    }
+#endif
 }
 
 static void registry_global_remove_cb(void*, wl_registry*, uint32_t) {}
@@ -240,6 +248,9 @@ WaylandCore::WaylandCore() = default;
 
 WaylandCore::~WaylandCore() {
     buffers_.clear();
+#ifdef HAS_SCREENCOPY
+    if (screencopy_manager_) zwlr_screencopy_manager_v1_destroy(screencopy_manager_);
+#endif
 #ifdef HAS_LAYER_SHELL
     if (layer_surface_) zwlr_layer_surface_v1_destroy(layer_surface_);
 #endif
@@ -269,6 +280,11 @@ bool WaylandCore::init() {
     surface_ = wl_compositor_create_surface(compositor_);
     if (!surface_) return false;
 
+    // Grab the current desktop into an SHM buffer BEFORE our overlay is mapped,
+    // so the launcher can blur it as a frosted-glass backdrop. Best-effort:
+    // failure just means no glass (opaque panel).
+    if (want_backdrop_) capture_backdrop();
+
 #ifdef HAS_LAYER_SHELL
     if (layer_shell_) {
         // Full-width strip anchored to the top of the active output, rendered on
@@ -280,18 +296,19 @@ bool WaylandCore::init() {
             ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "waylaunch");
 
         if (layer_surface_) {
-            // OVERLAY_HEIGHT: tall enough for the search field + a full result
-            // list; the area below the panel stays transparent.
-            const int32_t OVERLAY_HEIGHT = 760;
+            // Full-screen overlay: the panel is drawn centred near the top and the
+            // rest of the surface stays transparent. Covering the whole output lets
+            // the result list grow tall without clipping and lets a click anywhere
+            // outside the panel dismiss the launcher (Spotlight-style).
             zwlr_layer_surface_v1_set_keyboard_interactivity(
                 layer_surface_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
             zwlr_layer_surface_v1_set_anchor(layer_surface_,
                 ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
+                ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
                 ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
                 ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-            zwlr_layer_surface_v1_set_size(layer_surface_, 0, OVERLAY_HEIGHT);
-            // -1: render at the very top, ignoring other exclusive zones (bars),
-            // so the panel can sit high like macOS Spotlight.
+            zwlr_layer_surface_v1_set_size(layer_surface_, 0, 0);
+            // -1: render above other exclusive zones (bars), like macOS Spotlight.
             zwlr_layer_surface_v1_set_exclusive_zone(layer_surface_, -1);
 
             static const zwlr_layer_surface_v1_listener ls_listener = {
@@ -312,9 +329,9 @@ bool WaylandCore::init() {
             zwlr_layer_surface_v1_add_listener(layer_surface_, &ls_listener, this);
 
             // Seed a sane size for the first buffer; the configure event will
-            // report the real width (full output) before anything is drawn.
+            // report the real full-output dimensions before anything is drawn.
             pending_width_ = output_width();
-            pending_height_ = OVERLAY_HEIGHT;
+            pending_height_ = output_height();
 
             wl_surface_commit(surface_);
             return true;
@@ -350,9 +367,11 @@ void WaylandCore::run() {
 
 int WaylandCore::dispatch() { return wl_display_dispatch(display_); }
 void WaylandCore::set_running(bool v) { running_ = v; }
+void WaylandCore::set_want_backdrop(bool v) { want_backdrop_ = v; }
 
 void WaylandCore::quit() { running_ = false; }
 bool WaylandCore::is_running() const { return running_; }
+bool WaylandCore::is_configured() const { return configured_; }
 
 OutputInfo& WaylandCore::primary_output() { return outputs_.front(); }
 int32_t WaylandCore::primary_scale() const { return outputs_.empty() ? 1 : outputs_.front().scale; }
@@ -535,5 +554,105 @@ void WaylandCore::handle_xdg_toplevel_close() {
     if (close_handler_) close_handler_();
     running_ = false;
 }
+
+// --- Backdrop capture (glassmorphism) ---
+#ifdef HAS_SCREENCOPY
+static void sc_buffer_cb(void* d, zwlr_screencopy_frame_v1*, uint32_t fmt, uint32_t w, uint32_t h, uint32_t stride) {
+    static_cast<WaylandCore*>(d)->handle_sc_buffer(fmt, w, h, stride);
+}
+static void sc_flags_cb(void* d, zwlr_screencopy_frame_v1*, uint32_t flags) {
+    static_cast<WaylandCore*>(d)->handle_sc_flags(flags);
+}
+static void sc_ready_cb(void* d, zwlr_screencopy_frame_v1*, uint32_t, uint32_t, uint32_t) {
+    static_cast<WaylandCore*>(d)->handle_sc_ready();
+}
+static void sc_failed_cb(void* d, zwlr_screencopy_frame_v1*) {
+    static_cast<WaylandCore*>(d)->handle_sc_failed();
+}
+static const zwlr_screencopy_frame_v1_listener sc_frame_listener = {
+    .buffer = sc_buffer_cb,
+    .flags = sc_flags_cb,
+    .ready = sc_ready_cb,
+    .failed = sc_failed_cb,
+};
+
+void WaylandCore::handle_sc_buffer(uint32_t format, uint32_t w, uint32_t h, uint32_t stride) {
+    if (cap_wl_buffer_ || backdrop_failed_) return;   // only handle the first offered format
+    backdrop_format_ = format;
+    backdrop_w_ = static_cast<int>(w);
+    backdrop_h_ = static_cast<int>(h);
+    backdrop_stride_ = static_cast<int>(stride);
+    cap_size_ = static_cast<int>(stride * h);
+    if (cap_size_ <= 0) { backdrop_failed_ = true; return; }
+
+    std::string nm = "/waylaunch-cap-" + std::to_string(getpid());
+    cap_fd_ = shm_open(nm.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (cap_fd_ < 0) { backdrop_failed_ = true; return; }
+    shm_unlink(nm.c_str());
+    if (ftruncate(cap_fd_, cap_size_) < 0) { backdrop_failed_ = true; return; }
+    cap_data_ = static_cast<uint8_t*>(mmap(nullptr, cap_size_, PROT_READ | PROT_WRITE, MAP_SHARED, cap_fd_, 0));
+    if (cap_data_ == MAP_FAILED) { cap_data_ = nullptr; backdrop_failed_ = true; return; }
+
+    wl_shm_pool* pool = wl_shm_create_pool(shm_, cap_fd_, cap_size_);
+    cap_wl_buffer_ = wl_shm_pool_create_buffer(pool, 0, w, h, stride, format);
+    wl_shm_pool_destroy(pool);
+    if (!cap_wl_buffer_) { backdrop_failed_ = true; return; }
+    zwlr_screencopy_frame_v1_copy(cap_frame_, cap_wl_buffer_);
+}
+
+void WaylandCore::handle_sc_flags(uint32_t flags) {
+    backdrop_y_invert_ = (flags & ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT) != 0;
+}
+void WaylandCore::handle_sc_ready() { backdrop_ready_ = true; }
+void WaylandCore::handle_sc_failed() { backdrop_failed_ = true; }
+
+bool WaylandCore::capture_backdrop() {
+    if (!screencopy_manager_ || !shm_) return false;
+    wl_output* output = outputs_.empty() ? nullptr : outputs_.front().output;
+    if (!output) return false;
+
+    backdrop_ready_ = backdrop_failed_ = false;
+    cap_frame_ = zwlr_screencopy_manager_v1_capture_output(screencopy_manager_, 0, output);
+    if (!cap_frame_) return false;
+    zwlr_screencopy_frame_v1_add_listener(cap_frame_, &sc_frame_listener, this);
+
+    while (!backdrop_ready_ && !backdrop_failed_) {
+        if (wl_display_dispatch(display_) < 0) { backdrop_failed_ = true; break; }
+    }
+
+    if (backdrop_ready_ && cap_data_ && cap_size_ > 0) {
+        backdrop_pixels_.assign(cap_data_, cap_data_ + cap_size_);
+        has_backdrop_ = true;
+    }
+
+    if (cap_frame_) { zwlr_screencopy_frame_v1_destroy(cap_frame_); cap_frame_ = nullptr; }
+    if (cap_wl_buffer_) { wl_buffer_destroy(cap_wl_buffer_); cap_wl_buffer_ = nullptr; }
+    if (cap_data_ && cap_size_ > 0) { munmap(cap_data_, cap_size_); cap_data_ = nullptr; }
+    if (cap_fd_ >= 0) { close(cap_fd_); cap_fd_ = -1; }
+    cap_size_ = 0;
+
+    if (wl_dbg()) fprintf(stderr, "[wl] backdrop ready=%d fail=%d has=%d fmt=%u %dx%d stride=%d yinv=%d\n",
+                          backdrop_ready_, backdrop_failed_, has_backdrop_, backdrop_format_,
+                          backdrop_w_, backdrop_h_, backdrop_stride_, backdrop_y_invert_);
+    return has_backdrop_;
+}
+
+bool WaylandCore::has_backdrop() const { return has_backdrop_; }
+const uint8_t* WaylandCore::backdrop_data() const { return backdrop_pixels_.data(); }
+int WaylandCore::backdrop_width() const { return backdrop_w_; }
+int WaylandCore::backdrop_height() const { return backdrop_h_; }
+int WaylandCore::backdrop_stride() const { return backdrop_stride_; }
+uint32_t WaylandCore::backdrop_format() const { return backdrop_format_; }
+bool WaylandCore::backdrop_y_invert() const { return backdrop_y_invert_; }
+#else
+bool WaylandCore::capture_backdrop() { return false; }
+bool WaylandCore::has_backdrop() const { return false; }
+const uint8_t* WaylandCore::backdrop_data() const { return nullptr; }
+int WaylandCore::backdrop_width() const { return 0; }
+int WaylandCore::backdrop_height() const { return 0; }
+int WaylandCore::backdrop_stride() const { return 0; }
+uint32_t WaylandCore::backdrop_format() const { return 0; }
+bool WaylandCore::backdrop_y_invert() const { return false; }
+#endif
 
 } // namespace waylaunch

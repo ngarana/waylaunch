@@ -103,6 +103,22 @@ bool Config::load(const std::string& path) {
             config_.theme.opacity = get_double(*theme, "opacity", config_.window.opacity);
         }
 
+        if (auto ap = tbl["appearance"].as_table()) {
+            auto& a = config_.appearance;
+            a.width = get_int(*ap, "width", a.width);
+            a.margin_top = get_int(*ap, "margin_top", a.margin_top);
+            a.corner_radius = get_int(*ap, "corner_radius", a.corner_radius);
+            a.search_height = get_int(*ap, "search_height", a.search_height);
+            a.row_height = get_int(*ap, "row_height", a.row_height);
+            a.icon_size = get_int(*ap, "icon_size", a.icon_size);
+            a.list_width = get_int(*ap, "list_width", a.list_width);
+            a.max_per_group = get_int(*ap, "max_per_group", a.max_per_group);
+            a.blur = get_str(*ap, "blur", a.blur);
+            a.panel_opacity = get_double(*ap, "panel_opacity", a.panel_opacity);
+            a.opaque_opacity = get_double(*ap, "opaque_opacity", a.opaque_opacity);
+            a.backdrop_tint = get_double(*ap, "backdrop_tint", a.backdrop_tint);
+        }
+
         if (auto search = tbl["search"].as_table()) {
             config_.search.match_mode = get_str(*search, "match_mode", config_.search.match_mode);
             config_.search.case_sensitive = get_bool(*search, "case_sensitive", config_.search.case_sensitive);
@@ -110,6 +126,24 @@ bool Config::load(const std::string& path) {
             config_.search.show_icons = get_bool(*search, "show_icons", config_.search.show_icons);
             config_.search.debounce_ms = get_int(*search, "debounce_ms", config_.search.debounce_ms);
             config_.search.placeholder = get_str(*search, "placeholder", config_.search.placeholder);
+
+            config_.search.enable_applications = get_bool(*search, "applications", config_.search.enable_applications);
+            config_.search.enable_files = get_bool(*search, "files", config_.search.enable_files);
+            config_.search.enable_calculator = get_bool(*search, "calculator", config_.search.enable_calculator);
+            config_.search.enable_commands = get_bool(*search, "commands", config_.search.enable_commands);
+            config_.search.file_min_query = get_int(*search, "file_min_query", config_.search.file_min_query);
+            config_.search.max_file_results = get_int(*search, "max_file_results", config_.search.max_file_results);
+
+            if (auto roots = (*search)["file_roots"].as_array()) {
+                config_.search.file_roots.clear();
+                for (auto& e : *roots)
+                    if (auto s = e.value<std::string>()) config_.search.file_roots.push_back(*s);
+            }
+            if (auto ex = (*search)["file_excludes"].as_array()) {
+                config_.search.file_excludes.clear();
+                for (auto& e : *ex)
+                    if (auto s = e.value<std::string>()) config_.search.file_excludes.push_back(*s);
+            }
 
             if (auto paths = (*search)["paths"].as_array()) {
                 for (auto& entry : *paths) {

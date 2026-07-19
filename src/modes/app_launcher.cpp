@@ -70,6 +70,7 @@ void AppLauncher::parse_desktop_file(const std::string& path) {
     if (!file.is_open()) return;
 
     DesktopEntry entry;
+    entry.desktop_path = path;
     std::string line;
     bool in_desktop_entry = false;
 

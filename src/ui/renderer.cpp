@@ -38,7 +38,118 @@ struct Renderer::CairoState {
 };
 
 Renderer::Renderer() : cairo_(std::make_unique<CairoState>()) {}
-Renderer::~Renderer() = default;
+Renderer::~Renderer() { if (backdrop_) cairo_surface_destroy(backdrop_); }
+
+namespace {
+// Separable box blur over a small premultiplied/opaque ARGB32 surface.
+void box_blur_argb(cairo_surface_t* s, int radius, int passes) {
+    if (radius < 1 || passes < 1) return;
+    int w = cairo_image_surface_get_width(s);
+    int h = cairo_image_surface_get_height(s);
+    int stride = cairo_image_surface_get_stride(s);
+    cairo_surface_flush(s);
+    unsigned char* data = cairo_image_surface_get_data(s);
+    if (!data || w <= 0 || h <= 0) return;
+    std::vector<unsigned char> tmp(static_cast<size_t>(stride) * h);
+    for (int p = 0; p < passes; ++p) {
+        for (int y = 0; y < h; ++y) {
+            unsigned char* row = data + y * stride;
+            unsigned char* out = tmp.data() + y * stride;
+            for (int x = 0; x < w; ++x) {
+                int b = 0, g = 0, r = 0, a = 0, cnt = 0;
+                for (int dx = -radius; dx <= radius; ++dx) {
+                    int xx = x + dx;
+                    if (xx < 0 || xx >= w) continue;
+                    unsigned char* px = row + xx * 4;
+                    b += px[0]; g += px[1]; r += px[2]; a += px[3]; ++cnt;
+                }
+                unsigned char* o = out + x * 4;
+                o[0] = b / cnt; o[1] = g / cnt; o[2] = r / cnt; o[3] = a / cnt;
+            }
+        }
+        for (int x = 0; x < w; ++x) {
+            for (int y = 0; y < h; ++y) {
+                int b = 0, g = 0, r = 0, a = 0, cnt = 0;
+                for (int dy = -radius; dy <= radius; ++dy) {
+                    int yy = y + dy;
+                    if (yy < 0 || yy >= h) continue;
+                    unsigned char* px = tmp.data() + yy * stride + x * 4;
+                    b += px[0]; g += px[1]; r += px[2]; a += px[3]; ++cnt;
+                }
+                unsigned char* o = data + y * stride + x * 4;
+                o[0] = b / cnt; o[1] = g / cnt; o[2] = r / cnt; o[3] = a / cnt;
+            }
+        }
+    }
+    cairo_surface_mark_dirty(s);
+}
+} // namespace
+
+void Renderer::set_backdrop(const uint8_t* data, int width, int height, int stride,
+                            uint32_t shm_format, bool y_invert) {
+    if (backdrop_) { cairo_surface_destroy(backdrop_); backdrop_ = nullptr; }
+    if (!data || width <= 0 || height <= 0) return;
+
+    // Treat the captured desktop as opaque (RGB24 ignores the 4th byte). The
+    // compositor often captures opaque content with alpha=0 in ARGB8888, which as
+    // premultiplied ARGB32 would render fully transparent → no visible glass.
+    cairo_format_t cfmt;
+    if (shm_format == 0 || shm_format == 1) cfmt = CAIRO_FORMAT_RGB24;  // A/XRGB8888
+    else return;                                                        // unsupported → no glass
+
+    cairo_surface_t* src = cairo_image_surface_create_for_data(
+        const_cast<unsigned char*>(data), cfmt, width, height, stride);
+    if (!src || cairo_surface_status(src) != CAIRO_STATUS_SUCCESS) {
+        if (src) cairo_surface_destroy(src);
+        return;
+    }
+
+    const int factor = 8;
+    int dw = std::max(1, width / factor);
+    int dh = std::max(1, height / factor);
+    cairo_surface_t* small = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, dw, dh);
+    cairo_t* cr = cairo_create(small);
+    cairo_scale(cr, static_cast<double>(dw) / width, static_cast<double>(dh) / height);
+    cairo_set_source_surface(cr, src, 0, 0);
+    cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+    cairo_paint(cr);
+    cairo_destroy(cr);
+    cairo_surface_destroy(src);
+
+    box_blur_argb(small, 2, 3);
+
+    backdrop_ = small;
+    backdrop_scale_ = factor;
+    backdrop_screen_w_ = width;
+    backdrop_screen_h_ = height;
+    backdrop_y_invert_ = y_invert;
+}
+
+bool Renderer::has_backdrop() const { return backdrop_ != nullptr; }
+
+void Renderer::draw_backdrop(int x, int y, int w, int h, int radius) {
+    if (!backdrop_ || !cairo_ || !cairo_->cr) return;
+    cairo_t* cr = cairo_->cr;
+    int dw = cairo_image_surface_get_width(backdrop_);
+    int dh = cairo_image_surface_get_height(backdrop_);
+    if (dw <= 0 || dh <= 0) return;
+    double sx = static_cast<double>(backdrop_screen_w_) / dw;
+    double sy = static_cast<double>(backdrop_screen_h_) / dh;
+
+    cairo_save(cr);
+    round_rect_path(cr, x, y, w, h, radius);
+    cairo_clip(cr);
+    if (backdrop_y_invert_) {
+        cairo_translate(cr, 0, backdrop_screen_h_);
+        cairo_scale(cr, sx, -sy);
+    } else {
+        cairo_scale(cr, sx, sy);
+    }
+    cairo_set_source_surface(cr, backdrop_, 0, 0);
+    cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_GOOD);
+    cairo_paint(cr);
+    cairo_restore(cr);
+}
 
 int Renderer::stride_for_width(int width) const {
     return cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, width);

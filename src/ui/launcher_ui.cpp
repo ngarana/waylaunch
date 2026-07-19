@@ -7,15 +7,21 @@
 #include "waylaunch/app_launcher.h"
 #include "waylaunch/subprocess.h"
 #include <xkbcommon/xkbcommon.h>
+#include <wayland-client.h>
 #include <algorithm>
-#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <system_error>
-#include <unistd.h>
-#include <sys/wait.h>
+#include <sstream>
+#include <ctime>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/stat.h>
+#include <sys/eventfd.h>
+#include <poll.h>
 
 namespace waylaunch {
 
@@ -23,6 +29,29 @@ namespace {
 
 bool ui_dbg() { static bool v = std::getenv("WAYLAUNCH_DEBUG") != nullptr; return v; }
 
+std::string to_lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+    return s;
+}
+
+std::string home_dir() {
+    const char* h = std::getenv("HOME");
+    return h ? std::string(h) : std::string(".");
+}
+
+// Replace a leading $HOME with "~" for compact display.
+std::string abbreviate_home(const std::string& path) {
+    std::string h = home_dir();
+    if (!h.empty() && path.rfind(h, 0) == 0) return "~" + path.substr(h.size());
+    return path;
+}
+
+// Expand a leading "~" (or "~/") to $HOME.
+std::string expand_tilde(const std::string& path) {
+    if (path == "~") return home_dir();
+    if (path.rfind("~/", 0) == 0) return home_dir() + path.substr(1);
+    return path;
+}
 
 // Percent-encode a filesystem path for use in a file:// URI. Keeps the
 // unreserved set (RFC 3986) plus '/' so directory separators stay readable.
@@ -42,6 +71,90 @@ std::string percent_encode_path(const std::string& path) {
         }
     }
     return out;
+}
+
+// Map a file extension to a freedesktop icon name (falls back to a monogram
+// if the theme has no such icon).
+std::string icon_for_file(const std::string& path) {
+    std::string ext = to_lower(std::filesystem::path(path).extension().string());
+    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" ||
+        ext == ".svg" || ext == ".webp" || ext == ".bmp") return "image-x-generic";
+    if (ext == ".pdf") return "application-pdf";
+    if (ext == ".mp3" || ext == ".flac" || ext == ".wav" || ext == ".ogg" || ext == ".m4a") return "audio-x-generic";
+    if (ext == ".mp4" || ext == ".mkv" || ext == ".webm" || ext == ".mov") return "video-x-generic";
+    if (ext == ".zip" || ext == ".tar" || ext == ".gz" || ext == ".xz" || ext == ".7z" || ext == ".rar") return "package-x-generic";
+    if (ext == ".cpp" || ext == ".hpp" || ext == ".h" || ext == ".c" || ext == ".py" ||
+        ext == ".js" || ext == ".ts" || ext == ".rs" || ext == ".go" || ext == ".java" ||
+        ext == ".sh") return "text-x-script";
+    return "text-x-generic";
+}
+
+std::string human_kind(const ListItem& it) {
+    switch (it.kind) {
+        case ItemKind::Application: return "Application";
+        case ItemKind::Folder:      return "Folder";
+        case ItemKind::Calculator:  return "Calculator";
+        case ItemKind::Command:     return "Command";
+        case ItemKind::File: {
+            std::string ext = std::filesystem::path(it.path).extension().string();
+            if (ext.size() > 1) return to_lower(ext.substr(1)) + " file";
+            return "Document";
+        }
+    }
+    return "";
+}
+
+std::string format_size(off_t bytes) {
+    const char* u[] = {"B", "KB", "MB", "GB", "TB"};
+    double v = static_cast<double>(bytes);
+    int i = 0;
+    while (v >= 1024.0 && i < 4) { v /= 1024.0; i++; }
+    char buf[64];
+    if (i == 0) snprintf(buf, sizeof(buf), "%lld %s", static_cast<long long>(bytes), u[i]);
+    else        snprintf(buf, sizeof(buf), "%.1f %s", v, u[i]);
+    return buf;
+}
+
+std::string format_time(time_t t) {
+    char buf[64];
+    struct tm tmv;
+    localtime_r(&t, &tmv);
+    strftime(buf, sizeof(buf), "%b %d, %Y  %H:%M", &tmv);
+    return buf;
+}
+
+int path_depth(const std::string& p) {
+    return static_cast<int>(std::count(p.begin(), p.end(), '/'));
+}
+
+// More recently modified files rank higher (small bonus).
+float recency_bonus(time_t mtime) {
+    double days = (std::time(nullptr) - mtime) / 86400.0;
+    if (days < 1)   return 60.0f;
+    if (days < 7)   return 40.0f;
+    if (days < 30)  return 20.0f;
+    if (days < 365) return 8.0f;
+    return 0.0f;
+}
+
+// Ask the compositor for a frosted-glass backdrop behind our layer surface.
+// A Wayland SHM client cannot blur what is behind its own surface, so on
+// Hyprland we enable its layer-shell blur for our namespace ("waylaunch").
+// Returns true if blur was requested (→ the panel is drawn as translucent glass).
+bool try_enable_backdrop_blur() {
+    if (std::getenv("WAYLAUNCH_NO_BLUR")) return false;
+    if (!std::getenv("HYPRLAND_INSTANCE_SIGNATURE")) return false;   // Hyprland only
+    if (!Subprocess::command_exists("hyprctl")) return false;
+    // Only render as glass if the compositor is actually blurring — otherwise a
+    // translucent panel is just unreadable. We never force global blur on (that
+    // would change the user's whole desktop); they opt in via their Hyprland
+    // config: `decoration:blur:enabled = true` plus `layerrule = blur, waylaunch`.
+    auto r = Subprocess::run({"hyprctl", "getoption", "decoration:blur:enabled"});
+    if (r.stdout.find("bool: true") == std::string::npos) return false;
+    // Best-effort: register the layer blur rule for our namespace.
+    Subprocess::run({"hyprctl", "keyword", "layerrule", "blur, waylaunch"});
+    Subprocess::run({"hyprctl", "keyword", "layerrule", "ignorealpha 0.5, waylaunch"});
+    return true;
 }
 
 // Launch a command fully detached from waylaunch (double-fork + setsid) using an
@@ -70,23 +183,52 @@ void spawn_detached(const std::vector<std::string>& argv) {
 } // namespace
 
 LauncherUI::LauncherUI() = default;
-LauncherUI::~LauncherUI() = default;
+
+LauncherUI::~LauncherUI() {
+    {
+        std::lock_guard<std::mutex> lk(file_mtx_);
+        file_stop_ = true;
+    }
+    file_cv_.notify_all();
+    if (file_thread_.joinable()) file_thread_.join();
+    if (results_fd_ >= 0) close(results_fd_);
+}
 
 bool LauncherUI::init(Config& config) {
     config_ = &config;
 
+    // Apply panel geometry from [appearance].
+    const auto& ap = config.get().appearance;
+    layout_.win_w         = ap.width;
+    layout_.margin_top    = ap.margin_top;
+    layout_.corner_radius = ap.corner_radius;
+    layout_.search_h      = ap.search_height;
+    layout_.row_h         = ap.row_height;
+    layout_.icon_size     = ap.icon_size;
+    layout_.list_w        = ap.list_width;
+    layout_.max_per_group = std::max(1, ap.max_per_group);
+
+    // Backdrop blur: "off" disables glass entirely (opaque panel). Otherwise try
+    // the compositor rule first, then fall back to client-side capture blur.
+    bool want_blur = (ap.blur != "off");
+    bool compositor_blur = false;
+    if (want_blur) compositor_blur = try_enable_backdrop_blur();
+
     wayland_ = std::make_unique<WaylandCore>();
+    wayland_->set_want_backdrop(want_blur);
     if (!wayland_->init()) return false;
 
     renderer_ = std::make_unique<Renderer>();
 
-    search_ = std::make_unique<SearchManager>();
-    search_->set_max_results(config.get().search.max_results);
-    search_->set_debounce_ms(config.get().search.debounce_ms);
-
-    if (!config.get().search.paths.empty()) {
-        search_->set_search_path(config.get().search.paths[0].path);
+    blur_enabled_ = compositor_blur;
+    if (want_blur && wayland_->has_backdrop()) {
+        renderer_->set_backdrop(wayland_->backdrop_data(), wayland_->backdrop_width(),
+                                wayland_->backdrop_height(), wayland_->backdrop_stride(),
+                                wayland_->backdrop_format(), wayland_->backdrop_y_invert());
+        if (renderer_->has_backdrop()) blur_enabled_ = true;
     }
+    if (ui_dbg()) fprintf(stderr, "[ui] backdrop wl=%d renderer=%d blur_enabled=%d\n",
+                          wayland_->has_backdrop(), renderer_->has_backdrop(), blur_enabled_);
 
     wayland_->set_key_handler([this](uint32_t k, uint32_t u, bool p) { on_key(k, u, p); });
     wayland_->set_mouse_handler([this](double x, double y, uint32_t b, bool p) { on_mouse(x, y, b, p); });
@@ -94,28 +236,83 @@ bool LauncherUI::init(Config& config) {
     wayland_->set_close_handler([this]() { on_close(); });
     wayland_->set_redraw_handler([this]() { on_redraw(); });
 
-    refresh_applications();
+    // File-search settings from [search].
+    const auto& sc = config.get().search;
+    file_roots_.clear();
+    for (const auto& r : sc.file_roots) if (!r.empty()) file_roots_.push_back(expand_tilde(r));
+    if (file_roots_.empty()) {
+        for (const auto& p : sc.paths)
+            if (p.type != "desktop" && !p.path.empty()) file_roots_.push_back(expand_tilde(p.path));
+    }
+    if (file_roots_.empty()) file_roots_.push_back(home_dir());
+    file_excludes_ = sc.file_excludes;
+    if (file_excludes_.empty()) {
+        // Sensible defaults so search resembles Spotlight even with a bare config.
+        file_excludes_ = {".git", "node_modules", ".cache", "target", ".venv",
+                          "__pycache__", ".cargo", ".rustup", "go/pkg",
+                          ".local/share/Trash"};
+    }
+    file_min_query_ = std::max(1, sc.file_min_query);
+    max_file_results_ = std::max(1, sc.max_file_results);
+
+    results_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    file_thread_ = std::thread([this]() { file_worker_loop(); });
+
+    if (!initial_query_.empty()) {
+        query_ = initial_query_;
+        cursor_pos_ = query_.size();
+    }
+
+    scan_apps();
+    update_search();   // empty query → nothing until the user types (Spotlight-style)
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Main loop: poll the Wayland fd AND the worker's eventfd, so asynchronous file
+// results wake us to repaint instead of being rendered off-thread.
+// ---------------------------------------------------------------------------
 void LauncherUI::run() {
-    // Drive Wayland ourselves so that *every* event batch is followed by a
-    // repaint when the UI is dirty. Previously rendering was scattered across
-    // individual handlers, so key presses that only changed the query (e.g.
-    // typing in Applications mode) updated state but never repainted — the
-    // overlay looked frozen while holding an exclusive keyboard grab.
-    // The first paint is triggered by the layer-surface configure event
-    // (on_redraw), which is the earliest point a buffer may legally be committed.
     wayland_->set_running(true);
+    wl_display* dpy = wayland_->display();
+    int wlfd = wl_display_get_fd(dpy);
+
+    struct pollfd fds[2];
+    fds[0].fd = wlfd;         fds[0].events = POLLIN;
+    fds[1].fd = results_fd_;  fds[1].events = POLLIN;
+
     while (wayland_->is_running()) {
-        if (wayland_->dispatch() < 0) break;
+        // Canonical libwayland poll integration.
+        while (wl_display_prepare_read(dpy) != 0)
+            wl_display_dispatch_pending(dpy);
+        wl_display_flush(dpy);
+
+        fds[0].revents = fds[1].revents = 0;
+        int n = poll(fds, 2, -1);
+        if (n < 0) {
+            wl_display_cancel_read(dpy);
+            if (errno == EINTR) continue;
+            break;
+        }
+
+        if (fds[0].revents & POLLIN) {
+            if (wl_display_read_events(dpy) < 0) break;
+        } else {
+            wl_display_cancel_read(dpy);
+        }
+        wl_display_dispatch_pending(dpy);
+
+        if (fds[1].revents & POLLIN) {
+            uint64_t v;
+            while (read(results_fd_, &v, sizeof(v)) == static_cast<ssize_t>(sizeof(v))) {}
+            apply_file_results();
+        }
+
         if (needs_redraw_) render_frame();
     }
 }
 
-void LauncherUI::quit() {
-    wayland_->quit();
-}
+void LauncherUI::quit() { wayland_->quit(); }
 
 // ---------------------------------------------------------------------------
 // Theme
@@ -144,180 +341,348 @@ Theme LauncherUI::build_theme() const {
 }
 
 // ---------------------------------------------------------------------------
-// Modes / search
+// Unified search: applications + calculator (synchronous) merged with files
+// (asynchronous). No modes — one query returns everything relevant, grouped,
+// with a single Top Hit. This is the core difference from a rofi-style picker.
 // ---------------------------------------------------------------------------
 
-void LauncherUI::set_mode(LauncherModeType mode) {
-    current_mode_ = mode;
-    query_.clear();
-    cursor_pos_ = 0;
-    selected_index_ = 0;
-    scroll_offset_ = 0;
-    items_.clear();
-    needs_redraw_ = true;
-
-    if (mode == LauncherModeType::Applications) refresh_applications();
-    else if (mode != LauncherModeType::Calculator) update_search();
-}
-
-void LauncherUI::refresh_applications() {
-    AppLauncher app;
+void LauncherUI::scan_apps() {
+    apps_ = std::make_unique<AppLauncher>();
     std::vector<std::string> paths;
     for (auto& p : config_->get().search.paths) {
         if (p.type == "desktop") paths.push_back(p.path);
     }
-    app.set_search_paths(paths);
-    app.scan();
-    auto entries = app.search(query_);
-    items_.clear();
-    for (auto& e : entries) {
-        ListItem li;
-        li.name = e.name;
-        li.path = e.exec;
-        li.description = e.comment;
-        li.icon_name = e.icon;
-        items_.push_back(std::move(li));
+    apps_->set_search_paths(paths);
+    apps_->scan();   // once — filtering afterwards is in-memory
+}
+
+void LauncherUI::rebuild_app_items() {
+    app_items_.clear();
+    if (query_.empty()) return;   // Spotlight shows nothing until you type
+
+    const auto& sc = config_->get().search;
+    std::string q = to_lower(query_);
+
+    // Calculator: a valid math expression becomes the Top Hit.
+    if (sc.enable_calculator) {
+        Calculator calc;
+        auto r = calc.evaluate(query_);
+        if (r.valid && calc.is_calculator_query(query_)) {
+            ListItem it;
+            it.kind = ItemKind::Calculator;
+            it.name = "= " + r.result;
+            it.description = query_;
+            it.icon_name = "accessories-calculator";
+            it.path = r.result;          // payload copied to clipboard on Return
+            it.score = 1e6f;
+            app_items_.push_back(std::move(it));
+        }
     }
-    selected_index_ = 0;
-    scroll_offset_ = 0;
+
+    // Custom commands from [[commands]], matched by name.
+    if (sc.enable_commands) {
+        for (const auto& cmd : config_->get().commands) {
+            if (cmd.name.empty() || cmd.command.empty()) continue;
+            std::string n = to_lower(cmd.name);
+            size_t pos = n.find(q);
+            if (pos == std::string::npos) continue;
+            ListItem it;
+            it.kind = ItemKind::Command;
+            it.name = cmd.name;
+            it.action_command = cmd.command;
+            it.icon_name = cmd.icon.empty() ? "utilities-terminal" : cmd.icon;
+            it.description = cmd.category.empty() ? "Command" : cmd.category;
+            it.score = (pos == 0 ? 900.0f : 400.0f) - std::min<size_t>(pos, 200);
+            app_items_.push_back(std::move(it));
+        }
+    }
+
+    // Applications (in-memory over the cached scan), ranked by name match.
+    if (sc.enable_applications) {
+        std::vector<ListItem> apps;
+        for (const auto& e : apps_->search(query_)) {
+            ListItem it;
+            it.kind = ItemKind::Application;
+            it.name = e.name;
+            it.path = e.exec;
+            it.reveal_path = e.desktop_path;   // right-click → reveal the .desktop file
+            it.description = e.comment.empty() ? e.generic_name : e.comment;
+            it.icon_name = e.icon;
+            std::string n = to_lower(e.name);
+            size_t pos = n.find(q);
+            if (pos == 0)                        it.score = 1000.0f - std::min<size_t>(n.size(), 500);
+            else if (pos != std::string::npos)   it.score = 600.0f - std::min<size_t>(pos, 300);
+            else                                 it.score = 50.0f;   // matched via comment/category
+            apps.push_back(std::move(it));
+        }
+        std::stable_sort(apps.begin(), apps.end(),
+                         [](const ListItem& a, const ListItem& b) { return a.score > b.score; });
+        if (apps.size() > static_cast<size_t>(layout_.max_per_group))
+            apps.resize(layout_.max_per_group);
+        for (auto& a : apps) app_items_.push_back(std::move(a));
+    }
+}
+
+void LauncherUI::rebuild_items() {
+    // Combine every candidate, promote the single highest-scoring one to the
+    // Top Hit (so a strong file match can win, not just apps), and keep the rest
+    // in category order (applications, then files) for the grouped sections.
+    std::vector<ListItem> all;
+    all.reserve(app_items_.size() + file_items_.size());
+    for (const auto& it : app_items_) all.push_back(it);
+    for (const auto& it : file_items_) all.push_back(it);
+
+    items_.clear();
+    if (!all.empty()) {
+        size_t best = 0;
+        for (size_t i = 1; i < all.size(); ++i)
+            if (all[i].score > all[best].score) best = i;
+        items_.push_back(all[best]);
+        for (size_t i = 0; i < all.size(); ++i)
+            if (i != best) items_.push_back(all[i]);
+    }
+
+    if (selected_index_ >= static_cast<int>(items_.size()))
+        selected_index_ = std::max(0, static_cast<int>(items_.size()) - 1);
+    relayout();
     needs_redraw_ = true;
 }
 
-void LauncherUI::toggle_mode() {
-    int m = (static_cast<int>(current_mode_) + 1) % 4;
-    set_mode(static_cast<LauncherModeType>(m));
+// Recompute header/row positions (relative to the panel top) and the panel
+// height, so rendering and hit-testing share one source of truth.
+void LauncherUI::relayout() {
+    rows_.clear();
+    headers_.clear();
+
+    if (items_.empty()) {
+        panel_total_h_ = query_.empty() ? layout_.search_h
+                                        : layout_.search_h + layout_.row_h;
+        return;
+    }
+
+    auto is_app_cat = [](ItemKind k) {
+        return k == ItemKind::Application || k == ItemKind::Command || k == ItemKind::Calculator;
+    };
+
+    int y = layout_.search_h + 8;
+    headers_.push_back({"TOP HIT", y});
+    y += layout_.header_h;
+    rows_.push_back({0, y, true});
+    y += layout_.row_h + 6;
+
+    size_t i = 1;
+    while (i < items_.size()) {
+        bool app = is_app_cat(items_[i].kind);
+        headers_.push_back({app ? "APPLICATIONS" : "FILES & FOLDERS", y});
+        y += layout_.header_h;
+        while (i < items_.size() && is_app_cat(items_[i].kind) == app) {
+            rows_.push_back({static_cast<int>(i), y, false});
+            y += layout_.row_h;
+            ++i;
+        }
+        y += 6;
+    }
+
+    int content = y + layout_.pad_x;
+    panel_total_h_ = std::max(content, layout_.search_h + 240);   // floor for the preview pane
 }
 
 void LauncherUI::update_search() {
-    if (current_mode_ == LauncherModeType::Calculator) {
-        items_.clear();
-        needs_redraw_ = true;
-        return;
-    }
-    if (current_mode_ == LauncherModeType::Applications) {
-        refresh_applications();
-        return;
-    }
-
-    SearchMode mode = (current_mode_ == LauncherModeType::FileContents) ? SearchMode::FileContents : SearchMode::Files;
-    search_->search(query_, mode, [this](std::vector<SearchResult> results) {
-        update_items(results);
-    });
-}
-
-void LauncherUI::update_items(const std::vector<SearchResult>& results) {
-    items_.clear();
-    for (const auto& r : results) {
-        ListItem item;
-        item.name = r.display_name;
-        item.path = r.path;
-        item.description = r.display_path.empty() ? r.description : r.display_path;
-        item.icon_name = r.icon_name;
-        item.score = r.score;
-        items_.push_back(std::move(item));
-    }
     selected_index_ = 0;
     scroll_offset_ = 0;
-    needs_redraw_ = true;
-    render_frame();
+    rebuild_app_items();
+    kick_file_search();     // clears file_items_ + schedules async search
+    rebuild_items();
+}
+
+void LauncherUI::kick_file_search() {
+    file_items_.clear();    // main-thread only
+    // Bump the generation regardless so any in-flight worker result is dropped
+    // as stale; only actually schedule a run when the file provider is enabled.
+    bool enabled = config_ && config_->get().search.enable_files;
+    {
+        std::lock_guard<std::mutex> lk(file_mtx_);
+        file_gen_++;
+        if (enabled) {
+            file_pending_query_ = query_;
+            file_has_pending_ = true;
+        }
+    }
+    if (enabled) file_cv_.notify_one();
+}
+
+void LauncherUI::apply_file_results() {
+    std::vector<ListItem> got;
+    {
+        std::lock_guard<std::mutex> lk(file_mtx_);
+        if (file_ready_gen_ != file_gen_) return;   // stale
+        got = std::move(file_ready_);
+        file_ready_.clear();
+    }
+    file_items_ = std::move(got);
+    rebuild_items();
+}
+
+// Worker thread: runs `fd` for the latest query and posts results back.
+void LauncherUI::file_worker_loop() {
+    for (;;) {
+        std::string q;
+        uint64_t gen;
+        std::vector<std::string> roots;
+        {
+            std::unique_lock<std::mutex> lk(file_mtx_);
+            file_cv_.wait(lk, [this] { return file_has_pending_ || file_stop_; });
+            if (file_stop_) return;
+            q = file_pending_query_;
+            gen = file_gen_;
+            file_has_pending_ = false;
+            roots = file_roots_;
+        }
+
+        // Snapshot the (init-time constant) tuning so ranking below agrees with
+        // the invocation.
+        int min_query = std::max(1, file_min_query_);
+        size_t keep = std::max(1, max_file_results_);
+
+        std::vector<ListItem> out;
+        if (static_cast<int>(q.size()) >= min_query && Subprocess::command_exists("fd")) {
+            // Match the query against the file *name*; scan a bounded number of
+            // hits, then rank them and keep the best few. Noise directories are
+            // excluded so results resemble what Spotlight surfaces.
+            std::vector<std::string> argv = {
+                "fd", "--color", "never", "--fixed-strings", "--max-results", "200",
+                "--type", "f", "--type", "d"};
+            for (const auto& ex : file_excludes_) {
+                argv.push_back("--exclude");
+                argv.push_back(ex);
+            }
+            argv.push_back(q);
+            for (const auto& r : roots) argv.push_back(r);
+            auto res = Subprocess::run(argv);
+
+            std::string ql = to_lower(q);
+            std::istringstream ss(res.stdout);
+            std::string line;
+            while (std::getline(ss, line)) {
+                if (line.empty()) continue;
+                struct stat st;
+                bool have_stat = (stat(line.c_str(), &st) == 0);
+                bool is_dir = have_stat ? S_ISDIR(st.st_mode) : false;
+
+                ListItem it;
+                it.kind = is_dir ? ItemKind::Folder : ItemKind::File;
+                std::filesystem::path p(line);
+                it.name = p.filename().string();
+                if (it.name.empty()) it.name = line;
+                it.path = line;
+                it.description = abbreviate_home(line);
+                it.icon_name = is_dir ? "folder" : icon_for_file(line);
+
+                // Rank: prefix > substring on the name, shallower paths and more
+                // recently modified files score higher.
+                std::string nl = to_lower(it.name);
+                size_t pos = nl.find(ql);
+                float s;
+                if (pos == 0)                        s = 1000.0f - std::min<size_t>(nl.size(), 300);
+                else if (pos != std::string::npos)   s = 600.0f - std::min<size_t>(pos, 300);
+                else                                 s = 200.0f;   // matched deeper in the path
+                s -= path_depth(line) * 6.0f;
+                if (is_dir) s += 15.0f;
+                if (have_stat) s += recency_bonus(st.st_mtime);
+                it.score = s;
+
+                out.push_back(std::move(it));
+            }
+
+            std::stable_sort(out.begin(), out.end(),
+                             [](const ListItem& a, const ListItem& b) { return a.score > b.score; });
+            if (out.size() > keep) out.resize(keep);
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(file_mtx_);
+            if (file_stop_) return;
+            if (gen != file_gen_) continue;   // superseded by a newer query
+            file_ready_ = std::move(out);
+            file_ready_gen_ = gen;
+        }
+        if (results_fd_ >= 0) {
+            uint64_t one = 1;
+            ssize_t w = write(results_fd_, &one, sizeof(one));
+            (void)w;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Selection
+// Selection & activation
 // ---------------------------------------------------------------------------
 
-int LauncherUI::visible_row_count() const {
-    return std::min(static_cast<int>(items_.size()) - scroll_offset_, layout_.max_rows);
-}
-
-int LauncherUI::panel_height() const {
-    if (items_.empty() && current_mode_ != LauncherModeType::Calculator) {
-        return layout_.search_h + layout_.row_h;  // search + empty hint
-    }
-    int rows = static_cast<int>(items_.size());
-    if (current_mode_ == LauncherModeType::Calculator) rows = 1;
-    int shown = std::min(rows, layout_.max_rows + 1);  // +1 for the top-hit hero
-    int h = layout_.search_h;
-    h += layout_.section_pad;                 // TOP HIT header
-    h += layout_.row_h + layout_.section_pad; // hero
-    if (shown > 1) {
-        h += layout_.section_pad;             // group header
-        h += (shown - 1) * layout_.row_h;
-    }
-    h += layout_.pad_x;
-    return h;
-}
+int LauncherUI::panel_height() const { return panel_total_h_; }
 
 void LauncherUI::select_item(int index) {
     if (items_.empty()) return;
-    int max = static_cast<int>(items_.size()) - 1;
-    selected_index_ = std::max(0, std::min(index, max));
-    if (selected_index_ < scroll_offset_) scroll_offset_ = selected_index_;
-    else if (selected_index_ >= scroll_offset_ + visible_row_count()) {
-        scroll_offset_ = selected_index_ - visible_row_count() + 1;
-    }
+    selected_index_ = std::max(0, std::min(index, static_cast<int>(items_.size()) - 1));
     needs_redraw_ = true;
-    render_frame();
 }
 
 void LauncherUI::autocomplete() {
     if (items_.empty()) return;
-    query_ = items_[selected_index_].name;
+    const auto& it = items_[selected_index_];
+    if (it.kind != ItemKind::Application) return;   // only app names make sense to complete
+    query_ = it.name;
     cursor_pos_ = query_.size();
     update_search();
 }
 
 void LauncherUI::launch_selected() {
-    if (current_mode_ == LauncherModeType::Calculator) {
-        Calculator calc;
-        auto result = calc.evaluate(query_);
-        if (result.valid) { Clipboard::copy_text(result.result); quit(); }
-        return;
-    }
     if (items_.empty() || selected_index_ >= static_cast<int>(items_.size())) return;
     const auto& item = items_[selected_index_];
-    if (ui_dbg()) fprintf(stderr, "[ui] launch mode=%d name='%s' path='%s'\n",
-                          static_cast<int>(current_mode_), item.name.c_str(), item.path.c_str());
+    if (ui_dbg()) fprintf(stderr, "[ui] activate kind=%d name='%s' path='%s'\n",
+                          static_cast<int>(item.kind), item.name.c_str(), item.path.c_str());
 
-    // Custom command (future [[commands]] entries) takes precedence.
-    if (!item.action_command.empty()) {
-        spawn_detached({"/bin/sh", "-c", item.action_command});
-    } else if (current_mode_ == LauncherModeType::Applications) {
-        // For applications, item.path holds the .desktop Exec line (field codes
-        // already stripped). It is a command to run, NOT a file — execute it via
-        // a shell so arguments and env prefixes work. Using xdg-open here is what
-        // produced "xdg-open: file 'alacritty' does not exist".
-        if (!item.path.empty()) spawn_detached({"/bin/sh", "-c", item.path});
-    } else if (!item.path.empty()) {
-        // Files / FileContents: item.path is a real filesystem path — open it
-        // with the user's default handler.
-        spawn_detached({"xdg-open", item.path});
+    switch (item.kind) {
+        case ItemKind::Calculator:
+            if (!item.path.empty()) Clipboard::copy_text(item.path);
+            break;
+        case ItemKind::Command:
+            if (!item.action_command.empty()) spawn_detached({"/bin/sh", "-c", item.action_command});
+            break;
+        case ItemKind::Application:
+            // item.path is the .desktop Exec line — run it via a shell so
+            // arguments/env prefixes work. It is a command, not a file.
+            if (!item.path.empty()) spawn_detached({"/bin/sh", "-c", item.path});
+            break;
+        case ItemKind::File:
+        case ItemKind::Folder:
+            if (!item.path.empty()) spawn_detached({"xdg-open", item.path});
+            break;
     }
     quit();
 }
 
 void LauncherUI::open_file_location(int index) {
     if (index < 0 || index >= static_cast<int>(items_.size())) return;
+    const auto& item = items_[index];
 
-    // Only file-backed results have a real location to reveal. Applications
-    // store an exec command in `path`, and the calculator has no path — for
-    // those, right-click is a no-op ("where necessary").
-    if (current_mode_ != LauncherModeType::Files &&
-        current_mode_ != LauncherModeType::FileContents) {
-        return;
-    }
+    // Choose what to reveal: files/folders reveal themselves; applications reveal
+    // their .desktop file (the faithful "Show in Finder" for an app). The
+    // calculator has nothing to reveal.
+    std::string target;
+    if (item.kind == ItemKind::File || item.kind == ItemKind::Folder) target = item.path;
+    else if (item.kind == ItemKind::Application) target = item.reveal_path;
 
-    const std::string& raw = items_[index].path;
-    if (raw.empty()) return;
+    if (ui_dbg()) fprintf(stderr, "[ui] reveal idx=%d kind=%d target='%s'\n",
+                          index, static_cast<int>(item.kind), target.c_str());
+    if (target.empty()) return;
 
     std::error_code ec;
-    std::filesystem::path abs = std::filesystem::absolute(raw, ec);
-    if (ec) abs = raw;
+    std::filesystem::path abs = std::filesystem::absolute(target, ec);
+    if (ec) abs = target;
     if (!std::filesystem::exists(abs, ec)) return;
 
-    // Preferred: the freedesktop FileManager1 D-Bus interface, which opens the
-    // enclosing folder AND selects the file (Nautilus, Dolphin, Nemo, PCManFM,
-    // Thunar, …). This is the faithful "reveal in Finder" behaviour.
+    // Preferred: freedesktop FileManager1.ShowItems (opens the folder AND selects
+    // the file — the faithful "reveal in Finder" behaviour).
     if (Subprocess::command_exists("gdbus")) {
         std::string uri = "file://" + percent_encode_path(abs.string());
         auto r = Subprocess::run({
@@ -329,8 +694,7 @@ void LauncherUI::open_file_location(int index) {
         if (r.exit_code == 0) { quit(); return; }
     }
 
-    // Fallback: open the enclosing directory with the default handler. The file
-    // itself won't be pre-selected, but its location is shown.
+    // Fallback: open the enclosing directory with the default handler.
     std::string dir = abs.parent_path().string();
     if (dir.empty()) dir = ".";
     spawn_detached({"xdg-open", dir});
@@ -360,8 +724,8 @@ void LauncherUI::on_key(uint32_t keysym, uint32_t utf32, bool pressed) {
     if (keysym == XKB_KEY_Up) { select_item(selected_index_ - 1); return; }
     if (keysym == XKB_KEY_Down) { select_item(selected_index_ + 1); return; }
     if (keysym == XKB_KEY_Tab) { autocomplete(); return; }
-    if (keysym == XKB_KEY_Page_Up) { select_item(selected_index_ - layout_.max_rows); return; }
-    if (keysym == XKB_KEY_Page_Down) { select_item(selected_index_ + layout_.max_rows); return; }
+    if (keysym == XKB_KEY_Page_Up) { select_item(selected_index_ - layout_.max_per_group); return; }
+    if (keysym == XKB_KEY_Page_Down) { select_item(selected_index_ + layout_.max_per_group); return; }
     if (keysym == XKB_KEY_Home) { select_item(0); return; }
     if (keysym == XKB_KEY_End) { select_item(static_cast<int>(items_.size()) - 1); return; }
 
@@ -387,11 +751,11 @@ void LauncherUI::on_key(uint32_t keysym, uint32_t utf32, bool pressed) {
         update_search();
     } else if (keysym == XKB_KEY_Left && cursor_pos_ > 0) {
         while (cursor_pos_ > 0 && (query_[--cursor_pos_] & 0xC0) == 0x80) {}
+        needs_redraw_ = true;
     } else if (keysym == XKB_KEY_Right && cursor_pos_ < query_.size()) {
         while (cursor_pos_ < query_.size() && (query_[cursor_pos_] & 0xC0) == 0x80) cursor_pos_++;
+        needs_redraw_ = true;
     }
-
-    needs_redraw_ = true;
 }
 
 void LauncherUI::on_mouse(double x, double y, uint32_t button, bool pressed) {
@@ -414,12 +778,10 @@ void LauncherUI::on_mouse(double x, double y, uint32_t button, bool pressed) {
     if (idx < 0 || idx >= static_cast<int>(items_.size())) return;
 
     if (button == BTN_RIGHT) {
-        // Right-click reveals the item's location in the file manager.
         select_item(idx);
         open_file_location(idx);
         return;
     }
-
     if (button != BTN_LEFT) return;
     if (idx == selected_index_) launch_selected();
     else select_item(idx);
@@ -440,25 +802,16 @@ void LauncherUI::on_redraw() {
 }
 
 int LauncherUI::hit_test(double x, double y) const {
-    int ph = panel_height();
     int pw = layout_.win_w;
     int px = (wayland_->surface_width() - pw) / 2;
     int py = layout_.margin_top;
 
-    if (x < px || x > px + pw || y < py || y > py + ph) return -1;
-    int ly = static_cast<int>(y) - py;
-
-    if (ly <= layout_.search_h) return -1;  // search field itself
-
-    int yy = layout_.search_h + layout_.section_pad;
-    // top hit hero
-    if (ly >= yy && ly < yy + layout_.row_h) {
-        return scroll_offset_ + 0;
+    if (x < px || x > px + pw || y < py || y > py + panel_total_h_) return -1;
+    if (x > px + layout_.list_w) return -1;   // preview column isn't selectable
+    for (const auto& r : rows_) {
+        int ry = py + r.y;
+        if (y >= ry && y < ry + layout_.row_h) return r.item_index;
     }
-    yy += layout_.row_h + layout_.section_pad;
-    yy += layout_.section_pad;  // group header
-    int idx = static_cast<int>((ly - yy) / layout_.row_h) + scroll_offset_ + 1;
-    if (idx >= scroll_offset_ + 1 && idx < scroll_offset_ + 1 + visible_row_count()) return idx;
     return -1;
 }
 
@@ -468,6 +821,10 @@ int LauncherUI::hit_test(double x, double y) const {
 
 void LauncherUI::render_frame() {
     if (!needs_redraw_) return;
+    // A layer surface must not have a buffer attached before its first configure
+    // is acked. Async file results (even the empty-query one kicked at startup)
+    // can wake the loop before that happens — don't paint until we're configured.
+    if (!wayland_->is_configured()) return;
 
     Buffer* buf = wayland_->acquire_buffer();
     if (!buf) return;
@@ -477,35 +834,52 @@ void LauncherUI::render_frame() {
     int bh = buf->height;
 
     renderer_->begin(buf->data, buf->stride, bw, bh);
-
-    // Clear the whole buffer transparent; the panel is drawn on top.
-    renderer_->clear(Color::from_rgba(0, 0, 0, 0));
+    renderer_->clear(Color::from_rgba(0, 0, 0, 0));   // transparent everywhere but the panel
 
     int ph = panel_height();
     int pw = layout_.win_w;
-    int px = (bw - pw) / 2;   // centre within the surface we actually draw into
+    int px = (bw - pw) / 2;
     int py = layout_.margin_top;
 
-    // Drop shadow + panel background (translucent like Spotlight's blurred glass).
-    renderer_->rounded_rect(px - 2, py + 4, pw + 4, ph + 4, layout_.corner_radius + 2,
-                            Color::from_rgba(0, 0, 0, 0.35));
+    // Drop shadow + panel. With compositor backdrop blur (Hyprland) the panel is
+    // drawn as translucent frosted glass; without blur it stays mostly opaque so
+    // text stays readable over busy backgrounds.
+    const auto& ap = config_->get().appearance;
+    renderer_->rounded_rect(px - 2, py + 6, pw + 4, ph + 6, layout_.corner_radius + 2,
+                            Color::from_rgba(0, 0, 0, 0.38));
     Color panel = t.background;
-    renderer_->rounded_rect(px, py, pw, ph, layout_.corner_radius,
-                            Color::from_rgba(panel.r, panel.g, panel.b, 0.92));
+    if (renderer_->has_backdrop()) {
+        // Client-side frosted glass: the blurred desktop, clipped to the panel,
+        // plus a translucent tint for text contrast.
+        renderer_->draw_backdrop(px, py, pw, ph, layout_.corner_radius);
+        renderer_->rounded_rect(px, py, pw, ph, layout_.corner_radius,
+                                Color::from_rgba(panel.r, panel.g, panel.b, ap.backdrop_tint));
+    } else {
+        // No client backdrop: translucent if the compositor blurs, else opaque.
+        double panel_a = blur_enabled_ ? ap.panel_opacity : ap.opaque_opacity;
+        renderer_->rounded_rect(px, py, pw, ph, layout_.corner_radius,
+                                Color::from_rgba(panel.r, panel.g, panel.b, panel_a));
+    }
+    // Glass rim: a soft light highlight along the top edge.
+    if (blur_enabled_) {
+        renderer_->fill_rect(px + layout_.corner_radius, py,
+                             pw - 2 * layout_.corner_radius, 1,
+                             Color::from_rgba(1, 1, 1, 0.22));
+    } else {
+        renderer_->fill_rect(px, py, pw, 1,
+                             Color::from_rgba(t.border.r, t.border.g, t.border.b, 0.6));
+    }
 
-    // Hairline border
-    renderer_->fill_rect(px, py, pw, 1, Color::from_rgba(t.border.r, t.border.g, t.border.b, 0.6));
-    renderer_->fill_rect(px, py + ph - 1, pw, 1, Color::from_rgba(t.border.r, t.border.g, t.border.b, 0.6));
-
-    // --- Search field ---
+    // --- Search field (spans the whole panel width) ---
     int glyph_size = 26;
     int gx = px + layout_.search_pad_x;
     int gy = py + (layout_.search_h - glyph_size) / 2;
-    renderer_->draw_search_glyph(gx, gy, glyph_size, Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.9));
+    renderer_->draw_search_glyph(gx, gy, glyph_size,
+                                 Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.9));
 
-    int text_x = gx + glyph_size + 14;
+    int text_x = gx + glyph_size + 16;
     RenderFontConfig sf = t.input_font;
-    sf.size = 22;
+    sf.size = 24;
     if (query_.empty()) {
         renderer_->draw_text(text_x, py + (layout_.search_h - static_cast<int>(sf.size)) / 2,
                              config_->get().search.placeholder, sf,
@@ -513,123 +887,150 @@ void LauncherUI::render_frame() {
     } else {
         renderer_->draw_text(text_x, py + (layout_.search_h - static_cast<int>(sf.size)) / 2,
                              query_, sf, Color::from_rgba(1, 1, 1, 1));
-        // caret
-        if (cursor_pos_ < query_.size()) {
-            int caret_x = text_x + renderer_->text_width(query_.substr(0, cursor_pos_), sf);
-            renderer_->fill_rect(caret_x + 1, py + 14, 2, layout_.search_h - 28, t.accent);
-        }
+        int caret_x = text_x + renderer_->text_width(query_.substr(0, cursor_pos_), sf);
+        renderer_->fill_rect(caret_x + 1, py + 16, 2, layout_.search_h - 32, t.accent);
     }
-
-    // divider under search
-    renderer_->fill_rect(px, py + layout_.search_h, pw, 1, Color::from_rgba(t.border.r, t.border.g, t.border.b, 0.35));
-
-    // --- Calculator mode ---
-    if (current_mode_ == LauncherModeType::Calculator) {
-        Calculator calc;
-        auto result = calc.evaluate(query_);
-        int cy = py + layout_.search_h + layout_.section_pad;
-        renderer_->draw_icon(px + layout_.pad_x, cy + (layout_.row_h - layout_.icon_size) / 2,
-                             layout_.icon_size, "accessories-calculator", "Calc", t.accent);
-        int tx = px + layout_.pad_x + layout_.icon_size + layout_.icon_pad;
-        RenderFontConfig cf = t.result_font;
-        cf.size = 20; cf.bold = true;
-        if (query_.empty()) {
-            renderer_->draw_text(tx, cy + (layout_.row_h - 20) / 2, "Type a calculation…",
-                                 t.result_detail_font, t.text_muted);
-        } else if (result.valid) {
-            renderer_->draw_text(tx, cy + (layout_.row_h - 20) / 2, "= " + result.result,
-                                 cf, Color::from_rgba(1, 1, 1, 1));
-            // action hint on the right
-            renderer_->draw_text(px + pw - layout_.pad_x - 180, cy + (layout_.row_h - 14) / 2,
-                                 "⏎ Copy result", t.result_detail_font, t.text_muted);
-        } else {
-            renderer_->draw_text(tx, cy + (layout_.row_h - 20) / 2, "Invalid expression",
-                                 t.result_detail_font, t.error);
-        }
-        renderer_->end();
-        wayland_->submit_buffer(buf, 0, 0);
-        needs_redraw_ = false;
-        return;
-    }
-
-    // --- Empty state ---
+    // --- Empty state: just the search bar (Spotlight opens empty) ---
     if (items_.empty()) {
-        int ey = py + layout_.search_h + layout_.row_h / 2 - 8;
-        renderer_->draw_text(px + layout_.pad_x, ey, "No results", t.result_font, t.text_muted);
+        if (!query_.empty()) {
+            renderer_->fill_rect(px, py + layout_.search_h, pw, 1,
+                                 Color::from_rgba(t.border.r, t.border.g, t.border.b, 0.35));
+            renderer_->draw_text(px + layout_.pad_x + 4,
+                                 py + layout_.search_h + layout_.row_h / 2 - 8,
+                                 "No Results", t.result_font, t.text_muted);
+        }
         renderer_->end();
         wayland_->submit_buffer(buf, 0, 0);
         needs_redraw_ = false;
         return;
     }
 
-    int yy = py + layout_.search_h + layout_.section_pad;
+    // Divider under the search field (results present).
+    renderer_->fill_rect(px, py + layout_.search_h, pw, 1,
+                         Color::from_rgba(t.border.r, t.border.g, t.border.b, 0.35));
 
-    // Section header: TOP HIT
-    renderer_->draw_text(px + layout_.pad_x, yy, "TOP HIT",
-                         t.result_detail_font, Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.7));
-    yy += layout_.section_pad;
+    // Left result column bounds.
+    int row_x = px + layout_.pad_x;
+    int row_w = layout_.list_w - 2 * layout_.pad_x;
 
-    // Hero (index 0)
-    {
-        const auto& it = items_[scroll_offset_ + 0 < static_cast<int>(items_.size()) ? scroll_offset_ + 0 : 0];
-        int row = scroll_offset_;
-        bool sel = (row == selected_index_);
-        int rx = px + layout_.pad_x;
-        int ry = yy;
-        int ic = layout_.icon_size + 6;
-        if (sel) renderer_->rounded_rect(rx - 6, ry - 2, pw - 2 * layout_.pad_x + 12, layout_.row_h, 8,
-                                         Color::from_rgba(t.selection.r, t.selection.g, t.selection.b, 0.55));
-        renderer_->draw_icon(rx, ry + (layout_.row_h - ic) / 2, ic, it.icon_name, it.name, t.accent);
-        int tx = rx + ic + layout_.icon_pad;
-        renderer_->draw_text(tx, ry + 6, it.name, t.result_font, Color::from_rgba(1, 1, 1, 1));
-        if (!it.description.empty())
-            renderer_->draw_text(tx, ry + 6 + static_cast<int>(t.result_font.size) + 2,
-                                 it.description, t.result_detail_font, t.text_muted);
-    }
-    yy += layout_.row_h + layout_.section_pad;
+    // Draw one result row (icon + name + subtitle). Hero rows get a larger icon.
+    auto draw_row = [&](const ListItem& it, int ry, bool sel, int icon) {
+        if (sel) renderer_->rounded_rect(row_x - 6, ry - 2, row_w + 12, layout_.row_h, 9,
+                                         Color::from_rgba(t.selection.r, t.selection.g, t.selection.b, 0.6));
+        renderer_->draw_icon(row_x, ry + (layout_.row_h - icon) / 2, icon, it.icon_name, it.name, t.accent);
+        int tx = row_x + icon + layout_.icon_pad;
+        int avail = row_w - icon - layout_.icon_pad - 6;
+        std::string name = it.name;
+        if (renderer_->text_width(name, t.result_font) > avail) {
+            while (name.size() > 1 && renderer_->text_width(name + "…", t.result_font) > avail) name.pop_back();
+            name += "…";
+        }
+        if (it.description.empty()) {
+            renderer_->draw_text(tx, ry + (layout_.row_h - static_cast<int>(t.result_font.size)) / 2 - 2,
+                                 name, t.result_font, Color::from_rgba(1, 1, 1, 1));
+        } else {
+            renderer_->draw_text(tx, ry + 7, name, t.result_font, Color::from_rgba(1, 1, 1, 1));
+            std::string sub = it.description;
+            if (renderer_->text_width(sub, t.result_detail_font) > avail) {
+                while (sub.size() > 1 && renderer_->text_width(sub + "…", t.result_detail_font) > avail) sub.pop_back();
+                sub += "…";
+            }
+            renderer_->draw_text(tx, ry + 7 + static_cast<int>(t.result_font.size) + 3,
+                                 sub, t.result_detail_font, t.text_muted);
+        }
+    };
 
-    // Group header
-    const char* group = (current_mode_ == LauncherModeType::Applications) ? "APPLICATIONS"
-                      : (current_mode_ == LauncherModeType::FileContents) ? "CONTENT"
-                      : "FILES";
-    renderer_->draw_text(px + layout_.pad_x, yy, group,
-                         t.result_detail_font, Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.7));
-    yy += layout_.section_pad;
+    Color hdr = Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.7);
 
-    int count = visible_row_count();
-    for (int i = 0; i < count; i++) {
-        int row = scroll_offset_ + 1 + i;
-        if (row >= static_cast<int>(items_.size())) break;
-        const auto& it = items_[row];
-        bool sel = (row == selected_index_);
-        int rx = px + layout_.pad_x;
-        int ry = yy + i * layout_.row_h;
-        if (sel) renderer_->rounded_rect(rx - 6, ry - 2, pw - 2 * layout_.pad_x + 12, layout_.row_h, 8,
-                                         Color::from_rgba(t.selection.r, t.selection.g, t.selection.b, 0.55));
-        renderer_->draw_icon(rx, ry + (layout_.row_h - layout_.icon_size) / 2, layout_.icon_size,
-                             it.icon_name, it.name, t.accent);
-        int tx = rx + layout_.icon_size + layout_.icon_pad;
-        renderer_->draw_text(tx, ry + (layout_.row_h - static_cast<int>(t.result_font.size)) / 2 - 6,
-                             it.name, t.result_font, Color::from_rgba(1, 1, 1, 1));
-        if (!it.description.empty())
-            renderer_->draw_text(tx, ry + (layout_.row_h - static_cast<int>(t.result_font.size)) / 2 + 10,
-                                 it.description, t.result_detail_font, t.text_muted);
-    }
+    // Section headers and rows come from the precomputed layout (relayout()).
+    for (const auto& h : headers_)
+        renderer_->draw_text(row_x, py + h.y, h.label, t.result_detail_font, hdr);
+    for (const auto& r : rows_)
+        draw_row(items_[r.item_index], py + r.y, r.item_index == selected_index_,
+                 r.hero ? layout_.icon_size + 6 : layout_.icon_size);
 
-    // Scrollbar if overflowing
-    int total = static_cast<int>(items_.size());
-    if (total > layout_.max_rows + 1) {
-        int track_y = py + layout_.search_h + 8;
-        int track_h = ph - layout_.search_h - 16;
-        int thumb_h = std::max(24, track_h * (layout_.max_rows + 1) / total);
-        int thumb_y = track_y + (scroll_offset_ * (track_h - thumb_h)) / std::max(1, total - (layout_.max_rows + 1));
-        renderer_->rounded_rect(px + pw - 6, thumb_y, 4, thumb_h, 2,
-                                Color::from_rgba(t.accent.r, t.accent.g, t.accent.b, 0.7));
-    }
+    // --- Preview pane (right column) ---
+    render_preview(px, py, pw, ph, t);
 
     renderer_->end();
     wayland_->submit_buffer(buf, 0, 0);
     needs_redraw_ = false;
+}
+
+void LauncherUI::render_preview(int px, int py, int pw, int ph, const Theme& t) {
+    int div_x = px + layout_.list_w;
+    // vertical divider
+    renderer_->fill_rect(div_x, py + layout_.search_h + 8, 1, ph - layout_.search_h - 16,
+                         Color::from_rgba(t.border.r, t.border.g, t.border.b, 0.35));
+
+    if (items_.empty() || selected_index_ >= static_cast<int>(items_.size())) return;
+    const ListItem& it = items_[selected_index_];
+
+    int col_x = div_x + 1;
+    int col_w = pw - layout_.list_w - 1;
+    int inner_x = col_x + layout_.preview_pad;
+    int inner_w = col_w - 2 * layout_.preview_pad;
+
+    // Big icon, centred near the top.
+    int isz = 76;
+    renderer_->draw_icon(col_x + (col_w - isz) / 2, py + layout_.search_h + 26, isz,
+                         it.icon_name, it.name, t.accent);
+
+    int cy = py + layout_.search_h + 26 + isz + 18;
+
+    auto draw_centered = [&](const std::string& s, const RenderFontConfig& f, const Color& c) {
+        std::string text = s;
+        if (renderer_->text_width(text, f) > inner_w) {
+            while (text.size() > 1 && renderer_->text_width(text + "…", f) > inner_w) text.pop_back();
+            text += "…";
+        }
+        int w = renderer_->text_width(text, f);
+        renderer_->draw_text(col_x + (col_w - w) / 2, cy, text, f, c);
+    };
+
+    // Name (bold-ish) + kind.
+    RenderFontConfig nf = t.result_font; nf.size = 15; nf.bold = true;
+    draw_centered(it.name, nf, Color::from_rgba(1, 1, 1, 1));
+    cy += static_cast<int>(nf.size) + 8;
+    draw_centered(human_kind(it), t.result_detail_font, t.text_muted);
+    cy += static_cast<int>(t.result_detail_font.size) + 16;
+
+    // Divider then key/value details.
+    renderer_->fill_rect(inner_x, cy, inner_w, 1, Color::from_rgba(t.border.r, t.border.g, t.border.b, 0.3));
+    cy += 14;
+
+    auto draw_kv = [&](const std::string& k, const std::string& v) {
+        renderer_->draw_text(inner_x, cy, k, t.result_detail_font,
+                             Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.9));
+        std::string val = v;
+        int vy = cy + static_cast<int>(t.result_detail_font.size) + 2;
+        if (renderer_->text_width(val, t.result_detail_font) > inner_w) {
+            while (val.size() > 1 && renderer_->text_width("…" + val, t.result_detail_font) > inner_w) val.erase(val.begin());
+            val = "…" + val;
+        }
+        renderer_->draw_text(inner_x, vy, val, t.result_detail_font, Color::from_rgba(0.9, 0.9, 0.95, 1));
+        cy = vy + static_cast<int>(t.result_detail_font.size) + 12;
+    };
+
+    if (it.kind == ItemKind::File || it.kind == ItemKind::Folder) {
+        draw_kv("Where", abbreviate_home(std::filesystem::path(it.path).parent_path().string()));
+        struct stat st;
+        if (stat(it.path.c_str(), &st) == 0) {
+            if (it.kind == ItemKind::File) draw_kv("Size", format_size(st.st_size));
+            draw_kv("Modified", format_time(st.st_mtime));
+        }
+        renderer_->draw_text(inner_x, ph + py - 34, "⏎ Open   ·   right-click: reveal",
+                             t.result_detail_font, t.text_muted);
+    } else if (it.kind == ItemKind::Application) {
+        if (!it.description.empty()) draw_kv("About", it.description);
+        draw_kv("Command", it.path);
+        renderer_->draw_text(inner_x, ph + py - 34, "⏎ Launch   ·   right-click: reveal",
+                             t.result_detail_font, t.text_muted);
+    } else if (it.kind == ItemKind::Calculator) {
+        draw_kv("Expression", it.description);
+        draw_kv("Result", it.path);
+        renderer_->draw_text(inner_x, ph + py - 34, "⏎ Copy result", t.result_detail_font, t.text_muted);
+    }
 }
 
 } // namespace waylaunch
