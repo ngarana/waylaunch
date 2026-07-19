@@ -2,7 +2,6 @@
 #include "waylaunch/launcher_ui.h"
 #include <iostream>
 #include <signal.h>
-#include <unistd.h>
 #include <string>
 
 static volatile sig_atomic_t running = 1;
@@ -31,11 +30,25 @@ int main(int argc, char* argv[]) {
             config_path = argv[++i];
         } else if ((arg == "--query" || arg == "-q") && i + 1 < argc) {
             initial_query = argv[++i];
+        } else if (arg == "--save") {
+            config_path = (i + 1 < argc) ? argv[++i] : waylaunch::Config::default_config_path();
+            if (!config.load(config_path)) {
+                std::cerr << "Warning: Could not load config from " << config_path << ", using defaults.\n";
+            }
+            if (config.save(config_path)) {
+                std::cout << "Saved config to " << config_path << "\n";
+            } else {
+                std::cerr << "Error: Failed to save config to " << config_path << "\n";
+                return 1;
+            }
+            return 0;
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "waylaunch - Wayland native launcher\nUsage: waylaunch [options]\n"
                       << "  -c, --config <path>  Config file path\n"
                       << "  -q, --query <text>   Prefill the search query\n"
-                      << "  -h, --help           Show help\n"
+                      << "  --save [path]        Serialize current config to a file\n"
+                      << "  --debug              Enable debug output\n"
+                      << "  -h, --help           Show this help\n"
                       << "  -v, --version        Show version\n";
             return 0;
         } else if (arg == "--version" || arg == "-v") {
@@ -50,6 +63,9 @@ int main(int argc, char* argv[]) {
     if (!config.load(config_path)) {
         std::cerr << "Warning: Could not load config, using defaults.\n";
     }
+
+    // Propagate debug flag to environment so worker threads see it too.
+    if (config.get().general.debug) setenv("WAYLAUNCH_DEBUG", "1", 0);
 
     waylaunch::LauncherUI launcher;
     if (!initial_query.empty()) launcher.set_initial_query(initial_query);

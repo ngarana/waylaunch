@@ -334,9 +334,17 @@ Theme LauncherUI::build_theme() const {
     t.selection = Color::from_hex(tc.colors.selection);
     t.corner_radius = tc.corner_radius;
     t.opacity = tc.opacity;
-    t.input_font = RenderFontConfig{tc.input_font.family, tc.input_font.size};
-    t.result_font = RenderFontConfig{tc.result_font.family, tc.result_font.size};
-    t.result_detail_font = RenderFontConfig{tc.result_detail_font.family, tc.result_detail_font.size};
+    auto to_rfc = [](const ConfigFont& cf) -> RenderFontConfig {
+        RenderFontConfig r;
+        r.family = cf.family;
+        r.size = cf.size;
+        r.bold = (cf.weight == "bold" || cf.weight == "Bold");
+        r.italic = (cf.style == "italic" || cf.style == "Italic" || cf.style == "oblique");
+        return r;
+    };
+    t.input_font = to_rfc(tc.input_font);
+    t.result_font = to_rfc(tc.result_font);
+    t.result_detail_font = to_rfc(tc.result_detail_font);
     return t;
 }
 
@@ -484,7 +492,7 @@ void LauncherUI::relayout() {
     }
 
     int content = y + layout_.pad_x;
-    panel_total_h_ = std::max(content, layout_.search_h + 240);   // floor for the preview pane
+    panel_total_h_ = std::max(content, layout_.search_h + 240);
 }
 
 void LauncherUI::update_search() {
@@ -655,7 +663,10 @@ void LauncherUI::launch_selected() {
             break;
         case ItemKind::File:
         case ItemKind::Folder:
-            if (!item.path.empty()) spawn_detached({"xdg-open", item.path});
+            if (!item.path.empty()) {
+                Clipboard::copy_file_path(item.path);
+                spawn_detached({"xdg-open", item.path});
+            }
             break;
     }
     quit();
@@ -717,6 +728,15 @@ void LauncherUI::on_key(uint32_t keysym, uint32_t utf32, bool pressed) {
         if (keysym == XKB_KEY_k || keysym == XKB_KEY_Up) { select_item(selected_index_ - 1); return; }
         if (keysym == XKB_KEY_n) { select_item(selected_index_ + 1); return; }
         if (keysym == XKB_KEY_p) { select_item(selected_index_ - 1); return; }
+        if (keysym == XKB_KEY_v) {
+            std::string pasted = Clipboard::paste_text();
+            if (!pasted.empty()) {
+                query_.insert(cursor_pos_, pasted);
+                cursor_pos_ += pasted.size();
+                update_search();
+            }
+            return;
+        }
     }
 
     if (keysym == XKB_KEY_Return) { launch_selected(); return; }
@@ -845,18 +865,19 @@ void LauncherUI::render_frame() {
     // drawn as translucent frosted glass; without blur it stays mostly opaque so
     // text stays readable over busy backgrounds.
     const auto& ap = config_->get().appearance;
+    double global_alpha = std::min(1.0, std::max(0.1, t.opacity));
     renderer_->rounded_rect(px - 2, py + 6, pw + 4, ph + 6, layout_.corner_radius + 2,
-                            Color::from_rgba(0, 0, 0, 0.38));
+                            Color::from_rgba(0, 0, 0, 0.38 * global_alpha));
     Color panel = t.background;
     if (renderer_->has_backdrop()) {
         // Client-side frosted glass: the blurred desktop, clipped to the panel,
         // plus a translucent tint for text contrast.
         renderer_->draw_backdrop(px, py, pw, ph, layout_.corner_radius);
         renderer_->rounded_rect(px, py, pw, ph, layout_.corner_radius,
-                                Color::from_rgba(panel.r, panel.g, panel.b, ap.backdrop_tint));
+                                Color::from_rgba(panel.r, panel.g, panel.b, ap.backdrop_tint * global_alpha));
     } else {
         // No client backdrop: translucent if the compositor blurs, else opaque.
-        double panel_a = blur_enabled_ ? ap.panel_opacity : ap.opaque_opacity;
+        double panel_a = (blur_enabled_ ? ap.panel_opacity : ap.opaque_opacity) * global_alpha;
         renderer_->rounded_rect(px, py, pw, ph, layout_.corner_radius,
                                 Color::from_rgba(panel.r, panel.g, panel.b, panel_a));
     }
@@ -945,6 +966,24 @@ void LauncherUI::render_frame() {
     // Section headers and rows come from the precomputed layout (relayout()).
     for (const auto& h : headers_)
         renderer_->draw_text(row_x, py + h.y, h.label, t.result_detail_font, hdr);
+    int total_rows = static_cast<int>(rows_.size());
+    // Compute visible rows within the panel, for scrollbar.
+    int vis_rows = 0;
+    int list_top = py + (rows_.empty() ? 0 : rows_.front().y);
+    for (const auto& r : rows_) {
+        if (py + r.y + layout_.row_h <= py + panel_total_h_ - 20) vis_rows++;
+    }
+    if (vis_rows < total_rows && total_rows > 0) {
+        int sb_x = px + layout_.list_w - 8;
+        int sb_y = list_top;
+        int sb_h = ph - (sb_y - py) - 20;
+        int thumb_h = std::max(24, sb_h * vis_rows / total_rows);
+        int thumb_y = sb_y + (scroll_offset_ * (sb_h - thumb_h)) / std::max(1, total_rows - vis_rows);
+        renderer_->fill_rect(sb_x, sb_y, 4, sb_h,
+                             Color::from_rgba(t.border.r, t.border.g, t.border.b, 0.15));
+        renderer_->rounded_rect(sb_x, thumb_y, 4, thumb_h, 2,
+                                Color::from_rgba(t.accent.r, t.accent.g, t.accent.b, 0.6));
+    }
     for (const auto& r : rows_)
         draw_row(items_[r.item_index], py + r.y, r.item_index == selected_index_,
                  r.hero ? layout_.icon_size + 6 : layout_.icon_size);

@@ -187,18 +187,7 @@ void Renderer::fill_rect(int x, int y, int w, int h, const Color& color) {
 
 void Renderer::rounded_rect(int x, int y, int w, int h, int radius, const Color& color) {
     cairo_set_source_rgba(cairo_->cr, color.r, color.g, color.b, color.a);
-    double r = std::min({static_cast<double>(radius), w / 2.0, h / 2.0});
-    if (r < 1.0) {
-        cairo_rectangle(cairo_->cr, x, y, w, h);
-        cairo_fill(cairo_->cr);
-        return;
-    }
-    cairo_new_sub_path(cairo_->cr);
-    cairo_arc(cairo_->cr, x + w - r, y + r, r, -M_PI / 2, 0);
-    cairo_arc(cairo_->cr, x + w - r, y + h - r, r, 0, M_PI / 2);
-    cairo_arc(cairo_->cr, x + r, y + h - r, r, M_PI / 2, M_PI);
-    cairo_arc(cairo_->cr, x + r, y + r, r, M_PI, 3 * M_PI / 2);
-    cairo_close_path(cairo_->cr);
+    round_rect_path(cairo_->cr, x, y, w, h, radius);
     cairo_fill(cairo_->cr);
 }
 
