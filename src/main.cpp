@@ -69,6 +69,7 @@ int main(int argc, char* argv[]) {
 
     waylaunch::LauncherUI launcher;
     if (!initial_query.empty()) launcher.set_initial_query(initial_query);
+    launcher.set_config_path(config_path);
     if (!launcher.init(config)) {
         std::cerr << "Error: Failed to initialize launcher\n";
         return 1;

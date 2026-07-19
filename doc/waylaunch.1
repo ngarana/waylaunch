@@ -1,7 +1,7 @@
 .TH WAYLAUNCH 1 "July 2026" "waylaunch 0.1.0" "User Commands"
 .
 .SH NAME
-waylaunch \- macOS Spotlight-style launcher for Wayland
+waylaunch \- Wayland-native launcher
 .
 .SH SYNOPSIS
 .B waylaunch
@@ -10,10 +10,9 @@ waylaunch \- macOS Spotlight-style launcher for Wayland
 .
 .SH DESCRIPTION
 waylaunch is a minimal, fast, keyboard-first Wayland-native launcher.
-When invoked, it opens an overlay panel (via wlr-layer-shell) that
-behaves like macOS Spotlight: start typing and results from
-applications, files, the calculator, and custom commands appear
-together, grouped and ranked.
+When invoked, it opens an overlay panel (via wlr-layer-shell) :
+start typing and results from applications, files, the calculator, and 
+custom commands appear together, grouped and ranked.
 .PP
 The panel features client-side frosted-glass blur (glassmorphism)
 using wlr-screencopy, a two-column layout with a preview pane, and

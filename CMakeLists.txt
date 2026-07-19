@@ -16,6 +16,12 @@ pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
 pkg_check_modules(GDK_PIXBUF REQUIRED gdk-pixbuf-2.0)
 pkg_check_modules(GTK REQUIRED gtk+-3.0)
 
+# Content-search index (waylaunchd + read-only launcher queries).
+pkg_check_modules(SQLITE3 REQUIRED sqlite3)
+pkg_check_modules(LIBMAGIC libmagic)   # optional: MIME sniffing (falls back to ext)
+find_package(Threads REQUIRED)
+find_package(tomlplusplus 3 CONFIG REQUIRED)
+
 # Generate Wayland protocol sources
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
 
@@ -78,13 +84,43 @@ if(HAS_SCREENCOPY)
     list(APPEND PROTOCOL_SOURCES ${PROTOCOL_BUILD_DIR}/wlr-screencopy-protocol.c)
 endif()
 
+# ---------------------------------------------------------------------------
+# waylaunch_content — shared content-search library (index store + extraction +
+# discovery). Linked read-only into the launcher and read-write into waylaunchd.
+# ---------------------------------------------------------------------------
+add_library(waylaunch_content STATIC
+    src/content/store.cpp
+    src/content/extractor.cpp
+    src/content/config.cpp
+    src/content/indexer.cpp
+    src/content/fs_watcher.cpp
+    src/content/control.cpp
+    src/search/subprocess.cpp
+)
+target_include_directories(waylaunch_content PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+    ${SQLITE3_INCLUDE_DIRS}
+)
+target_link_libraries(waylaunch_content PUBLIC ${SQLITE3_LIBRARIES} tomlplusplus::tomlplusplus Threads::Threads)
+target_compile_options(waylaunch_content PRIVATE
+    ${SQLITE3_CFLAGS} -Wall -Wextra)
+if(LIBMAGIC_FOUND)
+    target_compile_definitions(waylaunch_content PUBLIC HAVE_LIBMAGIC)
+    target_include_directories(waylaunch_content PRIVATE ${LIBMAGIC_INCLUDE_DIRS})
+    # libmagic's .pc sometimes omits -lmagic; link it explicitly.
+    if(LIBMAGIC_LIBRARIES)
+        target_link_libraries(waylaunch_content PUBLIC ${LIBMAGIC_LIBRARIES})
+    else()
+        target_link_libraries(waylaunch_content PUBLIC magic)
+    endif()
+endif()
+
 # Main sources
 set(SOURCES
     src/main.cpp
     src/core/wayland_core.cpp
     src/ui/renderer.cpp
     src/ui/launcher_ui.cpp
-    src/search/subprocess.cpp
     src/modes/app_launcher.cpp
     src/modes/calculator.cpp
     src/modes/clipboard.cpp
@@ -108,6 +144,7 @@ target_include_directories(waylaunch PRIVATE
 )
 
 target_link_libraries(waylaunch PRIVATE
+    waylaunch_content   # read-only content-index queries
     ${WAYLAND_LIBRARIES}
     ${XKBCOMMON_LIBRARIES}
     ${CAIRO_LIBRARIES}
@@ -138,11 +175,36 @@ if(HAS_SCREENCOPY)
     target_compile_definitions(waylaunch PRIVATE HAS_SCREENCOPY)
 endif()
 
+# waylaunchd (indexing daemon) + waylaunchctl (control CLI)
+add_executable(waylaunchd src/content/waylaunchd_main.cpp)
+target_link_libraries(waylaunchd PRIVATE waylaunch_content)
+target_compile_options(waylaunchd PRIVATE -Wall -Wextra)
+
+add_executable(waylaunchctl src/content/waylaunchctl_main.cpp)
+target_link_libraries(waylaunchctl PRIVATE waylaunch_content)
+target_compile_options(waylaunchctl PRIVATE -Wall -Wextra)
+
+# ---------------------------------------------------------------------------
+# Tests (ctest): content store / extractor / freshness. Enable with -DBUILD_TESTING=ON.
+# ---------------------------------------------------------------------------
+option(BUILD_TESTING "Build the content-search test suite" ON)
+if(BUILD_TESTING)
+    enable_testing()
+    foreach(t content_store_test content_extractor_test content_indexer_test)
+        add_executable(${t} tests/${t}.cpp)
+        target_link_libraries(${t} PRIVATE waylaunch_content)
+        target_compile_options(${t} PRIVATE -Wall -Wextra)
+        add_test(NAME ${t} COMMAND ${t})
+    endforeach()
+    set_tests_properties(content_indexer_test PROPERTIES TIMEOUT 60)
+endif()
+
 # Install
-install(TARGETS waylaunch DESTINATION bin)
+install(TARGETS waylaunch waylaunchd waylaunchctl DESTINATION bin)
+install(FILES dist/waylaunchd.service
+        DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/systemd/user)
 install(FILES config/waylaunch.toml DESTINATION ${CMAKE_INSTALL_PREFIX}/share/waylaunch)
 install(FILES doc/waylaunch.1 DESTINATION ${CMAKE_INSTALL_PREFIX}/share/man/man1)
 
 # toml++ (system package)
-find_package(tomlplusplus 3 CONFIG REQUIRED)
 target_link_libraries(waylaunch PRIVATE tomlplusplus::tomlplusplus)

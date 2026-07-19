@@ -280,8 +280,7 @@ bool WaylandCore::init() {
 #ifdef HAS_LAYER_SHELL
     if (layer_shell_) {
         // Full-width strip anchored to the top of the active output, rendered on
-        // the OVERLAY layer with no decorations — this is what makes it read as a
-        // Spotlight overlay rather than a normal window. Passing a null output
+        // the OVERLAY layer with no decorations. Passing a null output
         // lets the compositor place it on the currently focused monitor.
         layer_surface_ = zwlr_layer_shell_v1_get_layer_surface(
             layer_shell_, surface_, nullptr,
@@ -291,7 +290,7 @@ bool WaylandCore::init() {
             // Full-screen overlay: the panel is drawn centred near the top and the
             // rest of the surface stays transparent. Covering the whole output lets
             // the result list grow tall without clipping and lets a click anywhere
-            // outside the panel dismiss the launcher (Spotlight-style).
+            // outside the panel dismiss the launcher.
             zwlr_layer_surface_v1_set_keyboard_interactivity(
                 layer_surface_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
             zwlr_layer_surface_v1_set_anchor(layer_surface_,
@@ -300,7 +299,7 @@ bool WaylandCore::init() {
                 ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
                 ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
             zwlr_layer_surface_v1_set_size(layer_surface_, 0, 0);
-            // -1: render above other exclusive zones (bars), like macOS Spotlight.
+            // -1: render above other exclusive zones (bars).
             zwlr_layer_surface_v1_set_exclusive_zone(layer_surface_, -1);
 
             static const zwlr_layer_surface_v1_listener ls_listener = {

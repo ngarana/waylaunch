@@ -6,6 +6,8 @@
 #include "waylaunch/calculator.h"
 #include "waylaunch/app_launcher.h"
 #include "waylaunch/subprocess.h"
+#include "waylaunch/content/store.h"
+#include "waylaunch/content/config.h"
 #include <xkbcommon/xkbcommon.h>
 #include <wayland-client.h>
 #include <algorithm>
@@ -95,7 +97,8 @@ std::string human_kind(const ListItem& it) {
         case ItemKind::Folder:      return "Folder";
         case ItemKind::Calculator:  return "Calculator";
         case ItemKind::Command:     return "Command";
-        case ItemKind::File: {
+        case ItemKind::File:
+        case ItemKind::Content: {
             std::string ext = std::filesystem::path(it.path).extension().string();
             if (ext.size() > 1) return to_lower(ext.substr(1)) + " file";
             return "Document";
@@ -247,13 +250,32 @@ bool LauncherUI::init(Config& config) {
     if (file_roots_.empty()) file_roots_.push_back(home_dir());
     file_excludes_ = sc.file_excludes;
     if (file_excludes_.empty()) {
-        // Sensible defaults so search resembles Spotlight even with a bare config.
         file_excludes_ = {".git", "node_modules", ".cache", "target", ".venv",
                           "__pycache__", ".cargo", ".rustup", "go/pkg",
                           ".local/share/Trash"};
     }
     file_min_query_ = std::max(1, sc.file_min_query);
     max_file_results_ = std::max(1, sc.max_file_results);
+    file_enabled_ = sc.enable_files;
+
+    // Content search: open the waylaunchd index read-only. Absent/locked index →
+    // content_store_ stays null and we silently degrade to filename search (NFR8).
+    {
+        content::ContentConfig cc = content::load_content_config(config_path_);
+        content_enabled_ = cc.enable;
+        content_min_query_ = std::max(1, cc.min_query);
+        content_max_results_ = std::max(1, cc.max_results);
+        if (content_enabled_) {
+            auto store = std::make_unique<content::Store>();
+            if (store->open(content::ContentConfig::db_path(), {true, cc.match}))
+                content_store_ = std::move(store);
+            else
+                content_enabled_ = false;   // no index yet; degrade
+        }
+        if (ui_dbg())
+            fprintf(stderr, "[ui] content search %s (min_query=%d)\n",
+                    content_store_ ? "on" : "off", content_min_query_);
+    }
 
     results_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     file_thread_ = std::thread([this]() { file_worker_loop(); });
@@ -264,7 +286,7 @@ bool LauncherUI::init(Config& config) {
     }
 
     scan_apps();
-    update_search();   // empty query → nothing until the user types (Spotlight-style)
+    update_search();
     return true;
 }
 
@@ -366,7 +388,7 @@ void LauncherUI::scan_apps() {
 
 void LauncherUI::rebuild_app_items() {
     app_items_.clear();
-    if (query_.empty()) return;   // Spotlight shows nothing until you type
+    if (query_.empty()) return;   // search shows nothing until you type
 
     const auto& sc = config_->get().search;
     std::string q = to_lower(query_);
@@ -435,19 +457,25 @@ void LauncherUI::rebuild_items() {
     // Combine every candidate, promote the single highest-scoring one to the
     // Top Hit (so a strong file match can win, not just apps), and keep the rest
     // in category order (applications, then files) for the grouped sections.
-    std::vector<ListItem> all;
-    all.reserve(app_items_.size() + file_items_.size());
-    for (const auto& it : app_items_) all.push_back(it);
-    for (const auto& it : file_items_) all.push_back(it);
+    std::vector<ListItem> af;
+    af.reserve(app_items_.size() + file_items_.size());
+    for (const auto& it : app_items_) af.push_back(it);
+    for (const auto& it : file_items_) af.push_back(it);
 
     items_.clear();
-    if (!all.empty()) {
+    if (!af.empty()) {
         size_t best = 0;
-        for (size_t i = 1; i < all.size(); ++i)
-            if (all[i].score > all[best].score) best = i;
-        items_.push_back(all[best]);
-        for (size_t i = 0; i < all.size(); ++i)
-            if (i != best) items_.push_back(all[i]);
+        for (size_t i = 1; i < af.size(); ++i)
+            if (af[i].score > af[best].score) best = i;
+        items_.push_back(af[best]);
+        for (size_t i = 0; i < af.size(); ++i)
+            if (i != best) items_.push_back(af[i]);
+        // Content matches always rank below app/file hits (Spotlight ordering),
+        // in the store's BM25 order.
+        for (const auto& it : content_items_) items_.push_back(it);
+    } else {
+        // Only content matched: it carries the hero row + CONTENTS section.
+        for (const auto& it : content_items_) items_.push_back(it);
     }
 
     if (selected_index_ >= static_cast<int>(items_.size()))
@@ -468,8 +496,20 @@ void LauncherUI::relayout() {
         return;
     }
 
-    auto is_app_cat = [](ItemKind k) {
-        return k == ItemKind::Application || k == ItemKind::Command || k == ItemKind::Calculator;
+    // Category buckets so consecutive same-category rows share one header.
+    auto category = [](ItemKind k) -> int {
+        switch (k) {
+            case ItemKind::Application:
+            case ItemKind::Command:
+            case ItemKind::Calculator: return 0;
+            case ItemKind::File:
+            case ItemKind::Folder:     return 1;
+            case ItemKind::Content:    return 2;
+        }
+        return 1;
+    };
+    auto cat_label = [](int c) {
+        return c == 0 ? "APPLICATIONS" : c == 2 ? "CONTENTS" : "FILES & FOLDERS";
     };
 
     int y = layout_.search_h + 8;
@@ -480,10 +520,10 @@ void LauncherUI::relayout() {
 
     size_t i = 1;
     while (i < items_.size()) {
-        bool app = is_app_cat(items_[i].kind);
-        headers_.push_back({app ? "APPLICATIONS" : "FILES & FOLDERS", y});
+        int cat = category(items_[i].kind);
+        headers_.push_back({cat_label(cat), y});
         y += layout_.header_h;
-        while (i < items_.size() && is_app_cat(items_[i].kind) == app) {
+        while (i < items_.size() && category(items_[i].kind) == cat) {
             rows_.push_back({static_cast<int>(i), y, false});
             y += layout_.row_h;
             ++i;
@@ -504,10 +544,11 @@ void LauncherUI::update_search() {
 }
 
 void LauncherUI::kick_file_search() {
-    file_items_.clear();    // main-thread only
+    file_items_.clear();       // main-thread only
+    content_items_.clear();
     // Bump the generation regardless so any in-flight worker result is dropped
-    // as stale; only actually schedule a run when the file provider is enabled.
-    bool enabled = config_ && config_->get().search.enable_files;
+    // as stale; schedule a run when either async provider (files/content) is on.
+    bool enabled = file_enabled_ || (content_enabled_ && content_store_);
     {
         std::lock_guard<std::mutex> lk(file_mtx_);
         file_gen_++;
@@ -520,14 +561,17 @@ void LauncherUI::kick_file_search() {
 }
 
 void LauncherUI::apply_file_results() {
-    std::vector<ListItem> got;
+    std::vector<ListItem> got, got_content;
     {
         std::lock_guard<std::mutex> lk(file_mtx_);
         if (file_ready_gen_ != file_gen_) return;   // stale
         got = std::move(file_ready_);
+        got_content = std::move(content_ready_);
         file_ready_.clear();
+        content_ready_.clear();
     }
     file_items_ = std::move(got);
+    content_items_ = std::move(got_content);
     rebuild_items();
 }
 
@@ -553,10 +597,10 @@ void LauncherUI::file_worker_loop() {
         size_t keep = std::max(1, max_file_results_);
 
         std::vector<ListItem> out;
-        if (static_cast<int>(q.size()) >= min_query && Subprocess::command_exists("fd")) {
+        if (file_enabled_ && static_cast<int>(q.size()) >= min_query &&
+            Subprocess::command_exists("fd")) {
             // Match the query against the file *name*; scan a bounded number of
-            // hits, then rank them and keep the best few. Noise directories are
-            // excluded so results resemble what Spotlight surfaces.
+            // hits, then rank them and keep the best few. Noise directories are excluded .
             std::vector<std::string> argv = {
                 "fd", "--color", "never", "--fixed-strings", "--max-results", "200",
                 "--type", "f", "--type", "d"};
@@ -607,11 +651,33 @@ void LauncherUI::file_worker_loop() {
             if (out.size() > keep) out.resize(keep);
         }
 
+        // Content search: query the read-only index for body matches. Ranked by
+        // BM25 (already ordered best-first by the store), shown in its own
+        // CONTENTS section below apps/files.
+        std::vector<ListItem> content_out;
+        if (content_store_ && static_cast<int>(q.size()) >= content_min_query_) {
+            auto hits = content_store_->search(q, content_max_results_);
+            for (auto& h : hits) {
+                ListItem it;
+                it.kind = ItemKind::Content;
+                std::filesystem::path p(h.path);
+                it.name = h.name.empty() ? p.filename().string() : h.name;
+                it.path = h.path;
+                it.reveal_path = h.path;
+                it.description = abbreviate_home(h.path);
+                it.snippet = h.snippet;
+                it.icon_name = icon_for_file(h.path);
+                it.score = static_cast<float>(h.score);
+                content_out.push_back(std::move(it));
+            }
+        }
+
         {
             std::lock_guard<std::mutex> lk(file_mtx_);
             if (file_stop_) return;
             if (gen != file_gen_) continue;   // superseded by a newer query
             file_ready_ = std::move(out);
+            content_ready_ = std::move(content_out);
             file_ready_gen_ = gen;
         }
         if (results_fd_ >= 0) {
@@ -663,6 +729,7 @@ void LauncherUI::launch_selected() {
             break;
         case ItemKind::File:
         case ItemKind::Folder:
+        case ItemKind::Content:
             if (!item.path.empty()) {
                 Clipboard::copy_file_path(item.path);
                 spawn_detached({"xdg-open", item.path});
@@ -680,7 +747,8 @@ void LauncherUI::open_file_location(int index) {
     // their .desktop file (the faithful "Show in Finder" for an app). The
     // calculator has nothing to reveal.
     std::string target;
-    if (item.kind == ItemKind::File || item.kind == ItemKind::Folder) target = item.path;
+    if (item.kind == ItemKind::File || item.kind == ItemKind::Folder ||
+        item.kind == ItemKind::Content) target = item.path;
     else if (item.kind == ItemKind::Application) target = item.reveal_path;
 
     if (ui_dbg()) fprintf(stderr, "[ui] reveal idx=%d kind=%d target='%s'\n",
@@ -785,7 +853,7 @@ void LauncherUI::on_mouse(double x, double y, uint32_t button, bool pressed) {
     constexpr uint32_t BTN_LEFT = 0x110;
     constexpr uint32_t BTN_RIGHT = 0x111;
 
-    // Click anywhere outside the panel dismisses the launcher (Spotlight-style).
+    // Click anywhere outside the panel dismisses the launcher.
     if (button == BTN_LEFT) {
         int pw = layout_.win_w;
         int ph = panel_height();
@@ -911,7 +979,7 @@ void LauncherUI::render_frame() {
         int caret_x = text_x + renderer_->text_width(query_.substr(0, cursor_pos_), sf);
         renderer_->fill_rect(caret_x + 1, py + 16, 2, layout_.search_h - 32, t.accent);
     }
-    // --- Empty state: just the search bar (Spotlight opens empty) ---
+    // --- Empty state: just the search bar (S---
     if (items_.empty()) {
         if (!query_.empty()) {
             renderer_->fill_rect(px, py + layout_.search_h, pw, 1,
@@ -1069,6 +1137,38 @@ void LauncherUI::render_preview(int px, int py, int pw, int ph, const Theme& t) 
         draw_kv("Expression", it.description);
         draw_kv("Result", it.path);
         renderer_->draw_text(inner_x, ph + py - 34, "⏎ Copy result", t.result_detail_font, t.text_muted);
+    } else if (it.kind == ItemKind::Content) {
+        draw_kv("Where", abbreviate_home(std::filesystem::path(it.path).parent_path().string()));
+        if (!it.snippet.empty()) {
+            renderer_->draw_text(inner_x, cy, "Match", t.result_detail_font,
+                                 Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.9));
+            cy += static_cast<int>(t.result_detail_font.size) + 4;
+            // Greedy word-wrap the excerpt across a few lines.
+            std::string rest = it.snippet;
+            for (int line = 0; line < 5 && !rest.empty(); ++line) {
+                size_t fit = rest.size();
+                for (size_t n = 1; n <= rest.size(); ++n) {
+                    if (renderer_->text_width(rest.substr(0, n), t.result_detail_font) > inner_w) {
+                        fit = n - 1; break;
+                    }
+                }
+                size_t brk = fit;
+                if (fit < rest.size()) {
+                    size_t sp = rest.rfind(' ', fit);
+                    if (sp != std::string::npos && sp > fit / 2) brk = sp;
+                }
+                renderer_->draw_text(inner_x, cy, rest.substr(0, brk), t.result_detail_font,
+                                     Color::from_rgba(0.9, 0.9, 0.95, 1));
+                cy += static_cast<int>(t.result_detail_font.size) + 4;
+                rest = brk < rest.size() ? rest.substr(brk) : "";
+                while (!rest.empty() && rest.front() == ' ') rest.erase(rest.begin());
+            }
+            cy += 8;
+        }
+        struct stat st;
+        if (stat(it.path.c_str(), &st) == 0) draw_kv("Modified", format_time(st.st_mtime));
+        renderer_->draw_text(inner_x, ph + py - 34, "⏎ Open   ·   right-click: reveal",
+                             t.result_detail_font, t.text_muted);
     }
 }
 

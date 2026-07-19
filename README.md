@@ -1,12 +1,13 @@
 # waylaunch
 
-A minimal, fast, keyboard-first Wayland-native launcher inspired by macOS Spotlight. One keystroke opens a unified search bar that returns applications, files, calculator results, and custom commands together — grouped and ranked.
+A minimal, fast, keyboard-first Wayland-native launcher. One keystroke opens a unified search bar that returns applications, files, calculator results, and custom commands together — grouped and ranked.
 
 ## Features
 
 - **Unified Search** — no modes. Type once, get apps, files, folders, calculator results, and custom commands ranked together with a single Top Hit.
 - **Frosted Glass** — client-side backdrop blur via `wlr-screencopy`. Captures the desktop, downsamples, and applies a separable box blur for a glassmorphism look. Works on any compositor.
 - **Async File Search** — dedicated worker thread runs `fd` with prefix/substring ranking, recency bonuses, and path-depth penalties. Results stream into the UI without blocking.
+- **Content Search** — index-backed full-text search *inside* your documents (Spotlight's "find in contents"), served by the `waylaunchd` daemon. An inverted index (SQLite FTS5, BM25) over text/PDF/Office/HTML, kept fresh with inotify; the launcher queries it read-only and shows a **CONTENTS** section with a highlighted snippet. Queries are O(index-lookup), not O(filesystem). See [`docs/CONTENT_SEARCH.md`](docs/CONTENT_SEARCH.md).
 - **Application Launcher** — scans `.desktop` files from XDG data directories, filters in-memory per keystroke.
 - **Calculator** — built-in recursive-descent expression evaluator with trig, logs, and constants. A valid math expression becomes the Top Hit.
 - **Custom Commands** — user-defined shell commands in the config file (Lock Screen, Sleep, etc.), matched by name.
@@ -29,9 +30,17 @@ A minimal, fast, keyboard-first Wayland-native launcher inspired by macOS Spotli
 - `gtk+-3.0` — Icon theme lookup (planned for removal)
 - `gdk-pixbuf-2.0` — Image loading (planned for removal)
 - `librsvg-2.0` — SVG icon rendering
+- `sqlite` (FTS5) — content-search index
+- `file`/`libmagic` — MIME detection for the content indexer (optional; falls back to extensions)
 
 ### Optional (for file search)
 - `fd` — Fast file finder (strongly recommended)
+
+### Optional (for content extraction)
+- `poppler` (`pdftotext`) — PDF text
+- `pandoc` — Office/ODF (`.docx`, `.odt`, `.rtf`, `.epub`) text
+- `odt2txt` — ODF fallback when pandoc is absent
+- (plain text, code, Markdown, and HTML need no external tools)
 
 ### Build
 - C++20 compiler (GCC 10+ or Clang 12+)
@@ -44,10 +53,10 @@ A minimal, fast, keyboard-first Wayland-native launcher inspired by macOS Spotli
 ```bash
 # Install dependencies (Arch Linux)
 sudo pacman -S wayland wayland-protocols libxkbcommon cairo pango fontconfig \
-               gtk3 gdk-pixbuf2 librsvg
+               gtk3 gdk-pixbuf2 librsvg sqlite file tomlplusplus
 
-# Install optional file search
-sudo pacman -S fd
+# Install optional file search + content extractors
+sudo pacman -S fd poppler pandoc odt2txt
 
 # Clone and build
 git clone https://github.com/yourusername/waylaunch.git
@@ -77,6 +86,34 @@ waylaunch --save [path]
 # Debug output to stderr
 waylaunch --debug
 ```
+
+### Content search (the `waylaunchd` daemon)
+
+Full-text search inside documents needs the indexing daemon running. It builds
+and incrementally maintains the index; the launcher just queries it read-only,
+so search stays instant and still works (filename-only) if the daemon is down.
+
+```bash
+# Start + enable at login (recommended)
+systemctl --user enable --now waylaunchd
+
+# ...or run it in the foreground
+waylaunchd --config ~/.config/waylaunch/config.toml
+
+# One-shot crawl (e.g. from cron) without staying resident
+waylaunchd --once
+
+# Inspect / control the running daemon
+waylaunchctl status                 # index size, files, watches, state
+waylaunchctl pause | resume         # suspend/resume indexing
+waylaunchctl reindex                # rebuild the index from scratch
+waylaunchctl exclude ~/private      # stop indexing a path at runtime
+```
+
+Configure what gets indexed under `[content]` in the config (roots, excludes,
+privacy paths, size caps, `prefix` vs `substring` matching). The daemon runs at
+idle CPU/IO priority with a bounded memory footprint and skips a built-in
+privacy list (`~/.ssh`, `~/.gnupg`, …) by default.
 
 ## Configuration
 

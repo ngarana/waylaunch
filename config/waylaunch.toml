@@ -1,5 +1,5 @@
 # ============================================================================
-#  waylaunch — macOS Spotlight for Wayland
+#  waylaunch — App launcher and file search for Wayland
 # ----------------------------------------------------------------------------
 #  Install to:  ~/.config/waylaunch/config.toml
 #  (or pass an explicit path with:  waylaunch --config /path/to/file.toml)
@@ -17,12 +17,12 @@ debug   = false           # true → verbose stderr (also: waylaunch --debug)
 
 
 # ============================================================================
-#  [appearance] — Spotlight panel geometry and the frosted-glass effect.
+#  [appearance] — search panel geometry and the frosted-glass effect.
 #  These drive the actual on-screen layout (two-column: results + preview).
 # ============================================================================
 [appearance]
 width          = 720      # panel width in px
-margin_top     = 150      # gap from the top of the screen (Spotlight sits high)
+margin_top     = 150      # gap from the top of the screen (search sits high)
 corner_radius  = 16       # panel corner rounding
 search_height  = 64       # height of the large search field
 row_height     = 56       # height of one result row
@@ -31,7 +31,6 @@ list_width     = 402      # width of the left result column inside `width`
 max_per_group  = 6        # max rows shown per category (Apps / Files ...)
 
 # Frosted glass. waylaunch captures the desktop and blurs it client-side, so
-# it looks like Spotlight even on compositors with blur globally disabled.
 #   "auto" → use glass if a backdrop can be captured, else an opaque panel
 #   "on"   → force glass
 #   "off"  → always opaque (cheapest; no screen capture at all)
@@ -80,7 +79,7 @@ size   = 11.5
 #  calculator result and custom commands together, grouped and ranked.
 # ============================================================================
 [search]
-placeholder    = "Spotlight Search"
+placeholder    = "Search"
 
 # Turn individual result providers on/off.
 applications   = true        # .desktop apps (matched by name/comment)
@@ -118,6 +117,33 @@ enabled = true
 path    = "/usr/local/share/applications"
 type    = "desktop"
 enabled = true
+
+
+# ============================================================================
+#  [content] — index-backed full-text CONTENTS search (Spotlight's "find inside
+#  documents"). Served by the waylaunchd daemon, which builds an inverted index
+#  (SQLite FTS5) over your files; the launcher queries it read-only and shows a
+#  CONTENTS section below apps/files. Start the daemon with:
+#      systemctl --user enable --now waylaunchd
+#  and inspect/control it with `waylaunchctl status`. If the daemon has never
+#  run, content search silently stays off (filename search still works).
+#
+#  The launcher reads only enable/min_query/max_results/match here; the rest are
+#  the daemon's. roots/excludes default to the [search] file settings above.
+# ============================================================================
+[content]
+enable        = true          # master switch (also gates the UI CONTENTS section)
+# roots       = ["~"]         # defaults to [search].file_roots, then ~
+# excludes    = [".git", "node_modules", ".cache"]   # defaults to [search].file_excludes
+exclude_paths = ["~/.ssh", "~/.gnupg", "~/.mozilla"] # privacy: never read (merged w/ defaults)
+max_file_mb   = 8             # don't open files larger than this
+max_text_mb   = 2             # cap extracted text per file
+max_index_mb  = 0             # hard cap on index size (0 = unlimited)
+match         = "prefix"      # "prefix" (as-you-type) | "substring" (trigram)
+min_query     = 3             # chars before content search fires
+max_results   = 6             # CONTENTS rows shown
+extractors    = ["text", "pdf", "office", "html"]    # importers to enable
+throttle_on_battery = true    # slow the crawl while on battery
 
 
 # ============================================================================
@@ -162,7 +188,7 @@ category = "System"
 [platform]
 compositor             = "auto"   # informational
 use_layer_shell        = true     # overlay layer + keyboard grab (needed for
-                                  # the focus/dismiss behaviour Spotlight has)
+                                  # the focus/dismiss behaviour search has)
 show_on_all_workspaces = true
 notifications          = true
 

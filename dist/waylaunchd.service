@@ -1,0 +1,31 @@
+[Unit]
+Description=waylaunch content-search indexer
+Documentation=man:waylaunch(1)
+# Index while the graphical session is up; queries work even if this is down.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/waylaunchd
+ExecReload=/usr/bin/waylaunchctl reconcile
+Restart=on-failure
+RestartSec=5
+
+# Resource governance (docs/CONTENT_SEARCH.md §7 / NFR3/NFR4): run indexing at
+# background priority and cap memory so it is safe to leave running on a laptop.
+Nice=10
+IOSchedulingClass=idle
+CPUSchedulingPolicy=batch
+MemoryHigh=96M
+MemoryMax=192M
+# Hardening: the daemon needs no elevated privileges and no network.
+PrivateNetwork=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=%h/.local/share/waylaunch %t/waylaunch
+
+[Install]
+WantedBy=graphical-session.target

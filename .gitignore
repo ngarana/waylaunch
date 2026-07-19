@@ -27,8 +27,10 @@ cmake_install.cmake
 Makefile
 compile_commands.json
 
-# Binary
-waylaunch
+# Binary (anchored to the repo root so it does not ignore include/waylaunch/**)
+/waylaunch
+/waylaunchd
+/waylaunchctl
 
 # Test binaries
 tests/build/
