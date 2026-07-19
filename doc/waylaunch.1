@@ -1,0 +1,241 @@
+.TH WAYLAUNCH 1 "July 2026" "waylaunch 0.1.0" "User Commands"
+.
+.SH NAME
+waylaunch \- macOS Spotlight-style launcher for Wayland
+.
+.SH SYNOPSIS
+.B waylaunch
+[\fB\-c\fR \fIconfig\fR] [\fB\-q\fR \fIquery\fR] [\fB\-\-debug\fR]
+[\fB\-h\fR] [\fB\-v\fR]
+.
+.SH DESCRIPTION
+waylaunch is a minimal, fast, keyboard-first Wayland-native launcher.
+When invoked, it opens an overlay panel (via wlr-layer-shell) that
+behaves like macOS Spotlight: start typing and results from
+applications, files, the calculator, and custom commands appear
+together, grouped and ranked.
+.PP
+The panel features client-side frosted-glass blur (glassmorphism)
+using wlr-screencopy, a two-column layout with a preview pane, and
+full keyboard navigation.
+.
+.SH OPTIONS
+.TP
+\fB\-c\fR, \fB\-\-config\fR \fIpath\fR
+Path to the TOML configuration file. Defaults to
+$XDG_CONFIG_HOME/waylaunch/config.toml.
+.TP
+\fB\-q\fR, \fB\-\-query\fR \fItext\fR
+Prefill the search field with the given text.
+.TP
+\fB\-\-debug\fR
+Enable verbose debug output on stderr.
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Display usage information and exit.
+.TP
+\fB\-v\fR, \fB\-\-version\fR
+Print the version number and exit.
+.
+.SH KEYBINDINGS
+.TP
+\fBEscape\fR
+Dismiss the launcher.
+.TP
+\fBReturn\fR
+Activate the selected item (launch app, open file, copy calculator
+result, run command).
+.TP
+\fBUp\fR, \fBDown\fR
+Navigate through results.
+.TP
+\fBCtrl+J\fR, \fBCtrl+K\fR
+Vim-style navigation (down, up).
+.TP
+\fBTab\fR
+Autocomplete the selected app name into the search field.
+.TP
+\fBPageUp\fR, \fBPageDown\fR
+Jump by one result group.
+.TP
+\fBHome\fR, \fBEnd\fR
+Jump to the first or last result.
+.TP
+\fBRight-click\fR
+Reveal the selected item in the file manager.
+.
+.SH CONFIGURATION
+waylaunch reads a TOML configuration file. The default path is
+$XDG_CONFIG_HOME/waylaunch/config.toml. A full example with defaults
+is installed to $PREFIX/share/waylaunch/waylaunch.toml.
+.
+.SS [general]
+.TP
+\fBdebug\fR (bool, default: \fBfalse\fR)
+Enable verbose stderr output.
+.
+.SS [appearance]
+.TP
+\fBwidth\fR (int, default: \fB720\fR)
+Panel width in pixels.
+.TP
+\fBmargin_top\fR (int, default: \fB150\fR)
+Distance from the top of the screen.
+.TP
+\fBcorner_radius\fR (int, default: \fB16\fR)
+Panel corner rounding radius.
+.TP
+\fBsearch_height\fR (int, default: \fB64\fR)
+Search field height.
+.TP
+\fBrow_height\fR (int, default: \fB56\fR)
+Result row height.
+.TP
+\fBicon_size\fR (int, default: \fB34\fR)
+Icon size in pixels.
+.TP
+\fBlist_width\fR (int, default: \fB402\fR)
+Left result column width.
+.TP
+\fBmax_per_group\fR (int, default: \fB6\fR)
+Max results per category.
+.TP
+\fBblur\fR (string, default: \fB"auto"\fR)
+Frosted-glass mode: \fB"auto"\fR, \fB"on"\fR, or \fB"off"\fR.
+.TP
+\fBpanel_opacity\fR (double, default: \fB0.58\fR)
+Panel tint alpha when blurred but no backdrop captured.
+.TP
+\fBopaque_opacity\fR (double, default: \fB0.96\fR)
+Panel alpha when glass is unavailable.
+.TP
+\fBbackdrop_tint\fR (double, default: \fB0.55\fR)
+Darkening overlay alpha over the blurred backdrop.
+.
+.SS [theme]
+.TP
+\fBname\fR (string, default: \fB"dark"\fR)
+Theme name.
+.TP
+\fBmode\fR (string, default: \fB"dark"\fR)
+Color scheme mode.
+.SS [theme.colors]
+.TP
+\fBbackground\fR (string, default: \fB"#1e1e2e"\fR)
+.TP
+\fBforeground\fR (string, default: \fB"#cdd6f4"\fR)
+.TP
+\fBaccent\fR (string, default: \fB"#89b4fa"\fR)
+.TP
+\fBtext_muted\fR (string, default: \fB"#6c7086"\fR)
+.TP
+\fBborder\fR (string, default: \fB"#45475a"\fR)
+.TP
+\fBselection\fR (string, default: \fB"#45475a"\fR)
+.TP
+\fBerror\fR (string, default: \fB"#f38ba8"\fR)
+.SS [theme.input_font]
+.TP
+\fBfamily\fR (string, default: \fB"Sans"\fR)
+.TP
+\fBsize\fR (double, default: \fB22.0\fR)
+.SS [theme.result_font]
+.TP
+\fBfamily\fR (string, default: \fB"Sans"\fR)
+.TP
+\fBsize\fR (double, default: \fB14.0\fR)
+.SS [theme.result_detail_font]
+.TP
+\fBfamily\fR (string, default: \fB"Sans"\fR)
+.TP
+\fBsize\fR (double, default: \fB11.5\fR)
+.
+.SS [search]
+.TP
+\fBplaceholder\fR (string, default: \fB"Search..."\fR)
+Placeholder text in the search field.
+.TP
+\fBshow_icons\fR (bool, default: \fBtrue\fR)
+Show icons in results.
+.TP
+\fBdebounce_ms\fR (int, default: \fB150\fR)
+Keystroke debounce in milliseconds.
+.TP
+\fBmax_results\fR (int, default: \fB20\fR)
+Overall result cap.
+.TP
+\fBapplications\fR (bool, default: \fBtrue\fR)
+Enable app search.
+.TP
+\fBfiles\fR (bool, default: \fBtrue\fR)
+Enable file search.
+.TP
+\fBcalculator\fR (bool, default: \fBtrue\fR)
+Enable calculator.
+.TP
+\fBcommands\fR (bool, default: \fBtrue\fR)
+Enable custom commands.
+.TP
+\fBfile_roots\fR (array, default: \fB["~"]\fR)
+Directories to search for files.
+.TP
+\fBfile_excludes\fR (array)
+fd exclude patterns.
+.TP
+\fBfile_min_query\fR (int, default: \fB2\fR)
+Min chars before file search fires.
+.TP
+\fBmax_file_results\fR (int, default: \fB6\fR)
+Max file results kept.
+.TP
+\fB[[search.paths]]\fR
+Desktop file scan locations.
+.TP
+\fB[[search.file_patterns]]\fR
+Icon/label hints for file extensions.
+.
+.SS [[commands]]
+.TP
+\fBname\fR (string)
+Display name.
+.TP
+\fBcommand\fR (string)
+Shell command to run.
+.TP
+\fBicon\fR (string)
+Freedesktop icon name.
+.TP
+\fBcategory\fR (string)
+Subtitle group label.
+.
+.SS [platform]
+.TP
+\fBuse_layer_shell\fR (bool, default: \fBtrue\fR)
+Use wlr-layer-shell overlay mode.
+.TP
+\fBshow_on_all_workspaces\fR (bool, default: \fBtrue\fR)
+.TP
+\fBnotifications\fR (bool, default: \fBtrue\fR)
+.
+.SH FILES
+.TP
+$XDG_CONFIG_HOME/waylaunch/config.toml
+Default configuration file.
+.TP
+$PREFIX/share/waylaunch/waylaunch.toml
+Installed example config with all defaults documented.
+.
+.SH DEPENDENCIES
+Runtime: wayland-client, wayland-cursor, libxkbcommon, cairo,
+pangocairo, fontconfig, gtk+-3.0, gdk-pixbuf-2.0, librsvg-2.0
+.PP
+Optional: fd (for file search)
+.PP
+Build: C++20 compiler, CMake 3.20+, pkg-config, wayland-scanner,
+wayland-protocols, tomlplusplus, nlohmann-json
+.
+.SH BUGS
+Report bugs at https://github.com/yourusername/waylaunch/issues.
+.
+.SH AUTHORS
+Maintained by the waylaunch contributors.

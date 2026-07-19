@@ -171,6 +171,7 @@ endif()
 # Install
 install(TARGETS waylaunch DESTINATION bin)
 install(FILES config/waylaunch.toml DESTINATION ${CMAKE_INSTALL_PREFIX}/share/waylaunch)
+install(FILES doc/waylaunch.1 DESTINATION ${CMAKE_INSTALL_PREFIX}/share/man/man1)
 
 # toml++ (system package)
 find_package(tomlplusplus 3 CONFIG REQUIRED)

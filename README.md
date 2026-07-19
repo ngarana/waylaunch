@@ -1,177 +1,153 @@
 # waylaunch
 
-A minimal, fast, and customizable Wayland-native launcher with file search, application launching, and calculator functionality.
+A minimal, fast, keyboard-first Wayland-native launcher inspired by macOS Spotlight. One keystroke opens a unified search bar that returns applications, files, calculator results, and custom commands together — grouped and ranked.
 
 ## Features
 
-- **Wayland Native**: Built with raw Wayland protocols (no GTK/Qt dependencies)
-- **Layer Shell Support**: Overlay launcher using wlr-layer-shell (wlroots compositors)
-- **File Search**: Powered by `fd` and `fzf` for fast fuzzy file searching
-- **Content Search**: Search file contents with `ripgrep`
-- **Application Launcher**: Scans .desktop files for quick app launching
-- **Calculator**: Built-in calculator with math functions
-- **TOML Configuration**: Modern, human-readable config format
-- **Theming**: Customizable colors and fonts
-- **Keyboard-First**: Full keyboard navigation with vim/emacs bindings
+- **Unified Search** — no modes. Type once, get apps, files, folders, calculator results, and custom commands ranked together with a single Top Hit.
+- **Frosted Glass** — client-side backdrop blur via `wlr-screencopy`. Captures the desktop, downsamples, and applies a separable box blur for a glassmorphism look. Works on any compositor.
+- **Async File Search** — dedicated worker thread runs `fd` with prefix/substring ranking, recency bonuses, and path-depth penalties. Results stream into the UI without blocking.
+- **Application Launcher** — scans `.desktop` files from XDG data directories, filters in-memory per keystroke.
+- **Calculator** — built-in recursive-descent expression evaluator with trig, logs, and constants. A valid math expression becomes the Top Hit.
+- **Custom Commands** — user-defined shell commands in the config file (Lock Screen, Sleep, etc.), matched by name.
+- **Preview Pane** — two-column layout: results on the left, preview with details on the right. Right-click reveals files/apps in the file manager.
+- **TOML Configuration** — modern, human-readable format with sane defaults.
+- **Theming** — customizable Catppuccin-inspired dark palette, fonts, and layout.
+- **Keyboard-First** — navigate with arrows, vim/emacs bindings, tab-complete app names.
 
 ## Dependencies
 
-### Required
-- `wayland-client` - Wayland protocol library
-- `wayland-cursor` - Cursor handling
-- `wayland-scanner` - Protocol code generation
-- `wayland-protocols` - XDG shell and other protocols
-- `libxkbcommon` - Keyboard handling
-- `cairo` - 2D graphics
-- `pango` + `pangocairo` - Text rendering
-- `fontconfig` - Font discovery
-- `freetype2` - Font rasterization
+### Runtime
+- `wayland-client` — Wayland protocol library
+- `wayland-cursor` — Cursor handling
+- `libxkbcommon` — Keyboard handling
+- `cairo` — 2D graphics
+- `pango` + `pangocairo` — Text rendering
+- `fontconfig` — Font discovery
+- `gtk+-3.0` — Icon theme lookup (planned for removal)
+- `gdk-pixbuf-2.0` — Image loading (planned for removal)
+- `librsvg-2.0` — SVG icon rendering
 
-### Optional (for search functionality)
-- `fd` - Fast file finder
-- `fzf` - Fuzzy finder
-- `ripgrep` - Content search
+### Optional (for file search)
+- `fd` — Fast file finder (strongly recommended)
 
-### Build Tools
+### Build
 - C++20 compiler (GCC 10+ or Clang 12+)
 - CMake 3.20+
 - pkg-config
+- `wayland-scanner` + `wayland-protocols`
 
 ## Building
 
 ```bash
 # Install dependencies (Arch Linux)
-sudo pacman -S wayland wayland-protocols libxkbcommon cairo pango fontconfig freetype2
+sudo pacman -S wayland wayland-protocols libxkbcommon cairo pango fontconfig \
+               gtk3 gdk-pixbuf2 librsvg
 
-# Install optional search tools
-sudo pacman -S fd fzf ripgrep
+# Install optional file search
+sudo pacman -S fd
 
 # Clone and build
 git clone https://github.com/yourusername/waylaunch.git
 cd waylaunch
-mkdir build && cd build
-cmake ..
-make
+cmake -B build
+cmake --build build
 
 # Install
-sudo make install
+sudo cmake --install build
 ```
 
 ## Usage
 
 ```bash
-# Run with default config
+# Run with default config (~/.config/waylaunch/config.toml)
 waylaunch
 
 # Run with custom config
-waylaunch --config ~/.config/waylaunch/config.toml
+waylaunch -c /path/to/config.toml
 
-# Run in debug mode
+# Prefill the search query
+waylaunch -q "fire"
+
+# Debug output to stderr
 waylaunch --debug
 ```
 
 ## Configuration
 
-Configuration file is located at `~/.config/waylaunch/config.toml`.
+Default config path: `~/.config/waylaunch/config.toml`. See `config/waylaunch.toml` for the full reference.
 
-### Example Config
+### Quick Start
 
 ```toml
 [general]
-name = "waylaunch"
-version = 1
 debug = false
 
-[window]
-width = 700
-height = 500
-position = "center"
-margin = 100
-corner_radius = 12
-opacity = 0.95
+[appearance]
+width         = 720
+margin_top    = 150
+corner_radius = 16
+blur          = "auto"
 
-[theme]
-name = "dark"
+[search]
+placeholder    = "Type to search…"
+applications   = true
+files          = true
+calculator     = true
+commands       = true
+file_roots     = ["~"]
+max_file_results = 6
 
 [theme.colors]
 background = "#1e1e2e"
 foreground = "#cdd6f4"
-accent = "#89b4fa"
+accent     = "#89b4fa"
 
-[search]
-match_mode = "fuzzy"
-max_results = 20
-debounce_ms = 150
-
-[[search.paths]]
-path = "/usr/share/applications"
-type = "desktop"
-
-[modes]
-default = "applications"
-
-[[modes.list]]
-id = "applications"
-name = "Apps"
-enabled = true
-
-[[modes.list]]
-id = "files"
-name = "Files"
-enabled = true
+[[commands]]
+name    = "Lock Screen"
+command = "loginctl lock-session"
+icon    = "system-lock-screen"
 ```
+
+### Key sections
+
+| Section | Description |
+|---------|-------------|
+| `[general]` | Runtime settings (debug mode, etc.) |
+| `[appearance]` | Panel geometry and glassmorphism |
+| `[theme]` | Colors and fonts (Catppuccin dark default) |
+| `[search]` | Provider toggles, file search roots/excludes |
+| `[[commands]]` | Custom shell commands shown as results |
 
 ## Keybindings
 
-Default keybindings:
-
 | Key | Action |
 |-----|--------|
-| `Return` | Launch selected item |
-| `Escape` | Close launcher |
-| `Up/Down` | Navigate results |
-| `Tab` | Switch mode |
-| `Ctrl+J/K` | Navigate (vim style) |
-| `Ctrl+N/P` | Navigate (emacs style) |
-
-## Search Modes
-
-### Applications (`applications`)
-Scans `.desktop` files from XDG data directories.
-
-### Files (`files`)
-Uses `fd` for file discovery and `fzf` for fuzzy filtering.
-
-### Content (`contents`)
-Searches file contents using `ripgrep` with JSON output.
-
-### Calculator (`calculator`)
-Evaluates mathematical expressions with support for:
-- Basic operations: `+`, `-`, `*`, `/`, `^`
-- Functions: `sin`, `cos`, `tan`, `sqrt`, `log`, `ln`, `abs`, etc.
-- Constants: `pi`, `e`, `phi`
-- Parentheses for grouping
+| `Esc` | Dismiss |
+| `Return` | Activate selected (launch app, open file, copy result, run command) |
+| `Up` / `Down` | Navigate results |
+| `Ctrl+J` / `Ctrl+K` | Vim-style navigation |
+| `Tab` | Autocomplete app name |
+| `PageUp` / `PageDown` | Jump by group |
+| `Home` / `End` | First / last result |
+| `Right-click` | Reveal in file manager |
 
 ## Architecture
 
 ```
 src/
-├── main.cpp                 # Entry point
+├── main.cpp                 # Entry point, signal handling
 ├── core/
-│   ├── wayland_core.cpp     # Wayland protocol handling
-│   └── buffer.cpp           # Shared memory buffer management
+│   └── wayland_core.cpp     # Wayland protocol, wlr-layer-shell, SHM buffers, screencopy
 ├── ui/
-│   ├── renderer.cpp         # Cairo/Pango rendering
-│   └── launcher_ui.cpp      # Main UI logic
+│   ├── renderer.cpp         # Cairo/Pango rendering, backdrop blur, icon cache
+│   └── launcher_ui.cpp      # Main UI, event loop, unified search, worker thread
 ├── search/
-│   ├── search_manager.cpp   # Search orchestration
-│   ├── subprocess.cpp       # Process management
-│   └── fuzzy_matcher.cpp    # Fuzzy matching algorithm
+│   ├── search_manager.cpp   # Search orchestration (unused currently)
+│   └── subprocess.cpp       # Pipe-based subprocess management
 ├── modes/
-│   ├── app_launcher.cpp     # .desktop file parsing
-│   ├── file_search.cpp      # File search utilities
-│   ├── content_search.cpp   # Content search utilities
-│   ├── calculator.cpp       # Expression parser
+│   ├── app_launcher.cpp     # .desktop file scanning and filtering
+│   ├── calculator.cpp       # Recursive-descent expression parser
 │   └── clipboard.cpp        # wl-copy integration
 └── config/
     └── config.cpp           # TOML configuration parser
@@ -179,20 +155,11 @@ src/
 
 ## Protocol Support
 
-- **XDG Shell**: Standard windowed mode (all compositors)
-- **wlr-layer-shell**: Overlay mode (wlroots compositors)
-- **wlr-foreign-toplevel**: Window management (wlroots compositors)
+- **wlr-layer-shell** — Overlay panel with keyboard grab (wlroots compositors)
+- **xdg-shell** — Fallback windowed mode (all compositors)
+- **wlr-screencopy** — Desktop capture for client-side glassmorphism
+- **wlr-foreign-toplevel** — Window management (unused currently)
 
 ## License
 
-MIT License
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Acknowledgments
-
-- Inspired by [fzf](https://github.com/junegunn/fzf), [wofi](https://github.com/redelect/wofi), and [rofi](https://github.com/DaveDavenport/rofi)
-- Uses [toml++](https://github.com/marzer/tomlplusplus) for TOML parsing
-- Built with Cairo and Pango for rendering
+MIT
