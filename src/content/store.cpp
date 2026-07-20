@@ -10,6 +10,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <map>
 #include <sstream>
 #include <sys/stat.h>
 
@@ -258,7 +259,175 @@ int deadline_cb(void* p) { return now_ms() > *static_cast<int64_t*>(p); }
 // [path||'/', path||'0') is exactly the half-open range of paths below it.
 constexpr char kSubtreeWhere[] = "(path=?1 OR (path>=?1||'/' AND path<?1||'0'))";
 
+// ------------------------------------------------------------------------
+// Metadata predicate parsing (kind:/ext:/size:/modified:/name:).
+// ------------------------------------------------------------------------
+std::string to_lower(const std::string& s) {
+    std::string o;
+    o.reserve(s.size());
+    for (char c : s) o += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return o;
+}
+
+// "1M"/"500k"/"2G"/"1024" → bytes; -1 on malformed input.
+int64_t parse_size(const std::string& s) {
+    if (s.empty()) return -1;
+    size_t i = 0;
+    while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) i++;
+    if (i == 0) return -1;
+    int64_t n = std::strtoll(s.substr(0, i).c_str(), nullptr, 10);
+    std::string suf = s.substr(i);
+    if (suf.empty()) return n;
+    if (suf.size() != 1) return -1;
+    switch (std::tolower(static_cast<unsigned char>(suf[0]))) {
+        case 'k': return n * 1024;
+        case 'm': return n * 1024 * 1024;
+        case 'g': return n * 1024 * 1024 * 1024;
+        default:  return -1;
+    }
+}
+
+// kind: category → GLOB patterns matched against files.mime (OR'd).
+const std::vector<std::string>* kind_globs(const std::string& kind) {
+    static const std::map<std::string, std::vector<std::string>> m = {
+        {"pdf",   {"application/pdf"}},
+        {"image", {"image/*"}},
+        {"audio", {"audio/*"}},
+        {"video", {"video/*"}},
+        {"text",  {"text/*"}},
+        {"code",  {"text/x-*", "application/json", "application/javascript",
+                   "application/xml", "application/x-shellscript"}},
+        {"archive", {"application/zip", "application/x-tar", "application/gzip",
+                     "application/x-7z-compressed", "application/x-bzip2",
+                     "application/x-xz", "application/vnd.rar",
+                     "application/x-rar-compressed"}},
+        {"spreadsheet", {"*spreadsheetml*", "*opendocument.spreadsheet*",
+                         "text/csv", "application/vnd.ms-excel"}},
+        {"presentation", {"*presentationml*", "*opendocument.presentation*",
+                          "application/vnd.ms-powerpoint"}},
+        {"doc", {"*wordprocessingml*", "*opendocument.text*", "application/pdf",
+                 "application/rtf", "application/epub+zip", "text/markdown"}},
+    };
+    auto it = m.find(kind);
+    return it == m.end() ? nullptr : &it->second;
+}
+
+// Parse a modified:/mtime: value into an [min_ns, max_ns] window (0 = unset).
+// Accepts: today, yesterday, relative <Nd/>Nw/<Nh, and YYYY-MM-DD (optionally
+// prefixed < or >). Returns false if nothing parsed.
+bool parse_modified(std::string v, int64_t now_s, int64_t& min_ns, int64_t& max_ns) {
+    char op = 0;
+    if (!v.empty() && (v[0] == '<' || v[0] == '>')) { op = v[0]; v = v.substr(1); }
+    if (!v.empty() && v[0] == '=') v = v.substr(1);   // tolerate >=,<=
+    if (v.empty()) return false;
+    auto set_min = [&](int64_t sec) { min_ns = sec * 1000000000LL; };
+    auto set_max = [&](int64_t sec) { max_ns = sec * 1000000000LL; };
+    int64_t day0 = now_s - (now_s % 86400);           // UTC midnight (approx)
+
+    if (v == "today")     { set_min(day0); return true; }
+    if (v == "yesterday") { set_min(day0 - 86400); set_max(day0 - 1); return true; }
+
+    // relative duration: N h|d|w
+    if (std::isdigit(static_cast<unsigned char>(v[0])) &&
+        (v.back() == 'h' || v.back() == 'd' || v.back() == 'w')) {
+        int64_t n = std::strtoll(v.c_str(), nullptr, 10);
+        int64_t unit = v.back() == 'h' ? 3600 : v.back() == 'd' ? 86400 : 604800;
+        int64_t thresh = now_s - n * unit;
+        if (op == '>') set_max(thresh);               // older than N → mtime ≤ thresh
+        else           set_min(thresh);               // within last N → mtime ≥ thresh
+        return true;
+    }
+
+    // absolute date YYYY-MM-DD
+    if (v.size() == 10 && v[4] == '-' && v[7] == '-') {
+        struct tm tmv{};
+        if (strptime(v.c_str(), "%Y-%m-%d", &tmv)) {
+            time_t day = timegm(&tmv);
+            if (op == '<')      set_max(static_cast<int64_t>(day) - 1);
+            else if (op == '>') set_min(static_cast<int64_t>(day) + 86400);
+            else { set_min(day); set_max(static_cast<int64_t>(day) + 86400 - 1); }
+            return true;
+        }
+    }
+    return false;
+}
+
+// The metadata WHERE fragment (anonymous '?' placeholders) and its binder must
+// walk the same predicates in the same order.
+std::string meta_where(const MetaFilter& mf) {
+    std::string w;
+    if (!mf.mime_globs.empty()) {
+        w += " AND (";
+        for (size_t i = 0; i < mf.mime_globs.size(); i++) w += (i ? " OR " : "") + std::string("f.mime GLOB ?");
+        w += ")";
+    }
+    for (size_t i = 0; i < mf.name_likes.size(); i++) w += " AND lower(f.name) LIKE ? ESCAPE '\\'";
+    if (mf.size_min >= 0)     w += " AND f.size>=?";
+    if (mf.size_max >= 0)     w += " AND f.size<=?";
+    if (mf.mtime_min_ns > 0)  w += " AND f.mtime>=?";
+    if (mf.mtime_max_ns > 0)  w += " AND f.mtime<=?";
+    return w;
+}
+
+void bind_meta(sqlite3_stmt* st, int& idx, const MetaFilter& mf) {
+    for (const auto& g : mf.mime_globs)  sqlite3_bind_text(st, idx++, g.c_str(), -1, SQLITE_TRANSIENT);
+    for (const auto& p : mf.name_likes)  sqlite3_bind_text(st, idx++, p.c_str(), -1, SQLITE_TRANSIENT);
+    if (mf.size_min >= 0)    sqlite3_bind_int64(st, idx++, mf.size_min);
+    if (mf.size_max >= 0)    sqlite3_bind_int64(st, idx++, mf.size_max);
+    if (mf.mtime_min_ns > 0) sqlite3_bind_int64(st, idx++, mf.mtime_min_ns);
+    if (mf.mtime_max_ns > 0) sqlite3_bind_int64(st, idx++, mf.mtime_max_ns);
+}
+
 } // namespace
+
+std::string parse_meta_query(const std::string& query, MetaFilter& mf, int64_t now_s) {
+    if (now_s == 0) now_s = static_cast<int64_t>(::time(nullptr));
+    std::string text;
+    std::istringstream iss(query);
+    std::string tok;
+    while (iss >> tok) {
+        size_t colon = tok.find(':');
+        bool consumed = false;
+        if (colon != std::string::npos && colon > 0 && colon + 1 < tok.size()) {
+            std::string key = to_lower(tok.substr(0, colon));
+            std::string val = tok.substr(colon + 1);
+            if (key == "kind") {
+                if (auto* g = kind_globs(to_lower(val))) {
+                    mf.mime_globs.insert(mf.mime_globs.end(), g->begin(), g->end());
+                    mf.active = consumed = true;
+                }
+            } else if (key == "ext") {
+                std::string lv = to_lower(val);
+                if (!lv.empty() && lv.find_first_of("%_\\") == std::string::npos) {
+                    mf.name_likes.push_back("%." + lv);
+                    mf.active = consumed = true;
+                }
+            } else if (key == "name") {
+                std::string esc;
+                for (char c : to_lower(val)) { if (c == '%' || c == '_' || c == '\\') esc += '\\'; esc += c; }
+                if (!esc.empty()) { mf.name_likes.push_back("%" + esc + "%"); mf.active = consumed = true; }
+            } else if (key == "size") {
+                char op = 0;
+                std::string num = val;
+                if (!num.empty() && (num[0] == '<' || num[0] == '>')) { op = num[0]; num = num.substr(1); }
+                bool oreq = (!num.empty() && num[0] == '=');
+                if (oreq) num = num.substr(1);
+                int64_t bytes = parse_size(num);
+                if (bytes >= 0 && op == '>') { mf.size_min = oreq ? bytes : bytes + 1; mf.active = consumed = true; }
+                else if (bytes >= 0 && op == '<') { mf.size_max = oreq ? bytes : bytes - 1; mf.active = consumed = true; }
+            } else if (key == "modified" || key == "mtime" || key == "date") {
+                int64_t mn = 0, mx = 0;
+                if (parse_modified(val, now_s, mn, mx)) {
+                    if (mn) mf.mtime_min_ns = mn;
+                    if (mx) mf.mtime_max_ns = mx;
+                    mf.active = consumed = true;
+                }
+            }
+        }
+        if (!consumed) { if (!text.empty()) text += ' '; text += tok; }
+    }
+    return text;
+}
 
 // ============================================================================
 // Store
@@ -820,20 +989,26 @@ bool Store::query_is_common(const std::string& user_query) const {
     return any && min_df > opts_.common_term_df;
 }
 
-bool Store::ranked_rowids_full(const std::string& match, int limit,
+bool Store::ranked_rowids_full(const std::string& match, const MetaFilter& mf, int limit,
                                std::vector<std::pair<int64_t, double>>& out) {
-    // True global BM25 top-K. No join, no snippet: tombstones have no postings
-    // and snippets are hydrated later for the winners only.
-    const char* sql =
-        "SELECT files_fts.rowid, bm25(files_fts,10.0,1.0) AS s"
-        " FROM files_fts WHERE files_fts MATCH ?1 ORDER BY s LIMIT ?2;";
+    // True global BM25 top-K. No snippet (hydrated later for winners only). A
+    // metadata filter joins `files` and constrains it in the same pass; without
+    // one we skip the join for the fast path.
+    std::string sql =
+        "SELECT files_fts.rowid, bm25(files_fts,10.0,1.0) AS s FROM files_fts";
+    if (mf.active) sql += " JOIN files f ON f.id=files_fts.rowid";
+    sql += " WHERE files_fts MATCH ?";
+    if (mf.active) sql += meta_where(mf);
+    sql += " ORDER BY s LIMIT ?;";
     sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) != SQLITE_OK) {
         avail_ = Availability::Error;
         return true;   // hard failure: bounded retry would fail identically
     }
-    sqlite3_bind_text(st, 1, match.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(st, 2, limit);
+    int idx = 1;
+    sqlite3_bind_text(st, idx++, match.c_str(), -1, SQLITE_TRANSIENT);
+    if (mf.active) bind_meta(st, idx, mf);
+    sqlite3_bind_int(st, idx++, limit);
 
     int64_t deadline = now_ms() + opts_.query_budget_ms;
     if (opts_.query_budget_ms > 0)
@@ -856,25 +1031,31 @@ bool Store::ranked_rowids_full(const std::string& match, int limit,
     return !interrupted;
 }
 
-void Store::ranked_rowids_bounded(const std::string& match, int limit,
+void Store::ranked_rowids_bounded(const std::string& match, const MetaFilter& mf, int limit,
                                   std::vector<std::pair<int64_t, double>>& out) {
     // Bounded-work fallback for broad queries: walk the doclist newest-first
     // (FTS5 streams MATCH in rowid order natively — no sort), score only the
     // candidate budget, and rank within it. Trades global BM25 optimality for
-    // a latency ceiling independent of corpus size (challenge §8.3).
+    // a latency ceiling independent of corpus size (challenge §8.3). A metadata
+    // filter is applied within the budget window (recall may drop for an
+    // ultra-common term + a very selective filter — the degenerate combo).
     out.clear();
     int budget = std::max(limit, opts_.candidate_budget);
-    const char* sql =
-        "SELECT files_fts.rowid, bm25(files_fts,10.0,1.0) AS s"
-        " FROM files_fts WHERE files_fts MATCH ?1"
-        " ORDER BY files_fts.rowid DESC LIMIT ?2;";
+    std::string sql =
+        "SELECT files_fts.rowid, bm25(files_fts,10.0,1.0) AS s FROM files_fts";
+    if (mf.active) sql += " JOIN files f ON f.id=files_fts.rowid";
+    sql += " WHERE files_fts MATCH ?";
+    if (mf.active) sql += meta_where(mf);
+    sql += " ORDER BY files_fts.rowid DESC LIMIT ?;";
     sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) != SQLITE_OK) {
         avail_ = Availability::Error;
         return;
     }
-    sqlite3_bind_text(st, 1, match.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(st, 2, budget);
+    int idx = 1;
+    sqlite3_bind_text(st, idx++, match.c_str(), -1, SQLITE_TRANSIENT);
+    if (mf.active) bind_meta(st, idx, mf);
+    sqlite3_bind_int(st, idx++, budget);
     while (sqlite3_step(st) == SQLITE_ROW)
         out.emplace_back(sqlite3_column_int64(st, 0), sqlite3_column_double(st, 1));
     sqlite3_finalize(st);
@@ -890,12 +1071,53 @@ void Store::ranked_rowids_bounded(const std::string& match, int limit,
     }
 }
 
+std::vector<ContentHit> Store::metadata_search(const MetaFilter& mf, int limit) {
+    std::vector<ContentHit> hits;
+    // No free-text term: just list files matching the predicates, most-recent
+    // first. No FTS, no snippet — this is a browse-by-attribute query.
+    std::string sql = "SELECT f.path, f.name, f.mime FROM files f WHERE f.state=0" +
+                      meta_where(mf) + " ORDER BY f.mtime DESC LIMIT ?;";
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) != SQLITE_OK) {
+        avail_ = Availability::Error;
+        return hits;
+    }
+    int idx = 1;
+    bind_meta(st, idx, mf);
+    sqlite3_bind_int(st, idx++, limit);
+    double score = limit;   // preserve the recency order through the launcher's sort
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        ContentHit h;
+        if (const unsigned char* p = sqlite3_column_text(st, 0))
+            h.path.assign(reinterpret_cast<const char*>(p));
+        if (const unsigned char* n = sqlite3_column_text(st, 1))
+            h.name.assign(reinterpret_cast<const char*>(n));
+        if (const unsigned char* m = sqlite3_column_text(st, 2))
+            h.mime.assign(reinterpret_cast<const char*>(m));
+        h.score = score--;
+        hits.push_back(std::move(h));
+    }
+    sqlite3_finalize(st);
+    return hits;
+}
+
 std::vector<ContentHit> Store::search(const std::string& query, int limit,
                                       const std::string& hl_open, const std::string& hl_close) {
     std::vector<ContentHit> hits;
     if (!db_ || limit <= 0) return hits;
     static const bool trace = ::getenv("WL_SEARCH_TRACE") != nullptr;
     int64_t t0 = now_ms();
+
+    // Split structured predicates (kind:/ext:/size:/modified:/name:) from the
+    // free-text terms. A predicate-only query browses files by attribute; free
+    // text (with any predicates as filters) drives the FTS MATCH.
+    MetaFilter mf;
+    std::string text = parse_meta_query(query, mf);
+    std::string probe = build_match_query(text, /*prefix_last=*/false);  // has any real term?
+    if (probe.empty()) {
+        if (mf.active) return metadata_search(mf, limit);
+        return hits;   // neither a term nor a predicate → nothing to search
+    }
 
     // Phase 1: ranked rowids only. The planner picks between a full global-BM25
     // top-K (selective queries — sub-millisecond) and a bounded exact-term scan
@@ -904,18 +1126,16 @@ std::vector<ContentHit> Store::search(const std::string& query, int limit,
     // snippet() highlights what phase 1 actually matched.
     std::string match;
     std::vector<std::pair<int64_t, double>> top;
-    bool common = query_is_common(query);
+    bool common = query_is_common(text);
     int64_t t1 = now_ms();
     bool bounded = common;
     if (!common) {
-        match = build_match_query(query, /*prefix_last=*/true);
-        if (match.empty()) return hits;
-        if (!ranked_rowids_full(match, limit, top)) bounded = true;
+        match = build_match_query(text, /*prefix_last=*/true);
+        if (!ranked_rowids_full(match, mf, limit, top)) bounded = true;
     }
     if (bounded) {
-        match = build_match_query(query, /*prefix_last=*/false);
-        if (match.empty()) return hits;
-        ranked_rowids_bounded(match, limit, top);
+        match = build_match_query(text, /*prefix_last=*/false);
+        ranked_rowids_bounded(match, mf, limit, top);
     }
     int64_t t2 = now_ms();
 
