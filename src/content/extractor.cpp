@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
@@ -349,6 +350,73 @@ std::string strip_html(const std::string& in) {
     return out;
 }
 
+// Append a Unicode code point as UTF-8 (for numeric XML entities).
+void append_utf8(std::string& out, long cp) {
+    if (cp < 0 || cp > 0x10FFFF) return;
+    if (cp < 0x80) out.push_back(static_cast<char>(cp));
+    else if (cp < 0x800) {
+        out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+        out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+}
+
+// Strip XML markup: drop every tag, emitting a space at each tag boundary so
+// adjacent runs/cells/paragraphs don't fuse into one token, then decode named
+// and numeric (&#DDD; / &#xHH;) entities. This turns OOXML/ODF part XML —
+// word/document.xml, xl/sharedStrings.xml, ppt/slides/slideN.xml, content.xml —
+// into searchable plain text.
+std::string strip_xml(const std::string& in) {
+    std::string tagless;
+    tagless.reserve(in.size());
+    size_t i = 0, n = in.size();
+    while (i < n) {
+        if (in[i] == '<') {
+            size_t end = in.find('>', i);
+            if (end == std::string::npos) break;
+            i = end + 1;
+            tagless.push_back(' ');
+        } else {
+            tagless.push_back(in[i++]);
+        }
+    }
+    std::string out;
+    out.reserve(tagless.size());
+    for (size_t j = 0; j < tagless.size();) {
+        if (tagless[j] == '&') {
+            size_t semi = tagless.find(';', j);
+            if (semi != std::string::npos && semi - j <= 10) {
+                std::string ent = tagless.substr(j + 1, semi - j - 1);
+                if (ent == "amp") { out.push_back('&'); j = semi + 1; continue; }
+                if (ent == "lt")  { out.push_back('<'); j = semi + 1; continue; }
+                if (ent == "gt")  { out.push_back('>'); j = semi + 1; continue; }
+                if (ent == "quot"){ out.push_back('"'); j = semi + 1; continue; }
+                if (ent == "apos"){ out.push_back('\''); j = semi + 1; continue; }
+                if (ent == "nbsp"){ out.push_back(' '); j = semi + 1; continue; }
+                if (ent.size() > 1 && ent[0] == '#') {
+                    long cp = 0;
+                    char* endp = nullptr;
+                    if (ent[1] == 'x' || ent[1] == 'X')
+                        cp = std::strtol(ent.c_str() + 2, &endp, 16);
+                    else
+                        cp = std::strtol(ent.c_str() + 1, &endp, 10);
+                    if (endp && *endp == '\0') { append_utf8(out, cp); j = semi + 1; continue; }
+                }
+            }
+        }
+        out.push_back(tagless[j++]);
+    }
+    return out;
+}
+
 // --------------------------------------------------------------------------
 // Extension → MIME fallback (used when libmagic is unavailable or unsure).
 // --------------------------------------------------------------------------
@@ -366,12 +434,59 @@ std::string ext_mime(const std::string& ext) {
         {"html", "text/html"}, {"htm", "text/html"},
         {"pdf", "application/pdf"},
         {"docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+        {"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+        {"pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
         {"odt", "application/vnd.oasis.opendocument.text"},
+        {"ods", "application/vnd.oasis.opendocument.spreadsheet"},
+        {"odp", "application/vnd.oasis.opendocument.presentation"},
         {"rtf", "application/rtf"}, {"epub", "application/epub+zip"},
     };
     for (auto& kv : kMap)
         if (ext == kv.first) return kv.second;
     return "";
+}
+
+// A zip-based office document family, or None. Extension is authoritative
+// (unambiguous and cheap); MIME is a fallback since libmagic often reports these
+// ZIP containers as application/zip.
+enum class OfficeZip { None, Ooxml, Odf, Epub };
+
+// Which members to pull from the container and how to strip them. OOXML/ODF are
+// stripped as XML; EPUB members are XHTML. Optional members (headers, extra
+// sheets/slides) are globs — unzip matches them internally and simply skips
+// absent ones (it exits non-zero, which is why the caller keys success on
+// non-empty output, not exit code).
+struct OfficePlan {
+    OfficeZip           kind = OfficeZip::None;
+    std::vector<std::string> members;   // unzip -p patterns
+    bool                html = false;    // strip as HTML (epub) vs XML
+};
+
+OfficePlan office_plan(const std::string& ext, const std::string& mime) {
+    auto is = [&](const char* e) { return ext == e; };
+    auto mime_has = [&](const char* s) { return mime.find(s) != std::string::npos; };
+
+    if (is("docx") || (ext.empty() && mime_has("wordprocessingml")))
+        return {OfficeZip::Ooxml,
+                {"word/document.xml", "word/header*.xml", "word/footer*.xml",
+                 "word/footnotes.xml", "word/endnotes.xml"}, false};
+    if (is("xlsx") || (ext.empty() && mime_has("spreadsheetml")))
+        // Only the shared-string table — the actual cell text. Deliberately NOT
+        // the sheets: string cells there store *indices* into sharedStrings
+        // (<v>0</v>), plus header/footer font chrome, which would pollute the
+        // index with junk tokens. A rare inline-string/numbers-only workbook has
+        // no sharedStrings → empty output → pandoc fallback covers it.
+        return {OfficeZip::Ooxml, {"xl/sharedStrings.xml"}, false};
+    if (is("pptx") || (ext.empty() && mime_has("presentationml")))
+        return {OfficeZip::Ooxml,
+                {"ppt/slides/slide*.xml", "ppt/notesSlides/notesSlide*.xml"}, false};
+    if (is("odt") || is("ods") || is("odp") ||
+        (ext.empty() && mime_has("opendocument")))
+        return {OfficeZip::Odf, {"content.xml"}, false};
+    if (is("epub") || (ext.empty() && mime_has("epub")))
+        // Reading content only (.xhtml/.html); skip the OPF/NCX metadata XML.
+        return {OfficeZip::Epub, {"*.xhtml", "*.html", "*.htm"}, true};
+    return {};
 }
 
 } // namespace
@@ -415,7 +530,8 @@ std::string Extractor::importer_for(const std::string& mime, const std::string& 
     if (on("html") && (mime == "text/html" || ext == "html" || ext == "htm")) return "html";
     if (on("pdf") && (mime == "application/pdf" || ext == "pdf")) return "pdf";
     if (on("office")) {
-        static const char* office_ext[] = {"docx", "odt", "rtf", "epub", "odp", "ods"};
+        static const char* office_ext[] = {"docx", "xlsx", "pptx", "odt", "ods",
+                                           "odp", "rtf", "epub"};
         for (auto* e : office_ext)
             if (ext == e) return "office";
         if (mime.find("opendocument") != std::string::npos ||
@@ -455,20 +571,42 @@ ExtractResult Extractor::extract(const std::string& path, const ExtractOptions& 
         res.text = std::move(c.out);
     } else if (res.importer == "office") {
         std::string ext = lower_ext(path);
-        std::vector<std::string> argv;
-        if (ext == "odt" && !Subprocess::command_exists("pandoc") &&
-            Subprocess::command_exists("odt2txt")) {
-            argv = {"odt2txt", "--encoding=UTF-8", path};
-        } else if (Subprocess::command_exists("pandoc")) {
-            argv = {"pandoc", "-t", "plain", "--wrap=none", "--", path};
-        } else {
-            res.status = ExtractStatus::Unsupported;
-            return res;
+        // Preferred path: unzip the container's text parts and strip in-process.
+        // This handles xlsx/pptx (which pandoc cannot) and drops the heavy pandoc
+        // (GHC) dependency for the common OOXML/ODF formats.
+        OfficePlan plan = office_plan(ext, res.mime);
+        bool extracted = false;
+        if (plan.kind != OfficeZip::None && Subprocess::command_exists("unzip")) {
+            std::vector<std::string> argv = {"unzip", "-p", path};
+            argv.insert(argv.end(), plan.members.begin(), plan.members.end());
+            Capped c = run_capped(argv, opt, opt.max_text_bytes);
+            if (c.timed_out) { res.status = ExtractStatus::Timeout; return res; }
+            // unzip exits non-zero when an optional member glob matches nothing,
+            // so success is "we got bytes", not c.ok. Empty ⇒ fall through to
+            // pandoc (e.g. a member layout we didn't anticipate).
+            if (!c.out.empty()) {
+                res.text = plan.html ? strip_html(c.out) : strip_xml(c.out);
+                extracted = true;
+            }
         }
-        Capped c = run_capped(argv, opt, opt.max_text_bytes);
-        if (c.timed_out) { res.status = ExtractStatus::Timeout; return res; }
-        if (!c.ok) { res.status = ExtractStatus::Error; return res; }
-        res.text = std::move(c.out);
+        if (!extracted) {
+            // Fallback: pandoc (rtf, or an OOXML/ODF variant unzip couldn't read,
+            // or no unzip). odt2txt is a lighter last resort for .odt.
+            std::vector<std::string> argv;
+            if (ext == "odt" && !Subprocess::command_exists("pandoc") &&
+                Subprocess::command_exists("odt2txt")) {
+                argv = {"odt2txt", "--encoding=UTF-8", path};
+            } else if (Subprocess::command_exists("pandoc")) {
+                argv = {"pandoc", "-t", "plain", "--wrap=none", "--", path};
+            } else {
+                res.status = ExtractStatus::Unsupported;
+                return res;
+            }
+            Capped c = run_capped(argv, opt, opt.max_text_bytes);
+            if (c.timed_out) { res.status = ExtractStatus::Timeout; return res; }
+            if (!c.ok) { res.status = ExtractStatus::Error; return res; }
+            res.text = std::move(c.out);
+        }
     }
 
     sanitize(res.text, opt.max_text_bytes);

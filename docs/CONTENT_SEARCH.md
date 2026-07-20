@@ -359,10 +359,27 @@ this on Linux.
 | Process model | **Persistent per-user daemon** | Index stays warm while launcher is closed; instant read-only queries; isolation. | **Index inside the launcher** (dies on exit, can't stay fresh, slow first query). |
 | Launcher↔index | **Direct read-only SQLite (WAL)** | No IPC on the hot path; simplest, fastest. | **Query-over-socket to daemon** (adds latency + a serialization protocol for no benefit on reads). |
 
-Extraction libraries (all optional, degrade if absent — like missing
-`mdimporter`s): plain/code/markdown (built-in), **poppler** (`pdftotext`/
-`libpoppler-cpp`) for PDF, unzip+XML strip for `docx/xlsx/pptx/odt`, tag-strip for
-HTML, **libmagic** for MIME sniffing.
+Extraction (all optional, degrade if absent — like missing `mdimporter`s):
+- plain/code/markdown — built-in, in-process.
+- HTML — built-in tag-strip (drops `<script>`/`<style>`).
+- **PDF** — `pdftotext` (poppler) subprocess.
+- **OOXML** (`docx`/`xlsx`/`pptx`) and **ODF** (`odt`/`ods`/`odp`) — these are ZIP
+  containers, so we `unzip -p` just the text-bearing members and strip the XML
+  in-process: `word/document.xml` (+headers/footers/notes) for docx,
+  `xl/sharedStrings.xml` for xlsx, `ppt/slides/slide*.xml` (+notes) for pptx,
+  `content.xml` for ODF. This is what makes the headline "search the contents of a
+  spreadsheet" work, and it removes the heavy **pandoc** (GHC) dependency for the
+  common office formats. `unzip` exits non-zero when an optional member glob
+  matches nothing, so success is keyed on non-empty output. (xlsx indexes only the
+  shared-string table, not the worksheets: string cells there store *indices* into
+  that table plus header/footer font chrome, which would be junk in the index; a
+  rare inline-string workbook falls through to pandoc.)
+- **EPUB** — `unzip -p` the `.xhtml`/`.html` reading content, HTML-strip; OPF/NCX
+  metadata is deliberately excluded.
+- **RTF** and any OOXML/ODF variant our member map misses — fall back to **pandoc**
+  (`-t plain`), or `odt2txt` for `.odt` when pandoc is absent.
+- **libmagic** for MIME sniffing; extension is authoritative for the ZIP office
+  formats (libmagic often reports them as `application/zip`).
 
 ---
 
