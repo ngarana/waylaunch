@@ -252,39 +252,66 @@ void Indexer::wait_if_paused() {
     cv_.wait(lk, [&] { return !paused_.load() || stop_.load(); });
 }
 
+void Indexer::full_reconcile() {
+    // The full freshness pass: re-crawl (adds/modifies; unchanged files are
+    // skipped cheaply by the mtime/size gate in index_file) and reconcile
+    // deletions, then merge. This is both the startup pass (FR4) and the
+    // periodic backstop for anything inotify missed (§4.5/§9).
+    crawl_all();
+    reconcile_deletions();
+    store_.maintain();
+    last_reconcile_s_.store(static_cast<int64_t>(::time(nullptr)), std::memory_order_relaxed);
+}
+
+int Indexer::reconcile_interval() const {
+    if (watch_degraded_.load(std::memory_order_relaxed) &&
+        cfg_.reconcile_interval_degraded_s > 0)
+        return cfg_.reconcile_interval_degraded_s;
+    return cfg_.reconcile_interval_s;
+}
+
 void Indexer::run_loop() {
     setpriority(PRIO_PROCESS, 0, cfg_.worker_nice);   // background CPU priority (NFR3)
     set_ionice_idle();
 
-    // Initial full pass: crawl to (re)index, then reconcile deletions.
+    using clock = std::chrono::steady_clock;
     if (reindex_.exchange(false)) store_.clear();
-    crawl_all();
-    reconcile_deletions();
-    store_.maintain();
+    full_reconcile();
+    clock::time_point last_pass = clock::now();
 
     int batches = 0;
     while (!stop_.load()) {
         std::deque<WorkItem> batch;
         {
             std::unique_lock<std::mutex> lk(mtx_);
-            cv_.wait(lk, [&] {
+            auto pred = [&] {
                 return stop_.load() || reconcile_.load() || reindex_.load() ||
                        !queue_.empty();
-            });
+            };
+            // Recompute the deadline each iteration so a mid-wait switch to the
+            // degraded (shorter) interval takes effect on the next wake.
+            int iv = reconcile_interval();
+            if (iv > 0)
+                cv_.wait_until(lk, last_pass + std::chrono::seconds(iv), pred);
+            else
+                cv_.wait(lk, pred);
             if (stop_.load()) break;
+
             if (reindex_.exchange(false)) {
                 lk.unlock();
                 store_.clear();
-                crawl_all();
-                reconcile_deletions();
-                store_.maintain();
+                full_reconcile();
+                last_pass = clock::now();
                 continue;
             }
-            if (reconcile_.exchange(false)) {
+            // Explicit reconcile (overflow/control) or the periodic deadline —
+            // both run the same full pass. The deadline reset prevents a
+            // busy queue from starving or re-triggering the backstop.
+            bool periodic_due = iv > 0 && clock::now() >= last_pass + std::chrono::seconds(iv);
+            if (reconcile_.exchange(false) || periodic_due) {
                 lk.unlock();
-                crawl_all();
-                reconcile_deletions();
-                store_.maintain();
+                full_reconcile();
+                last_pass = clock::now();
                 continue;
             }
             // take a bounded batch
@@ -313,9 +340,7 @@ void Indexer::run_once() {
     setpriority(PRIO_PROCESS, 0, cfg_.worker_nice);
     set_ionice_idle();
     if (reindex_.exchange(false)) store_.clear();
-    crawl_all();
-    reconcile_deletions();
-    store_.maintain();
+    full_reconcile();
 }
 
 void Indexer::start() {
@@ -362,7 +387,15 @@ void Indexer::request_reconcile() {
 
 void Indexer::request_reindex() {
     reindex_.store(true);
+    watch_degraded_.store(false, std::memory_order_relaxed);  // a fresh index re-adds watches
     cv_.notify_one();
+}
+
+void Indexer::set_watch_degraded(bool degraded) {
+    bool was = watch_degraded_.exchange(degraded, std::memory_order_relaxed);
+    // On first degrade: reconcile now (some subtrees just went unwatched), then
+    // the loop switches to the shorter interval for subsequent passes.
+    if (degraded && !was) request_reconcile();
 }
 
 void Indexer::add_runtime_exclude(std::string path) {
@@ -384,6 +417,10 @@ Indexer::Snapshot Indexer::snapshot() const {
     s.errors = errors_.load(std::memory_order_relaxed);
     s.crawling = crawling_.load(std::memory_order_relaxed);
     s.paused = paused_.load(std::memory_order_relaxed);
+    s.watch_degraded = watch_degraded_.load(std::memory_order_relaxed);
+    s.reconcile_interval_s = reconcile_interval();
+    int64_t last = last_reconcile_s_.load(std::memory_order_relaxed);
+    s.last_reconcile_ago_s = last ? (static_cast<int64_t>(::time(nullptr)) - last) : -1;
     {
         std::lock_guard<std::mutex> lk(mtx_);
         s.queued = static_cast<int64_t>(queue_.size());

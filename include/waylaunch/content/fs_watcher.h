@@ -31,6 +31,10 @@ public:
         // events, so without this its files stay in the index until the next
         // full reconcile (challenge §6.1).
         PathFn on_remove_tree;
+        // inotify watch descriptors were exhausted (ENOSPC): some subtrees can't
+        // be watched, so freshness there now depends on the periodic reconcile.
+        // Fired once, the first time the limit is hit.
+        VoidFn on_watch_limit;
     };
 
     // `excluded(path)` returns true for paths that must not be watched or reported.

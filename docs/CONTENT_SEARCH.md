@@ -110,7 +110,10 @@ Spotlight cleanly separates *indexing* (expensive, background, incremental) from
   1 M. Measured (`content_bench`, 1 M docs): selective p99 3.4 ms; ultra-common
   single term 44 ms with the planner vs 779 ms without.
 - **NFR2 Freshness:** single-file edit reflected in query results ≤ 5 s under
-  normal load.
+  normal load (inotify path). In a subtree left unwatched because watch
+  descriptors are exhausted, freshness instead is bounded by the periodic
+  reconcile (`reconcile_interval_degraded_s`, default 3 min) — degraded but not
+  lost; the fix is raising `fs.inotify.max_user_watches`.
 - **NFR3 Indexer CPU:** background indexing runs at low priority (`nice ≥ 10`,
   best-effort `ionice`), single-digit % CPU steady-state; a full initial crawl
   may burst but must yield under load / on battery.
@@ -304,9 +307,15 @@ Linux has no single FSEvents equivalent; we abstract it as `FsWatcher`:
   over `path` and everything under `path/`) rather than a lone single-path drop
   that would strand the descendants until the next full reconcile (challenge
   §6.1).
-- **Reconciliation scan (FR4).** On startup and after overflow, walk roots and
-  diff against `files` (mtime/size) to repair missed events. This is the
-  robustness backstop Spotlight gets from the FSEvents DB.
+- **Reconciliation scan (FR4).** On startup, after overflow, and on a **periodic
+  timer** (`reconcile_interval_s`, default 15 min), walk roots and diff against
+  `files` (mtime/size) to repair missed events — unchanged files are skipped
+  cheaply by the mtime/size gate, so a steady-state pass is mostly `stat()`s under
+  the same `nice`/`ionice`/battery throttle as the crawl. This is the robustness
+  backstop Spotlight gets from the FSEvents DB, and it's the **only** freshness
+  path for subtrees left unwatched when watch descriptors are exhausted (below),
+  so on `ENOSPC` the daemon drops to a shorter `reconcile_interval_degraded_s`
+  (default 3 min) and warns via the log + control status (`watch_degraded`).
 - **Future: `fanotify`** with `FAN_REPORT_FID`/dirent events for whole-mount
   efficiency — behind the same interface. Gated because it historically needs
   `CAP_SYS_ADMIN`; not assumed in a user session.
@@ -472,7 +481,7 @@ Measured worst case (`content_bench`, ultra-common term): 11 ms p99 @ 100 k,
 | Extractor crash/hang/OOM | Subprocess killed on timeout; cgroup `memory.max`+`oom.group` kills the whole extractor tree on OOM; `RLIMIT_DATA`/`RLIMIT_CPU` as portable fallback; file marked `state=error`; daemon unaffected. `PR_SET_PDEATHSIG` guarantees no orphaned extractor outlives the daemon. |
 | inotify queue overflow | `IN_Q_OVERFLOW` → schedule subtree reconcile scan. |
 | Directory moved-out / deleted | Subtree removal (range-delete) — descendants don't strand. |
-| Watch-descriptor exhaustion | Detect, warn via control status, fall back to periodic reconcile for unwatched subtrees. |
+| Watch-descriptor exhaustion (`ENOSPC`) | Detected in the watcher (fires `on_watch_limit` once); daemon warns (log + `watch_degraded`/`watch_limit_hit` in status) and shortens the periodic reconcile to `reconcile_interval_degraded_s` so unwatched subtrees still refresh. Raising `fs.inotify.max_user_watches` restores instant freshness. |
 | DB corruption | Detect on open (`PRAGMA quick_check`); rebuild from scratch (index is derived data). |
 | Schema/tokenizer/format change | `user_version` bump ⇒ writer rebuilds; reader reports `VersionMismatch` and degrades to filename search until the daemon has rebuilt. |
 | Daemon down | Launcher opens strictly read-only; queries stale index; if none/mismatched, filename-only search. |
@@ -493,6 +502,8 @@ min_query         = 3             # chars before content search fires
 max_results       = 6
 extractors        = ["text", "pdf", "office", "html"]  # enable/order importers
 throttle_on_battery = true
+reconcile_interval_s          = 900   # periodic freshness backstop (0 = off)
+reconcile_interval_degraded_s = 180   # used while inotify watches are exhausted
 ```
 
 The launcher reads only `enable`, `min_query`, `max_results`, `match`; the rest

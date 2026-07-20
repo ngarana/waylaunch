@@ -144,6 +144,8 @@ min_query     = 3             # chars before content search fires
 max_results   = 6             # CONTENTS rows shown
 extractors    = ["text", "pdf", "office", "html"]    # importers to enable
 throttle_on_battery = true    # slow the crawl while on battery
+reconcile_interval_s          = 900   # periodic freshness backstop, seconds (0 = off)
+reconcile_interval_degraded_s = 180   # shorter interval while inotify watches are exhausted
 
 
 # ============================================================================

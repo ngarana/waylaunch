@@ -62,6 +62,9 @@ std::string build_status(const ContentConfig& cfg, Indexer& indexer, FsWatcher& 
     out += "queued: " + std::to_string(s.queued) + "\n";
     out += "watches: " + std::to_string(watcher.watch_count()) + "\n";
     out += "watch_limit_hit: " + yesno(watcher.watch_limit_hit()) + "\n";
+    out += "watch_degraded: " + yesno(s.watch_degraded) + "\n";
+    out += "reconcile_interval_s: " + std::to_string(s.reconcile_interval_s) + "\n";
+    out += "last_reconcile_ago_s: " + std::to_string(s.last_reconcile_ago_s) + "\n";
     return out;
 }
 
@@ -143,6 +146,15 @@ int main(int argc, char** argv) {
         [&](const std::string& p) { indexer.enqueue_remove(p); },
         [&] { indexer.request_reconcile(); },
         [&](const std::string& p) { indexer.enqueue_remove_tree(p); },
+        [&] {
+            indexer.set_watch_degraded(true);
+            std::fprintf(stderr,
+                "waylaunchd: WARNING inotify watch limit hit "
+                "(fs.inotify.max_user_watches) — some subtrees are unwatched; "
+                "relying on periodic reconcile every %ds. Raise the sysctl to "
+                "restore instant freshness.\n",
+                cfg.reconcile_interval_degraded_s);
+        },
     });
 
     // A dedicated read-only handle for status queries (separate from the writer).
