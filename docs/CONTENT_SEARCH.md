@@ -100,8 +100,15 @@ Spotlight cleanly separates *indexing* (expensive, background, incremental) from
   and per-path exclusion at runtime.
 
 ### Non-functional (NFR)
-- **NFR1 Query latency:** p50 ≤ 15 ms, p99 ≤ 50 ms at 1 M indexed documents,
-  measured from query submit to ranked results (excludes UI paint).
+- **NFR1 Query latency:** p50 ≤ 15 ms at 1 M indexed documents; p99 ≤ 50 ms for
+  *bounded* queries, measured from query submit to ranked results (excludes UI
+  paint). p99 is qualified because a strict global-BM25 top-K over an
+  ultra-common single term is inherently O(posting-list) and grows with corpus
+  size (see CONTENT_SEARCH_STORE.md §8). The store meets p99 by classifying such
+  queries via document frequency and answering them with a bounded exact-term
+  scan (§6.1 below); selective queries — the p50 population — stay sub-4 ms at
+  1 M. Measured (`content_bench`, 1 M docs): selective p99 3.4 ms; ultra-common
+  single term 44 ms with the planner vs 779 ms without.
 - **NFR2 Freshness:** single-file edit reflected in query results ≤ 5 s under
   normal load.
 - **NFR3 Indexer CPU:** background indexing runs at low priority (`nice ≥ 10`,
@@ -109,8 +116,17 @@ Spotlight cleanly separates *indexing* (expensive, background, incremental) from
   may burst but must yield under load / on battery.
 - **NFR4 Memory:** daemon steady-state RSS ≤ ~60 MB (bounded SQLite page cache +
   bounded work queues). Extraction workers are short-lived subprocesses.
-- **NFR5 Disk:** index size target ≤ ~15–25 % of indexed text volume; hard cap
-  configurable; extraction capped per file (default 2 MB of text/file).
+- **NFR5 Disk:** a *snippet-capable* FTS5 index is ~150–250 % of indexed text
+  volume, not the ≤15–25 % originally targeted — the 15–25 % figure assumed a
+  compact posting-only index, but snippets, positions (for phrase/CamelCase
+  matching), and prefix terms each cost space and cannot be dropped without
+  losing a feature (see CONTENT_SEARCH_STORE.md §7). The store minimizes within
+  that reality: extracted body text is **zstd-compressed** (~3× on prose) behind
+  an external-content view, a single `prefix='3'` index (not `'2 3'`) matches the
+  3-char `content_min_query` without indexing shorter prefixes, and per-file text
+  is capped (default 2 MB). Measured (`content_bench`): ~203 % at 100 k docs,
+  ~243 % at 1 M. A configurable hard `max_index_mb` cap stops the crawl if
+  exceeded.
 - **NFR6 Robustness:** an extractor crash/hang/OOM never crashes the daemon and
   never blocks queries; a corrupt index self-heals by rebuild.
 - **NFR7 Privacy:** index stored under `$XDG_DATA_HOME` with `0700`/`0600` perms;
@@ -182,7 +198,8 @@ two-level, transient→static store, but battle-tested and embeddable.
 PRAGMA journal_mode = WAL;          -- concurrent readers + 1 writer
 PRAGMA synchronous  = NORMAL;
 
--- Canonical file record (metadata; the "kMDItem*" analog, minimal).
+-- Canonical file record (metadata; the "kMDItem*" analog, minimal). No body text
+-- here, so metadata scans never drag body pages through the page cache.
 CREATE TABLE files (
     id            INTEGER PRIMARY KEY,
     path          TEXT UNIQUE NOT NULL,   -- absolute
@@ -198,31 +215,59 @@ CREATE TABLE files (
 CREATE INDEX files_state ON files(state);
 CREATE INDEX files_parent ON files(parent);
 
--- The inverted index. External-content table => FTS5 stores tokens, not a second
--- copy of the text. name and body are separate columns so ranking can weight
--- filename above content (Spotlight weights metadata over content).
+-- Extracted text, zstd-compressed (~3× on prose). Only live rows have a doc:
+-- tombstoning deletes the doc, which via triggers drops the FTS postings, so the
+-- query path needs no state filter. This is what keeps the on-disk body ≈ 30 %
+-- of raw text while snippets still work (see below).
+CREATE TABLE docs (
+    id      INTEGER PRIMARY KEY,
+    name    TEXT NOT NULL,
+    body_z  BLOB                          -- zstd frame; NULL for empty bodies
+);
+-- The external-content source FTS5 reads through. wl_unzstd() is an app-defined
+-- SQL function; decompression is deterministic, so 'delete' postings reproduce
+-- exactly what was indexed. This is the trick that lets snippet()/highlight()
+-- read original text WITHOUT a second uncompressed copy (challenge §3).
+CREATE VIEW docs_v(id, name, body) AS
+    SELECT id, name, wl_unzstd(body_z) FROM docs;
+
+-- The inverted index over the view. name and body are separate columns so
+-- ranking weights filename above content (Spotlight weights metadata over
+-- content). The custom "wl" tokenizer = unicode61 + CamelCase/digit
+-- segmentation; see §6. prefix='3' (not '2 3') matches the 3-char
+-- content_min_query without paying for 2-char prefixes.
 CREATE VIRTUAL TABLE files_fts USING fts5(
     name,                    -- filename tokens (high weight)
     body,                    -- extracted content tokens
-    content='files',
+    content='docs_v',
     content_rowid='id',
-    tokenize = "unicode61 remove_diacritics 2 tokenchars '_'"
-    -- prefix='2 3'  => as-you-type prefix matches; see §6 for trigram option
+    tokenize = "wl remove_diacritics 2",
+    prefix   = '3'
 );
+-- Term → document-frequency access for the query planner (§6.1 / challenge §8).
+CREATE VIRTUAL TABLE files_fts_v USING fts5vocab('files_fts', 'row');
+-- Sync triggers fire on docs (INSERT/DELETE/UPDATE), decompressing via
+-- wl_unzstd() so FTS5 sees original text for tokenizing and for delete postings.
 ```
 
 Notes:
-- **Tokenization** uses `unicode61` (Unicode word boundaries) to match
-  Spotlight's rules. A pre-tokenization pass (or custom tokenizer) additionally
-  splits `camelCase` → `camel case` so `OneTargetTwo` matches `target`, matching
-  Spotlight behaviour. `_`/`-` handled via `tokenchars`/`separators`.
-- **Prefix indexes** (`prefix='2 3'`) make word-prefix "as you type" cheap.
+- **No `tokenchars '_'`.** That option makes `_` *part of* a token, so
+  `one_target_two` would index as one term and a search for `target` would miss
+  it — the opposite of the goal (challenge §2). `unicode61` already treats
+  `_`/`-` as separators; the custom **`wl` tokenizer** adds the CamelCase/digit
+  boundaries unicode61 cannot see (`OneTargetTwo` → `one target two`), emitting
+  segments at distinct positions so a spelled-out query is a *phrase* (§6).
+- **Compressed external content.** `content='docs_v'` (a view over the
+  compressed `docs` table) — FTS5 stores tokens, and snippets read text back
+  through the view's `wl_unzstd()`. The alternative, storing raw body, was ~20 %
+  larger overall (challenge §3/§7).
 - **BM25** ranking is built in: `bm25(files_fts, 10.0, 1.0)` weights `name` 10×
   over `body`.
 - FTS5's automatic **segment merging** (`automerge`, periodic `INSERT INTO
   files_fts(files_fts) VALUES('merge', …)`) is our transient→static housekeeping.
 - **Snippets/highlights** come from FTS5 `snippet()` / `highlight()` — feeds the
-  preview pane excerpt + match offsets (FR5).
+  preview pane excerpt + match offsets (FR5). Hydrated for the top-K winners
+  only, never per candidate (§6.1).
 
 ### 4.4 Indexing pipeline
 
@@ -253,7 +298,12 @@ Linux has no single FSEvents equivalent; we abstract it as `FsWatcher`:
   watch-descriptor limits (`fs.inotify.max_user_watches` — detect, warn,
   document raising it), directory add/remove (add/drop watches dynamically),
   renames (`MOVED_FROM`/`MOVED_TO` cookie pairing), and **queue overflow**
-  (`IN_Q_OVERFLOW` → schedule a subtree reconcile).
+  (`IN_Q_OVERFLOW` → schedule a subtree reconcile). A directory deleted or moved
+  *out* of the tree emits no per-file events for its contents, so it triggers a
+  **subtree removal** (`Store::remove_subtree`, a single indexed range-delete
+  over `path` and everything under `path/`) rather than a lone single-path drop
+  that would strand the descendants until the next full reconcile (challenge
+  §6.1).
 - **Reconciliation scan (FR4).** On startup and after overflow, walk roots and
   diff against `files` (mtime/size) to repair missed events. This is the
   robustness backstop Spotlight gets from the FSEvents DB.
@@ -271,22 +321,31 @@ this on Linux.
 - Fires only when `enable_content` and `len(query) ≥ content_min_query`
   (default 3) — content search is deeper/slower-conceptually than name matching,
   so it starts later, exactly as Spotlight surfaces filename/app hits first.
-- Query:
+- Query is two-phase (§6.1): phase 1 ranks rowids (`bm25`, no join/snippet),
+  phase 2 hydrates the ≤ k winners:
   ```sql
-  SELECT f.path, f.name, f.mime,
-         snippet(files_fts, 1, '⟦', '⟧', '…', 10) AS snip,
-         bm25(files_fts, 10.0, 1.0) AS score
+  -- phase 1 (planner picks full vs bounded; full form shown)
+  SELECT files_fts.rowid, bm25(files_fts, 10.0, 1.0) AS score
+  FROM files_fts WHERE files_fts MATCH :q ORDER BY score LIMIT :k;
+  -- phase 2, once per winning rowid
+  SELECT f.path, f.name, f.mime, snippet(files_fts, 1, '⟦', '⟧', '…', 12)
   FROM files_fts JOIN files f ON f.id = files_fts.rowid
-  WHERE files_fts MATCH :q AND f.state = 0
-  ORDER BY score LIMIT :k;
+  WHERE files_fts MATCH :q AND files_fts.rowid = :rowid;
   ```
+  Tombstoned rows have no doc and thus no postings, so no `state` filter is
+  needed on the hot path.
 - **Result fusion:** a new `ItemKind::Content` rendered as its own
   "CONTENTS" / "DOCUMENTS" section, *below* Applications and Files & Folders.
   BM25 combines with the existing recency/path-depth bonuses. The preview pane
   already exists — add the highlighted `snippet()` line.
-- **Degradation:** if `index.db` is absent/locked, the provider yields nothing
-  and the launcher behaves exactly as today (filename search only). Querying
-  never blocks on the daemon (NFR8).
+- **Degradation:** the reader opens **strictly read-only first** (no WAL
+  recovery, no `-shm` creation — SQLite ≥3.22 serves a WAL database read-only via
+  a private heap wal-index), falling back to a `query_only` read-write handle
+  only if that fails. `Store::availability()` classifies *why* an index is
+  unusable — `NoIndex` / `VersionMismatch` / `Corrupt` / `Locked` — so the
+  launcher distinguishes "no index → filename search" from "index present, zero
+  content hits → show nothing" (challenge §5). Querying never blocks on the
+  daemon (NFR8).
 
 ---
 
@@ -296,7 +355,7 @@ this on Linux.
 |---|---|---|---|
 | Index engine | **SQLite FTS5** | Embedded, zero-admin, single file, mature, BM25, prefix/trigram tokenizers, incremental segment merge, WAL concurrent reads. Already a natural fit for a C++ app; small dep. | **Xapian** (heavier, larger dep, own storage); **Tantivy** (Rust — FFI/build friction); **hand-rolled inverted index** (re-implements posting lists, merging, crash-safety — high risk, the exact thing FTS5 already solved). |
 | Change notify | **inotify** + reconcile, `FsWatcher` abstraction | Works unprivileged in a user session; ubiquitous; well-trodden. | **fanotify** (needs `CAP_SYS_ADMIN` historically) — kept as a future backend; **poll/rescan only** (misses NFR2 freshness, wasteful). |
-| Extraction isolation | **Subprocess workers** w/ timeout + `setrlimit` | Matches `mdworker`: a malformed PDF can't crash or hang the daemon (NFR6). | **In-process libs** (one bad parse takes down indexing); acceptable only for trivial text. |
+| Extraction isolation | **Subprocess workers** w/ timeout + **cgroup v2** (`memory.max`, `pids.max`, `oom.group`) + `RLIMIT_DATA`/`RLIMIT_CPU` | Matches `mdworker`: a malformed PDF can't crash or hang the daemon (NFR6). cgroup `memory.max` bounds *charged* memory, so runtimes that reserve huge address space (GHC/pandoc) work under a real cap — unlike `RLIMIT_AS`, which they can't start under (challenge §4). | **`RLIMIT_AS`** (breaks address-space-hungry extractors); **in-process libs** (one bad parse takes down indexing). |
 | Process model | **Persistent per-user daemon** | Index stays warm while launcher is closed; instant read-only queries; isolation. | **Index inside the launcher** (dies on exit, can't stay fresh, slow first query). |
 | Launcher↔index | **Direct read-only SQLite (WAL)** | No IPC on the hot path; simplest, fastest. | **Query-over-socket to daemon** (adds latency + a serialization protocol for no benefit on reads). |
 
@@ -309,14 +368,53 @@ HTML, **libmagic** for MIME sniffing.
 
 ## 6. Tokenization & match semantics
 
-- Default: `unicode61` word tokenizer + `camelCase` splitting + prefix indexes →
-  word and word-prefix matches ("as you type"), Spotlight-like.
+- Default: the custom **`wl` tokenizer** (`unicode61` + CamelCase/digit
+  segmentation) + a `prefix='3'` index → word and word-prefix matches ("as you
+  type"), Spotlight-like. `wl` wraps unicode61 and, for all-ASCII tokens, splits
+  on case and letter↔digit boundaries with acronym handling
+  (`XMLHttpRequest` → `xml http request`).
+- **Index vs query symmetry (the correctness crux, challenge §1.3).** At index
+  time each segment is emitted at its *own position*, plus the whole folded
+  compound *colocated* with the first segment (so a lowercase-compound query
+  still hits). At query time only the segments are emitted — no colocated
+  compound — so a spelled-out term like `OneTargetTwo` compiles to the **phrase**
+  `one target two`. That phrase matches `OneTargetTwo`, `one_target_two`, and
+  `one-target-two` alike, but does *not* match a document that merely contains
+  the lone word `one` (a colocated compound at query time would have made it an
+  OR and returned that false positive — the precision bug this design avoids;
+  `content_store_test` locks it in). Positions are therefore required
+  (`detail=full`), which is part of why the index is position-heavy (NFR5).
 - **Substring/`CONTAINS`**: word-prefix ≠ arbitrary substring. For true
   substring matching (find `target` in `mytargetfile`) FTS5 offers the
   **`trigram`** tokenizer (supports `LIKE`/substring) at the cost of a larger
-  index. Decision: ship `unicode61`+prefix by default; expose
+  index. Decision: ship `wl`+prefix by default; expose
   `content_match = "prefix" | "substring"` to opt into a trigram index. Spotlight
   itself is closer to word/prefix on content, so `prefix` is the faithful default.
+
+### 6.1 Query planning — bounding the worst case (challenge §8)
+
+A global-BM25 top-K over an ultra-common single term must score that term's whole
+posting list, so its cost grows with corpus size — the reason a naive p99 misses
+NFR1 at 1 M docs. `Store::search` plans in two phases:
+
+1. **Classify** the query by document frequency via `files_fts_v` (fts5vocab):
+   the query is "common" only if *every* term is more frequent than
+   `common_term_df` (default 20 000). One rare term makes it selective.
+2. **Rank rowids** — no join, no snippet:
+   - *Selective* → full `ORDER BY bm25 LIMIT k` (sub-4 ms at 1 M), guarded by a
+     `query_budget_ms` deadline (SQLite progress handler); if it trips, fall back
+     to (bounded).
+   - *Common* → a **bounded exact-term scan**: `ORDER BY rowid DESC LIMIT
+     candidate_budget` (FTS5's fast descending doclist walk — the *exact* term,
+     not the `*` prefix form, which would force a full-list sort), then rank the
+     budget in memory. Trades exact global ranking for a latency ceiling
+     independent of corpus size; only triggers for degenerate all-common queries
+     where precise ranking is moot anyway.
+3. **Hydrate** metadata + `snippet()` for the ≤ k winners *only* — snippets
+   decompress the body, so they must never run per candidate.
+
+Measured worst case (`content_bench`, ultra-common term): 11 ms p99 @ 100 k,
+44 ms p99 @ 1 M, vs 137 ms / 779 ms for the naive full-rank path.
 
 ---
 
@@ -328,6 +426,13 @@ HTML, **libmagic** for MIME sniffing.
   throttling analog.
 - **Bounds everywhere:** per-file text cap (2 MB), max file size to open, skip
   binaries/media, honour excludes, hard index-size cap.
+- **Extractor sandbox:** each format parser runs in a short-lived subprocess in a
+  delegated cgroup v2 child (`memory.max` default 512 MB, `memory.swap.max=0`,
+  `pids.max`, `oom.group=1`), placed at fork via `clone3(CLONE_INTO_CGROUP)`,
+  with `RLIMIT_DATA`/`RLIMIT_CPU`/`RLIMIT_FSIZE` and `PR_SET_PDEATHSIG` as
+  portable fallbacks. The systemd unit sets `Delegate=` (and drops
+  `ProtectControlGroups`, which is incompatible with delegation). Without a
+  delegated cgroup the rlimits alone still apply.
 - **Queries are O(index)** — independent of corpus size and of how many files
   changed. This is the categorical win over live `rg`: the filesystem is read
   once at index time, never at query time.
@@ -347,12 +452,13 @@ HTML, **libmagic** for MIME sniffing.
 ## 9. Failure modes & recovery
 | Failure | Handling |
 |---|---|
-| Extractor crash/hang/OOM | Subprocess killed on timeout/rlimit; file marked `state=error`; daemon unaffected. |
+| Extractor crash/hang/OOM | Subprocess killed on timeout; cgroup `memory.max`+`oom.group` kills the whole extractor tree on OOM; `RLIMIT_DATA`/`RLIMIT_CPU` as portable fallback; file marked `state=error`; daemon unaffected. `PR_SET_PDEATHSIG` guarantees no orphaned extractor outlives the daemon. |
 | inotify queue overflow | `IN_Q_OVERFLOW` → schedule subtree reconcile scan. |
+| Directory moved-out / deleted | Subtree removal (range-delete) — descendants don't strand. |
 | Watch-descriptor exhaustion | Detect, warn via control status, fall back to periodic reconcile for unwatched subtrees. |
-| DB corruption | Detect on open (`PRAGMA integrity_check`); rebuild from scratch (index is derived data). |
-| Schema change | `user_version` pragma + migrations; bump = rebuild if needed. |
-| Daemon down | Launcher queries stale index read-only; if none, filename-only search. |
+| DB corruption | Detect on open (`PRAGMA quick_check`); rebuild from scratch (index is derived data). |
+| Schema/tokenizer/format change | `user_version` bump ⇒ writer rebuilds; reader reports `VersionMismatch` and degrades to filename search until the daemon has rebuilt. |
+| Daemon down | Launcher opens strictly read-only; queries stale index; if none/mismatched, filename-only search. |
 
 ---
 
@@ -438,6 +544,16 @@ runtime dependency; the daemon is the core of the product, not a detail to
 outsource. `waylaunchd` + SQLite FTS5 as specified in §4, built in full (no MVP /
 text-only stopgap) per the §11 implementation plan.
 
-Still open:
-- `camelCase` splitting via a custom FTS5 tokenizer vs a pre-tokenization pass.
-- Trigram default for a subset of types (code) while word/prefix for prose?
+**Resolved (2026-07-20, `content-store-hardening`):**
+- *CamelCase splitting* — **custom FTS5 tokenizer** (`wl`), not a pre-tokenization
+  pass. A pre-pass would rewrite text and lose the byte offsets `snippet()` needs
+  (challenge §1.4); a tokenizer segments in place and keeps offsets exact. See
+  §6 for the index/query symmetry that also fixes a query-precision bug.
+- *Trigram-for-code* — **deferred**, not split per-type. A single index per store
+  keeps ranking and the schema simple; `content_match = "prefix" | "substring"`
+  remains a whole-index opt-in. Per-type mixing is future work if a need appears.
+
+The engineering challenges surfaced while building the store — and how each was
+resolved here — are catalogued in
+[`CONTENT_SEARCH_STORE.md`](CONTENT_SEARCH_STORE.md) (see its **Resolutions**
+section).

@@ -299,6 +299,7 @@ void Indexer::run_loop() {
         store_.begin();
         for (const auto& item : batch) {
             if (item.kind == WorkItem::Remove) store_.remove(item.path);
+            else if (item.kind == WorkItem::RemoveTree) store_.remove_subtree(item.path);
             else index_file(item.path);
         }
         store_.commit();
@@ -342,6 +343,14 @@ void Indexer::enqueue_remove(std::string path) {
     {
         std::lock_guard<std::mutex> lk(mtx_);
         queue_.push_back({WorkItem::Remove, std::move(path)});
+    }
+    cv_.notify_one();
+}
+
+void Indexer::enqueue_remove_tree(std::string path) {
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        queue_.push_back({WorkItem::RemoveTree, std::move(path)});
     }
     cv_.notify_one();
 }

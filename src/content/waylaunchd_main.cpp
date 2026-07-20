@@ -142,6 +142,7 @@ int main(int argc, char** argv) {
         [&](const std::string& p) { indexer.enqueue_index(p); },
         [&](const std::string& p) { indexer.enqueue_remove(p); },
         [&] { indexer.request_reconcile(); },
+        [&](const std::string& p) { indexer.enqueue_remove_tree(p); },
     });
 
     // A dedicated read-only handle for status queries (separate from the writer).

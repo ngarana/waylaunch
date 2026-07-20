@@ -17,8 +17,11 @@ struct ExtractOptions {
     size_t max_read_bytes = 32 * 1024 * 1024;  // don't read more than this raw
     int    timeout_ms     = 10000;             // wall-clock per subprocess extractor
     int    cpu_seconds    = 15;                // RLIMIT_CPU for subprocess extractors
-    size_t mem_limit_bytes = 0;                // RLIMIT_AS (0 = unset; avoids breaking
-                                               //   mmap-heavy tools like pandoc/GHC)
+    // Memory envelope per extractor (0 = uncapped): enforced as cgroup-v2
+    // memory.max when a delegated cgroup is available, plus RLIMIT_DATA as a
+    // portable fallback. Neither counts PROT_NONE address-space reservations,
+    // so runtimes like GHC (pandoc) work under a real cap.
+    size_t mem_limit_bytes = 512 * 1024 * 1024;
     int    nice           = 10;                // background priority for extractors
 };
 

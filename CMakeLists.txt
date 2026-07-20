@@ -18,6 +18,7 @@ pkg_check_modules(GTK REQUIRED gtk+-3.0)
 
 # Content-search index (waylaunchd + read-only launcher queries).
 pkg_check_modules(SQLITE3 REQUIRED sqlite3)
+pkg_check_modules(ZSTD REQUIRED libzstd)   # compressed doc store (NFR5)
 pkg_check_modules(LIBMAGIC libmagic)   # optional: MIME sniffing (falls back to ext)
 find_package(Threads REQUIRED)
 find_package(tomlplusplus 3 CONFIG REQUIRED)
@@ -100,8 +101,9 @@ add_library(waylaunch_content STATIC
 target_include_directories(waylaunch_content PUBLIC
     ${CMAKE_SOURCE_DIR}/include
     ${SQLITE3_INCLUDE_DIRS}
+    ${ZSTD_INCLUDE_DIRS}
 )
-target_link_libraries(waylaunch_content PUBLIC ${SQLITE3_LIBRARIES} tomlplusplus::tomlplusplus Threads::Threads)
+target_link_libraries(waylaunch_content PUBLIC ${SQLITE3_LIBRARIES} ${ZSTD_LIBRARIES} tomlplusplus::tomlplusplus Threads::Threads)
 target_compile_options(waylaunch_content PRIVATE
     ${SQLITE3_CFLAGS} -Wall -Wextra)
 if(LIBMAGIC_FOUND)
@@ -197,6 +199,12 @@ if(BUILD_TESTING)
         add_test(NAME ${t} COMMAND ${t})
     endforeach()
     set_tests_properties(content_indexer_test PROPERTIES TIMEOUT 60)
+
+    # Performance harness (NFR1/NFR5) — built but not a pass/fail ctest; run
+    # manually with a doc count, e.g. ./content_bench 1000000.
+    add_executable(content_bench tests/content_bench.cpp)
+    target_link_libraries(content_bench PRIVATE waylaunch_content)
+    target_compile_options(content_bench PRIVATE -Wall -Wextra -O2)
 endif()
 
 # Install

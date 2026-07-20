@@ -70,7 +70,8 @@ int main() {
     FsWatcher watcher({base.string()}, [&](const std::string& p) { return indexer.is_excluded(p); });
     watcher.start({[&](const std::string& p) { indexer.enqueue_index(p); },
                    [&](const std::string& p) { indexer.enqueue_remove(p); },
-                   [&] { indexer.request_reconcile(); }});
+                   [&] { indexer.request_reconcile(); },
+                   [&](const std::string& p) { indexer.enqueue_remove_tree(p); }});
     std::this_thread::sleep_for(100ms);
 
     wf(base / "beta.txt", "a brand new file about aardvark");
@@ -92,6 +93,20 @@ int main() {
     fs::remove(base / "sub" / "notes.md", ec);
     CHECK(wait_gone(reader, "penguins"), "delete → removed from index");
 
+    // Directory moved out of the tree → its whole subtree leaves the index with
+    // no per-file events (challenge §6.1). 'buried.txt' lived under deep/nested.
+    CHECK(wait_for(reader, "mongoose", 1), "precondition: buried file still indexed");
+    fs::rename(base / "deep", base.parent_path() / ("gone_" + std::to_string(::getpid())), ec);
+    CHECK(wait_gone(reader, "mongoose"), "dir moved out → subtree removed from index");
+
+    // Directory deleted outright → subtree removed.
+    fs::create_directories(base / "doomed");
+    wf(base / "doomed" / "file.txt", "contains ocelot marker");
+    CHECK(wait_for(reader, "ocelot", 1), "precondition: doomed/ file indexed");
+    fs::remove_all(base / "doomed", ec);
+    CHECK(wait_gone(reader, "ocelot"), "dir deleted → subtree removed from index");
+
+    fs::remove_all(base.parent_path() / ("gone_" + std::to_string(::getpid())), ec);
     watcher.stop();
     indexer.stop();
     reader.close();

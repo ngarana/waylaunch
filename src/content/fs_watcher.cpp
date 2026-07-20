@@ -173,25 +173,32 @@ void FsWatcher::drain_events() {
                 auto it = pending.find(ev->cookie);
                 if (it != pending.end()) {          // a rename we can pair
                     const std::string& old = it->second.first;
-                    if (it->second.second) drop_watch_subtree(old);
-                    cb_.on_remove(old);
+                    bool old_dir = it->second.second;
+                    if (old_dir) { drop_watch_subtree(old); remove_tree(old); }
+                    else cb_.on_remove(old);
                     pending.erase(it);
                 }
-                if (isdir) scan_subtree(full);
+                if (isdir) scan_subtree(full);      // re-index under the new path
                 else cb_.on_index(full);
             } else if (ev->mask & IN_DELETE) {
-                if (isdir) drop_watch_subtree(full);
+                if (isdir) { drop_watch_subtree(full); remove_tree(full); }
                 else cb_.on_remove(full);
             }
         }
     }
 
-    // Unpaired MOVED_FROM = moved out of the tree → treat as deletion.
+    // Unpaired MOVED_FROM = moved out of the tree → treat as deletion. A
+    // directory takes its whole subtree with it (no per-file events follow).
     for (auto& [cookie, info] : pending) {
         (void)cookie;
-        if (info.second) drop_watch_subtree(info.first);
-        cb_.on_remove(info.first);
+        if (info.second) { drop_watch_subtree(info.first); remove_tree(info.first); }
+        else cb_.on_remove(info.first);
     }
+}
+
+void FsWatcher::remove_tree(const std::string& dir) {
+    if (cb_.on_remove_tree) cb_.on_remove_tree(dir);
+    else cb_.on_remove(dir);   // fall back to single-path removal if unwired
 }
 
 size_t FsWatcher::watch_count() const {
