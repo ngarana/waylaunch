@@ -63,6 +63,30 @@ struct FileRecord {
     FileState   state = FileState::Pending;
 };
 
+// Structured metadata predicates parsed out of a query (the kMDItem* analog):
+//   kind:pdf|image|audio|video|archive|doc|text|code|spreadsheet|presentation
+//   ext:xlsx           name:report
+//   size:>1M  size:<500k  size:>=2G          (suffixes k/m/g = KiB/MiB/GiB)
+//   modified:<7d  modified:>2w  modified:today  modified:>2026-01-01
+// A query mixes these with free text: `kind:pdf quarterly revenue` = PDFs whose
+// contents match "quarterly revenue". Predicates constrain the `files` table;
+// the free text drives the FTS MATCH. A query with only predicates lists
+// matching files ranked by recency.
+struct MetaFilter {
+    std::vector<std::string> mime_globs;      // OR'd GLOBs on files.mime (from kind:)
+    std::vector<std::string> name_likes;      // AND'd LIKE patterns on lower(name)
+    int64_t size_min = -1, size_max = -1;     // bytes, inclusive; -1 = unbounded
+    int64_t mtime_min_ns = 0, mtime_max_ns = 0; // ns (files.mtime unit); 0 = unbounded
+    bool    active = false;                    // any predicate parsed?
+};
+
+// Split a raw query into metadata predicates (filled into `out`) and the
+// remaining free-text terms (returned). Tokens that aren't well-formed
+// predicates pass through as free text, so a typo degrades to a literal search
+// rather than silently filtering everything out. `now_s` is the reference time
+// for relative `modified:` durations (injectable for tests; 0 → wall clock).
+std::string parse_meta_query(const std::string& query, MetaFilter& out, int64_t now_s = 0);
+
 // A single content-search hit returned to the launcher.
 struct ContentHit {
     std::string path;
@@ -171,10 +195,12 @@ private:
     // scans exact terms, which get FTS5's fast descending doclist walk.
     std::string build_match_query(const std::string& user_query, bool prefix_last) const;
     bool query_is_common(const std::string& user_query) const;
-    bool ranked_rowids_full(const std::string& match, int limit,
+    bool ranked_rowids_full(const std::string& match, const MetaFilter& mf, int limit,
                             std::vector<std::pair<int64_t, double>>& out);
-    void ranked_rowids_bounded(const std::string& match, int limit,
+    void ranked_rowids_bounded(const std::string& match, const MetaFilter& mf, int limit,
                                std::vector<std::pair<int64_t, double>>& out);
+    // Pure-metadata query (no free text): matching files ranked by recency.
+    std::vector<ContentHit> metadata_search(const MetaFilter& mf, int limit);
 
     sqlite3*     db_ = nullptr;
     std::string  path_;

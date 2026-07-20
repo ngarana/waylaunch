@@ -71,8 +71,11 @@ Spotlight cleanly separates *indexing* (expensive, background, incremental) from
 - Semantic / vector / OCR / image-content search (future; Spotlight's
   `mediaanalysisd` equivalent).
 - Indexing removable/network volumes, or system/binary files.
-- A general metadata-attribute query language (`kMDItem*` predicates). We index
-  content + a few core attributes; a richer attribute store is future work.
+- A *general* metadata-attribute query language (arbitrary `kMDItem*` predicates,
+  boolean/range algebra). A focused, useful subset **is** supported —
+  `kind:`/`ext:`/`name:`/`size:`/`modified:` filters combinable with content
+  search (§6.2) — but a full predicate grammar over many attributes is future
+  work.
 - Multi-user / system-wide index. waylaunch indexes the **invoking user's**
   configured roots only.
 
@@ -441,6 +444,33 @@ NFR1 at 1 M docs. `Store::search` plans in two phases:
 
 Measured worst case (`content_bench`, ultra-common term): 11 ms p99 @ 100 k,
 44 ms p99 @ 1 M, vs 137 ms / 779 ms for the naive full-rank path.
+
+### 6.2 Metadata predicates (`mdfind`-style filters)
+
+A query may mix free-text terms with structured predicates that constrain the
+`files` metadata table. `Store::parse_meta_query` splits them out; a token that
+isn't a well-formed predicate passes through as literal text (a typo degrades to
+a normal search rather than silently filtering everything away).
+
+| Predicate | Meaning | Example |
+|---|---|---|
+| `kind:<cat>` | MIME category: `pdf image audio video archive doc text code spreadsheet presentation` | `kind:spreadsheet` |
+| `ext:<ext>` | filename extension | `ext:xlsx` |
+| `name:<sub>` | filename contains | `name:budget` |
+| `size:>N` `size:<N` | size bound, suffix `k`/`m`/`g` = KiB/MiB/GiB (`>=`/`<=` too) | `size:>1M` |
+| `modified:<Nd` `modified:>Nw` | age, units `h`/`d`/`w`; also `today`, `yesterday`, `YYYY-MM-DD` (optionally `<`/`>`) | `modified:<7d` |
+
+- **With free text** (`kind:pdf quarterly revenue`) the predicates become a SQL
+  `WHERE` on `files`, applied in the same phase-1 rowid pass that ranks the FTS
+  MATCH (a rowid-keyed join, so it stays cheap); phase 2 still hydrates snippets
+  for the winners only. One caveat: an ultra-common term *and* a very selective
+  filter can lose recall in the bounded planner, since the filter is applied
+  within the candidate-budget window.
+- **Without free text** (`kind:pdf modified:<7d`) it's a browse-by-attribute
+  query: matching `files` rows ranked by recency (mtime desc), no FTS, no
+  snippet. `mtime` is stored in nanoseconds, so time bounds compare in ns.
+- The launcher and `waylaunchctl search` get this for free — parsing lives in the
+  store, so the same query string works in both.
 
 ---
 

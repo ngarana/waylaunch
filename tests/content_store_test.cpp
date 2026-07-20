@@ -7,6 +7,7 @@
 #include <sqlite3.h>
 
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <string>
 #include <unistd.h>
@@ -201,6 +202,74 @@ int main() {
         CHECK(rb.size() == 3, "bounded: honors the limit under the bounded planner");
         CHECK(!rb.empty() && !rb[0].snippet.empty(), "bounded: still produces snippets");
         b.close();
+    }
+
+    // ---- metadata predicate parser (unit) ---------------------------------
+    {
+        const int64_t T = 1000000000, NS = 1000000000LL, DAY = 86400;
+        MetaFilter mf;
+        std::string rem = parse_meta_query("kind:pdf quarterly revenue", mf, T);
+        CHECK(rem == "quarterly revenue", "parse: predicate stripped, free text kept");
+        CHECK(mf.active && mf.mime_globs.size() == 1 && mf.mime_globs[0] == "application/pdf",
+              "parse: kind:pdf → application/pdf glob");
+
+        mf = {}; parse_meta_query("size:>1M", mf, T);
+        CHECK(mf.size_min == 1024 * 1024 + 1, "parse: size:>1M → size_min");
+        mf = {}; parse_meta_query("size:<=500k", mf, T);
+        CHECK(mf.size_max == 500 * 1024, "parse: size:<=500k → size_max");
+        mf = {}; parse_meta_query("modified:<7d", mf, T);
+        CHECK(mf.mtime_min_ns == (T - 7 * DAY) * NS, "parse: modified:<7d → recent lower bound");
+        mf = {}; parse_meta_query("modified:>2w", mf, T);
+        CHECK(mf.mtime_max_ns == (T - 14 * DAY) * NS, "parse: modified:>2w → older upper bound");
+        mf = {}; std::string r2 = parse_meta_query("ext:xlsx budget", mf, T);
+        CHECK(r2 == "budget" && mf.name_likes.size() == 1 && mf.name_likes[0] == "%.xlsx",
+              "parse: ext:xlsx → name LIKE, text kept");
+        mf = {}; std::string r3 = parse_meta_query("bogus:foo size:huge hello", mf, T);
+        CHECK(!mf.active && r3 == "bogus:foo size:huge hello",
+              "parse: unknown/malformed predicates pass through as literal text");
+    }
+
+    // ---- metadata filtering (integration) ---------------------------------
+    {
+        auto mrec = [&](const std::string& p, const std::string& name, const std::string& mime,
+                        int64_t size, int64_t mtime_ns) {
+            FileRecord r;
+            r.path = p; r.name = name; r.parent = fs::path(p).parent_path().string();
+            r.size = size; r.mtime_ns = mtime_ns; r.mime = mime;
+            r.content_hash = "h"; r.state = FileState::Indexed;
+            return r;
+        };
+        const int64_t now = static_cast<int64_t>(::time(nullptr)), NS = 1000000000LL, DAY = 86400;
+        std::string mdb = (dir / "meta.db").string();
+        Store m;
+        CHECK(m.open(mdb, {false, MatchMode::Prefix}), "meta: open");
+        m.put(mrec((dir / "report.pdf").string(), "report.pdf", "application/pdf",
+                   5000, now * NS), "quarterly revenue mongoose");
+        m.put(mrec((dir / "notes.txt").string(), "notes.txt", "text/plain",
+                   200, (now - 10 * DAY) * NS), "quarterly revenue penguins");
+        m.put(mrec((dir / "sheet.xlsx").string(), "sheet.xlsx",
+                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                   9000, (now - 2 * DAY) * NS), "budget quarterly numbers");
+
+        CHECK(m.search("kind:pdf", 5).size() == 1, "meta: kind:pdf → 1 file");
+        CHECK(!m.search("kind:pdf", 5).empty() && m.search("kind:pdf", 5)[0].name == "report.pdf",
+              "meta: kind:pdf selects the pdf");
+        CHECK(m.search("kind:spreadsheet", 5).size() == 1, "meta: kind:spreadsheet → the xlsx");
+        CHECK(m.search("ext:xlsx", 5).size() == 1, "meta: ext:xlsx → 1 file");
+        CHECK(m.search("revenue", 5).size() == 2, "meta: content 'revenue' → pdf + txt");
+        CHECK(m.search("kind:pdf revenue", 5).size() == 1, "meta: kind:pdf + revenue → only the pdf");
+        CHECK(m.search("kind:text revenue", 5).size() == 1, "meta: kind:text + revenue → only the txt");
+        CHECK(m.search("size:>1k", 9).size() == 2, "meta: size:>1k (pure) → pdf + xlsx");
+        CHECK(m.search("size:<1k", 9).size() == 1, "meta: size:<1k (pure) → txt");
+        CHECK(m.search("quarterly size:>1k", 9).size() == 2, "meta: content + size filter");
+        CHECK(m.search("modified:<7d", 9).size() == 2, "meta: modified:<7d → pdf(now)+xlsx(2d)");
+        CHECK(m.search("modified:>7d", 9).size() == 1, "meta: modified:>7d → txt(10d)");
+        auto recent = m.search("size:>1k", 9);
+        CHECK(recent.size() == 2 && recent[0].name == "report.pdf",
+              "meta: pure-metadata results are newest-first");
+        CHECK(m.search("kind:pdf zzznotpresent", 5).empty(),
+              "meta: filter + non-matching text → no hits (not all pdfs)");
+        m.close();
     }
 
     fs::remove_all(dir);
