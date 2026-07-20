@@ -28,6 +28,12 @@ struct ContentConfig {
     bool                     throttle_on_battery = true;
     int                      worker_nice = 10;
     size_t                   max_index_mb = 0;        // 0 = unlimited hard cap
+    // Periodic full-reconcile backstop (§4.5/§9): the safety net that catches
+    // changes inotify missed — in subtrees left unwatched because watch
+    // descriptors were exhausted, or after any dropped event. 0 disables it.
+    // The daemon reconciles more often once watches are known-exhausted.
+    int                      reconcile_interval_s = 900;          // 15 min steady state
+    int                      reconcile_interval_degraded_s = 180; // 3 min when watch-limited
 
     // Effective extractor options derived from the caps above.
     ExtractOptions extract_options() const;

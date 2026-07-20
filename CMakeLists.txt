@@ -192,13 +192,15 @@ target_compile_options(waylaunchctl PRIVATE -Wall -Wextra)
 option(BUILD_TESTING "Build the content-search test suite" ON)
 if(BUILD_TESTING)
     enable_testing()
-    foreach(t content_store_test content_extractor_test content_indexer_test)
+    foreach(t content_store_test content_extractor_test content_indexer_test
+              content_freshness_test)
         add_executable(${t} tests/${t}.cpp)
         target_link_libraries(${t} PRIVATE waylaunch_content)
         target_compile_options(${t} PRIVATE -Wall -Wextra)
         add_test(NAME ${t} COMMAND ${t})
     endforeach()
     set_tests_properties(content_indexer_test PROPERTIES TIMEOUT 60)
+    set_tests_properties(content_freshness_test PROPERTIES TIMEOUT 60)
 
     # Performance harness (NFR1/NFR5) — built but not a pass/fail ctest; run
     # manually with a doc count, e.g. ./content_bench 1000000.

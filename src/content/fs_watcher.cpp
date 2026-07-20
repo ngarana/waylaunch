@@ -26,7 +26,11 @@ FsWatcher::~FsWatcher() { stop(); }
 int FsWatcher::add_watch(const std::string& dir) {
     int wd = inotify_add_watch(fd_, dir.c_str(), kMask);
     if (wd < 0) {
-        if (errno == ENOSPC) limit_hit_.store(true);   // max_user_watches exhausted
+        if (errno == ENOSPC && !limit_hit_.exchange(true)) {   // max_user_watches exhausted
+            // First time only: some subtrees are now unwatched → fall back to the
+            // periodic reconcile for their freshness (§9).
+            if (cb_.on_watch_limit) cb_.on_watch_limit();
+        }
         return -1;
     }
     std::lock_guard<std::mutex> lk(maps_mtx_);

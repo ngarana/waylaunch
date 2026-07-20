@@ -118,6 +118,10 @@ ContentConfig load_content_config(const std::string& config_path) {
         if (auto v = t["min_query"].value<int64_t>()) c.min_query = static_cast<int>(*v);
         if (auto v = t["max_results"].value<int64_t>()) c.max_results = static_cast<int>(*v);
         if (auto v = t["worker_nice"].value<int64_t>()) c.worker_nice = static_cast<int>(*v);
+        if (auto v = t["reconcile_interval_s"].value<int64_t>())
+            c.reconcile_interval_s = static_cast<int>(*v);
+        if (auto v = t["reconcile_interval_degraded_s"].value<int64_t>())
+            c.reconcile_interval_degraded_s = static_cast<int>(*v);
         if (auto v = t["throttle_on_battery"].value<bool>()) c.throttle_on_battery = *v;
         if (auto v = t["match"].value<std::string>())
             c.match = (*v == "substring") ? MatchMode::Substring : MatchMode::Prefix;
