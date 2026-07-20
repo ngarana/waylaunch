@@ -4,12 +4,17 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
+#include <mutex>
 #include <poll.h>
 #include <signal.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -36,6 +41,107 @@ int64_t now_ms() {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return static_cast<int64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+}
+
+// --------------------------------------------------------------------------
+// cgroup v2 sandbox for extractors (docs/CONTENT_SEARCH_STORE.md §4).
+//
+// RLIMIT_AS is the wrong memory knob: runtimes like GHC (pandoc) reserve huge
+// PROT_NONE address ranges at startup and die under any useful cap. The right
+// envelope is a dedicated child cgroup with memory.max — it bounds what the
+// kernel actually charges (RSS+swap), not what the process maps.
+//
+// When our own cgroup is delegated (systemd unit with Delegate=, or any
+// user-owned scope), we split it into ./main (the daemon, moved there to
+// satisfy the no-internal-process rule) and ./extract (memory.max, swap off,
+// pids.max, whole-group OOM kill). Children are placed in ./extract atomically
+// at fork time via clone3(CLONE_INTO_CGROUP) — no post-fork races. Everything
+// is best-effort: without delegation we fall back to rlimits only.
+// --------------------------------------------------------------------------
+bool write_cg_file(const std::string& path, const std::string& val) {
+    int fd = open(path.c_str(), O_WRONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    ssize_t n = write(fd, val.data(), val.size());
+    close(fd);
+    return n == static_cast<ssize_t>(val.size());
+}
+
+class ExtractCgroup {
+public:
+    static ExtractCgroup& instance() {
+        static ExtractCgroup g;
+        return g;
+    }
+
+    int fd() const { return fd_; }   // O_DIRECTORY fd of ./extract, -1 if unavailable
+
+    // Best-effort memory cap on the extract group (0 = uncapped).
+    void set_memory_max(size_t bytes) {
+        if (fd_ < 0) return;
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (bytes == applied_) return;
+        if (write_cg_file(extract_dir_ + "/memory.max",
+                          bytes ? std::to_string(bytes) : "max"))
+            applied_ = bytes;
+    }
+
+private:
+    ExtractCgroup() {
+        std::ifstream f("/proc/self/cgroup");
+        std::string line, cgpath;
+        while (std::getline(f, line))
+            if (line.rfind("0::", 0) == 0) { cgpath = line.substr(3); break; }
+        if (cgpath.empty() || cgpath == "/") return;
+        std::string base = "/sys/fs/cgroup" + cgpath;
+        if (access(base.c_str(), W_OK) != 0) return;   // not delegated to us
+
+        std::string main_dir = base + "/main";
+        extract_dir_ = base + "/extract";
+        if ((mkdir(main_dir.c_str(), 0755) != 0 && errno != EEXIST) ||
+            (mkdir(extract_dir_.c_str(), 0755) != 0 && errno != EEXIST))
+            return;
+        // Leaf-ify: controllers can only be distributed to children once the
+        // parent has no member processes, so the daemon moves itself to ./main.
+        if (!write_cg_file(main_dir + "/cgroup.procs", std::to_string(getpid())))
+            return;
+        // Controller delegation is best-effort (fails when unrelated processes
+        // share the parent, e.g. a terminal scope) — CLONE_INTO_CGROUP
+        // placement and group-kill still work without it.
+        write_cg_file(base + "/cgroup.subtree_control", "+memory");
+        write_cg_file(base + "/cgroup.subtree_control", "+pids");
+        write_cg_file(extract_dir_ + "/memory.oom.group", "1");  // OOM kills whole tree
+        write_cg_file(extract_dir_ + "/memory.swap.max", "0");   // OOM, don't thrash
+        write_cg_file(extract_dir_ + "/pids.max", "32");         // no fork bombs
+        fd_ = open(extract_dir_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    }
+
+    std::string extract_dir_;
+    int         fd_ = -1;
+    size_t      applied_ = 0;
+    std::mutex  mtx_;
+};
+
+#ifndef CLONE_INTO_CGROUP
+#define CLONE_INTO_CGROUP 0x200000000ULL
+#endif
+
+// Fork the extractor directly into the sandbox cgroup (Linux ≥5.7); plain
+// fork() when clone3/cgroup placement is unavailable.
+pid_t spawn_child(int cgroup_fd) {
+#ifdef SYS_clone3
+    if (cgroup_fd >= 0) {
+        struct {   // struct clone_args, CLONE_ARGS_SIZE_VER2 layout
+            uint64_t flags, pidfd, child_tid, parent_tid, exit_signal;
+            uint64_t stack, stack_size, tls, set_tid, set_tid_size, cgroup;
+        } args{};
+        args.flags = CLONE_INTO_CGROUP;
+        args.exit_signal = SIGCHLD;
+        args.cgroup = static_cast<uint64_t>(cgroup_fd);
+        long r = syscall(SYS_clone3, &args, sizeof(args));
+        if (r >= 0) return static_cast<pid_t>(r);
+    }
+#endif
+    return fork();
 }
 
 // Resolve a bare program name to an absolute path via $PATH (deterministic exec).
@@ -67,7 +173,10 @@ Capped run_capped(const std::vector<std::string>& argv, const ExtractOptions& op
     int outpipe[2];
     if (pipe(outpipe) != 0) return r;
 
-    pid_t pid = fork();
+    ExtractCgroup& cg = ExtractCgroup::instance();
+    cg.set_memory_max(opt.mem_limit_bytes);
+
+    pid_t pid = spawn_child(cg.fd());
     if (pid < 0) {
         close(outpipe[0]);
         close(outpipe[1]);
@@ -76,6 +185,8 @@ Capped run_capped(const std::vector<std::string>& argv, const ExtractOptions& op
     if (pid == 0) {
         // --- child ---
         setpgid(0, 0);                       // own group so we can kill any tree
+        prctl(PR_SET_PDEATHSIG, SIGKILL);    // die with the daemon, never orphan
+        if (getppid() == 1) _exit(127);      // parent already gone before prctl
         dup2(outpipe[1], STDOUT_FILENO);
         int devnull = open("/dev/null", O_RDWR);
         if (devnull >= 0) {
@@ -94,8 +205,13 @@ Capped run_capped(const std::vector<std::string>& argv, const ExtractOptions& op
         rl.rlim_cur = rl.rlim_max = 0;
         setrlimit(RLIMIT_CORE, &rl);
         if (opt.mem_limit_bytes > 0) {
+            // RLIMIT_DATA, not RLIMIT_AS: since Linux 4.7 it covers brk plus
+            // writable private mappings (what allocators actually commit) while
+            // ignoring PROT_NONE reservations, so address-space-hungry runtimes
+            // (GHC/pandoc, JVMs) start fine but real memory use stays bounded.
+            // Defense in depth alongside the cgroup memory.max above.
             rl.rlim_cur = rl.rlim_max = static_cast<rlim_t>(opt.mem_limit_bytes);
-            setrlimit(RLIMIT_AS, &rl);
+            setrlimit(RLIMIT_DATA, &rl);
         }
         nice(opt.nice);
 

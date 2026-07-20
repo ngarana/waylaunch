@@ -23,9 +23,14 @@ public:
     using VoidFn = std::function<void()>;
 
     struct Callbacks {
-        PathFn on_index;     // a file was created/modified/moved-in → (re)index it
-        PathFn on_remove;    // a file was deleted/moved-out → drop it
-        VoidFn on_overflow;  // event queue overflowed → reconcile the tree
+        PathFn on_index;       // a file was created/modified/moved-in → (re)index it
+        PathFn on_remove;      // a file was deleted/moved-out → drop it
+        VoidFn on_overflow;    // event queue overflowed → reconcile the tree
+        // A directory was deleted or moved out of the watched tree → drop every
+        // indexed path under it. A moved-out directory produces no per-file
+        // events, so without this its files stay in the index until the next
+        // full reconcile (challenge §6.1).
+        PathFn on_remove_tree;
     };
 
     // `excluded(path)` returns true for paths that must not be watched or reported.
@@ -46,6 +51,7 @@ private:
     void add_watches(const std::string& dir);        // dir + existing subdirs
     void scan_subtree(const std::string& dir);       // add watches + enqueue files
     void drop_watch_subtree(const std::string& dir); // dir moved/deleted
+    void remove_tree(const std::string& dir);        // enqueue subtree removal
 
     std::vector<std::string>                    roots_;
     std::function<bool(const std::string&)>     excluded_;

@@ -32,6 +32,7 @@ public:
     // Producers — safe to call from any thread (watcher, control).
     void enqueue_index(std::string path);
     void enqueue_remove(std::string path);
+    void enqueue_remove_tree(std::string path);   // drop an entire subtree (dir gone)
     void request_reconcile();       // e.g. after inotify overflow / on demand
     void set_paused(bool paused);
     void request_reindex();         // drop the index and crawl from scratch
@@ -52,7 +53,7 @@ public:
     const ContentConfig& config() const { return cfg_; }
 
 private:
-    struct WorkItem { enum Kind { Index, Remove } kind; std::string path; };
+    struct WorkItem { enum Kind { Index, Remove, RemoveTree } kind; std::string path; };
 
     void run_loop();
     void crawl_all();

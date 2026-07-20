@@ -17,13 +17,18 @@ RestartSec=5
 Nice=10
 IOSchedulingClass=idle
 CPUSchedulingPolicy=batch
-MemoryHigh=96M
-MemoryMax=192M
+# Delegate a cgroup subtree so the daemon can sandbox extractor subprocesses in
+# a child cgroup (memory.max / pids.max / oom.group + clone3 CLONE_INTO_CGROUP).
+# Requires write access to the subtree, so ProtectControlGroups must stay off.
+Delegate=cpu memory pids
+# Envelope for the whole tree (daemon + extractors). The daemon confines the
+# extractors further via its ./extract subgroup (default 512M, swap off); no
+# MemoryHigh here — throttling a PDF parser mid-file just makes it hang longer.
+MemoryMax=768M
 # Hardening: the daemon needs no elevated privileges and no network.
 PrivateNetwork=true
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectControlGroups=true
 RestrictAddressFamilies=AF_UNIX
 ReadWritePaths=%h/.local/share/waylaunch %t/waylaunch
 
