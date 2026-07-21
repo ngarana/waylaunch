@@ -210,8 +210,13 @@ if(BUILD_TESTING)
 endif()
 
 # Install
+include(GNUInstallDirs)
 install(TARGETS waylaunch waylaunchd waylaunchctl DESTINATION bin)
-install(FILES dist/waylaunchd.service
+# Generate the systemd unit with ExecStart pointing at the real install prefix
+# (CMAKE_INSTALL_FULL_BINDIR) so `cmake --install` to /usr or /usr/local both work.
+configure_file(dist/waylaunchd.service.in
+               ${CMAKE_BINARY_DIR}/waylaunchd.service @ONLY)
+install(FILES ${CMAKE_BINARY_DIR}/waylaunchd.service
         DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/systemd/user)
 install(FILES config/waylaunch.toml DESTINATION ${CMAKE_INSTALL_PREFIX}/share/waylaunch)
 install(FILES doc/waylaunch.1 DESTINATION ${CMAKE_INSTALL_PREFIX}/share/man/man1)
