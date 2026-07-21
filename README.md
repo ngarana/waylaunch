@@ -7,7 +7,7 @@ A minimal, fast, keyboard-first Wayland-native launcher. One keystroke opens a u
 - **Unified Search** — no modes. Type once, get apps, files, folders, calculator results, and custom commands ranked together with a single Top Hit.
 - **Frosted Glass** — client-side backdrop blur via `wlr-screencopy`. Captures the desktop, downsamples, and applies a separable box blur for a glassmorphism look. Works on any compositor.
 - **Async File Search** — dedicated worker thread runs `fd` with prefix/substring ranking, recency bonuses, and path-depth penalties. Results stream into the UI without blocking.
-- **Content Search** — index-backed full-text search *inside* your documents (Spotlight's "find in contents"), served by the `waylaunchd` daemon. An inverted index (SQLite FTS5, BM25) over text/PDF/Office/HTML, kept fresh with inotify; the launcher queries it read-only and shows a **CONTENTS** section with a highlighted snippet. Queries are O(index-lookup), not O(filesystem). See [`docs/CONTENT_SEARCH.md`](docs/CONTENT_SEARCH.md).
+- **Content Search** — index-backed full-text search *inside* your documents (Spotlight's "find in contents"), served by the `waylaunchd` daemon. An inverted index (SQLite FTS5, BM25) over text, code, PDF, **Office/ODF spreadsheets & slides** (`.docx`/`.xlsx`/`.pptx`/`.odt`/`.ods`/`.odp`), EPUB, and HTML; the launcher queries it read-only and shows a **CONTENTS** section with a highlighted snippet. Queries are O(index-lookup), not O(filesystem), and stay bounded even on ultra-common terms. Extracted text is stored zstd-compressed, extraction runs in a sandboxed subprocess, and the index self-heals on corruption or schema change. Kept fresh incrementally with inotify plus a periodic reconcile backstop for when watches are exhausted. Supports **`mdfind`-style filters** — `kind:pdf quarterly revenue`, `kind:spreadsheet`, `size:>1M`, `modified:<7d`. See [`docs/CONTENT_SEARCH.md`](docs/CONTENT_SEARCH.md).
 - **Application Launcher** — scans `.desktop` files from XDG data directories, filters in-memory per keystroke.
 - **Calculator** — built-in recursive-descent expression evaluator with trig, logs, and constants. A valid math expression becomes the Top Hit.
 - **Custom Commands** — user-defined shell commands in the config file (Lock Screen, Sleep, etc.), matched by name.
@@ -31,15 +31,17 @@ A minimal, fast, keyboard-first Wayland-native launcher. One keystroke opens a u
 - `gdk-pixbuf-2.0` — Image loading (planned for removal)
 - `librsvg-2.0` — SVG icon rendering
 - `sqlite` (FTS5) — content-search index
+- `zstd` (`libzstd`) — compresses extracted document text in the index
 - `file`/`libmagic` — MIME detection for the content indexer (optional; falls back to extensions)
 
 ### Optional (for file search)
 - `fd` — Fast file finder (strongly recommended)
 
 ### Optional (for content extraction)
+- `unzip` — Office/ODF/EPUB text (`.docx`/`.xlsx`/`.pptx`/`.odt`/`.ods`/`.odp`/`.epub` are ZIP containers; their XML parts are unzipped and stripped in-process — no heavy runtime needed)
 - `poppler` (`pdftotext`) — PDF text
-- `pandoc` — Office/ODF (`.docx`, `.odt`, `.rtf`, `.epub`) text
-- `odt2txt` — ODF fallback when pandoc is absent
+- `pandoc` — fallback for `.rtf` and any Office/ODF variant `unzip` can't read
+- `odt2txt` — `.odt` fallback when pandoc is absent
 - (plain text, code, Markdown, and HTML need no external tools)
 
 ### Build
@@ -53,10 +55,10 @@ A minimal, fast, keyboard-first Wayland-native launcher. One keystroke opens a u
 ```bash
 # Install dependencies (Arch Linux)
 sudo pacman -S wayland wayland-protocols libxkbcommon cairo pango fontconfig \
-               gtk3 gdk-pixbuf2 librsvg sqlite file tomlplusplus
+               gtk3 gdk-pixbuf2 librsvg sqlite zstd file tomlplusplus
 
 # Install optional file search + content extractors
-sudo pacman -S fd poppler pandoc odt2txt
+sudo pacman -S fd unzip poppler pandoc odt2txt
 
 # Clone and build
 git clone https://github.com/yourusername/waylaunch.git
@@ -104,16 +106,28 @@ waylaunchd --config ~/.config/waylaunch/config.toml
 waylaunchd --once
 
 # Inspect / control the running daemon
-waylaunchctl status                 # index size, files, watches, state
+waylaunchctl status                 # index size, files, watches, reconcile state
 waylaunchctl pause | resume         # suspend/resume indexing
 waylaunchctl reindex                # rebuild the index from scratch
+waylaunchctl reconcile              # re-scan roots to catch missed changes
 waylaunchctl exclude ~/private      # stop indexing a path at runtime
+
+# Query the index directly (read-only, like mdfind — works with the daemon down)
+waylaunchctl search quarterly revenue
+waylaunchctl search kind:pdf budget          # filter by kind + content
+waylaunchctl search kind:spreadsheet         # browse a kind (no text term)
+waylaunchctl search revenue modified:<7d     # content + recency
 ```
 
+Queries accept `mdfind`-style predicates mixed with free text:
+`kind:` (`pdf`/`image`/`audio`/`video`/`archive`/`doc`/`text`/`code`/`spreadsheet`/`presentation`),
+`ext:xlsx`, `name:report`, `size:>1M` / `size:<500k`, and
+`modified:<7d` / `modified:>2w` / `modified:today`.
+
 Configure what gets indexed under `[content]` in the config (roots, excludes,
-privacy paths, size caps, `prefix` vs `substring` matching). The daemon runs at
-idle CPU/IO priority with a bounded memory footprint and skips a built-in
-privacy list (`~/.ssh`, `~/.gnupg`, …) by default.
+privacy paths, size caps, `prefix` vs `substring` matching, reconcile interval).
+The daemon runs at idle CPU/IO priority with a bounded memory footprint and skips
+a built-in privacy list (`~/.ssh`, `~/.gnupg`, …) by default.
 
 ## Configuration
 
@@ -165,6 +179,7 @@ icon    = "system-lock-screen"
 | `[appearance]` | Panel geometry and glassmorphism |
 | `[theme]` | Colors and fonts (Catppuccin dark default) |
 | `[search]` | Provider toggles, file search roots/excludes |
+| `[content]` | Content-index daemon: roots, excludes, privacy paths, size caps, match mode, reconcile interval |
 | `[[commands]]` | Custom shell commands shown as results |
 
 ## Keybindings
@@ -197,6 +212,15 @@ src/
 │   ├── app_launcher.cpp     # .desktop file scanning and filtering
 │   ├── calculator.cpp       # Recursive-descent expression parser
 │   └── clipboard.cpp        # wl-copy / wl-paste integration
+├── content/                 # content-search subsystem (lib + daemon + CLI)
+│   ├── store.cpp            # SQLite FTS5 store: tokenizer, zstd docs, planner, metadata filters
+│   ├── extractor.cpp        # MIME dispatch + per-format text extraction (sandboxed subprocesses)
+│   ├── indexer.cpp          # crawl, change queue, content-hash skip, periodic reconcile
+│   ├── fs_watcher.cpp       # inotify watcher (rename pairing, overflow, watch-limit fallback)
+│   ├── control.cpp          # Unix control socket (status/pause/reindex/…)
+│   ├── config.cpp           # [content] config parsing
+│   ├── waylaunchd_main.cpp  # indexing daemon (≈ Spotlight's mds)
+│   └── waylaunchctl_main.cpp# control + read-only search CLI (≈ mdutil/mdfind)
 └── config/
     └── config.cpp           # TOML configuration parser
 ```
