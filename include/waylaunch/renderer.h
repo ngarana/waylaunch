@@ -52,6 +52,12 @@ public:
     void fill_rect(int x, int y, int w, int h, const Color& color);
     void rounded_rect(int x, int y, int w, int h, int radius, const Color& color);
     void draw_text(int x, int y, const std::string& text, const RenderFontConfig& font, const Color& color);
+    // Draw Pango-markup text (supports <span>, <b>, …) with `color` as the base.
+    // max_width>0 constrains width (in px); max_lines: 0 = unlimited (wrap if
+    // width set), 1 = single line ellipsized, >1 = wrap capped to N lines then
+    // ellipsized. Returns the pixel height drawn (for stacking).
+    int draw_markup(int x, int y, const std::string& markup, const RenderFontConfig& font,
+                    const Color& color, int max_width = 0, int max_lines = 0);
     // Draw a macOS-style search (magnifier) glyph at (cx, cy).
     void draw_search_glyph(int cx, int cy, int size, const Color& color);
 
@@ -69,6 +75,8 @@ public:
 
     // Measure pixel width of text in the given font (for caret placement).
     int text_width(const std::string& text, const RenderFontConfig& font);
+    // Logical line height of the font (for vertical centering).
+    int text_height(const RenderFontConfig& font);
 
     // --- Frosted-glass backdrop (client-side blur) ---
     // Supply the captured screen (full output). Builds a downsampled+blurred

@@ -203,6 +203,44 @@ void Renderer::draw_text(int x, int y, const std::string& text, const RenderFont
     g_object_unref(layout);
 }
 
+int Renderer::draw_markup(int x, int y, const std::string& markup, const RenderFontConfig& font,
+                          const Color& color, int max_width, int max_lines) {
+    if (!cairo_) return 0;
+    PangoLayout* layout = pango_cairo_create_layout(cairo_->cr);
+    PangoFontDescription* desc = pango_font_description_new();
+    pango_font_description_set_family(desc, font.family.c_str());
+    pango_font_description_set_size(desc, static_cast<int>(font.size * PANGO_SCALE));
+    if (font.bold) pango_font_description_set_weight(desc, PANGO_WEIGHT_BOLD);
+    if (font.italic) pango_font_description_set_style(desc, PANGO_STYLE_ITALIC);
+    pango_layout_set_font_description(layout, desc);
+
+    if (max_width > 0) pango_layout_set_width(layout, max_width * PANGO_SCALE);
+    if (max_lines == 1) {
+        pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);   // single line
+    } else if (max_lines > 1) {
+        pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
+        pango_layout_set_height(layout, -max_lines);               // ≈ cap to N lines
+        pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
+    } else if (max_width > 0) {
+        pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);        // wrap, unbounded height
+    }
+
+    // Callers escape user text before adding <span> runs, so the markup is valid;
+    // if Pango ever rejects it, it leaves the layout empty (blank), never crashes.
+    pango_layout_set_markup(layout, markup.c_str(), -1);
+
+    cairo_set_source_rgba(cairo_->cr, color.r, color.g, color.b, color.a);
+    cairo_move_to(cairo_->cr, x, y);
+    pango_cairo_show_layout(cairo_->cr, layout);
+
+    PangoRectangle lr;
+    pango_layout_get_pixel_extents(layout, nullptr, &lr);
+    int h = lr.height;
+    pango_font_description_free(desc);
+    g_object_unref(layout);
+    return h;
+}
+
 void Renderer::draw_search_glyph(int cx, int cy, int size, const Color& color) {
     if (!cairo_) return;
     cairo_t* cr = cairo_->cr;
@@ -240,11 +278,30 @@ int Renderer::text_width(const std::string& text, const RenderFontConfig& font) 
     if (font.bold) pango_font_description_set_weight(desc, PANGO_WEIGHT_BOLD);
     pango_layout_set_font_description(layout, desc);
     pango_layout_set_text(layout, text.c_str(), -1);
-    PangoRectangle ink;
-    pango_layout_get_pixel_extents(layout, &ink, nullptr);
+    // Logical (not ink) width so trailing whitespace counts — otherwise the
+    // caret wouldn't advance after typing a space and the space would look lost.
+    PangoRectangle logical;
+    pango_layout_get_pixel_extents(layout, nullptr, &logical);
     pango_font_description_free(desc);
     g_object_unref(layout);
-    return ink.width;
+    return logical.width;
+}
+
+int Renderer::text_height(const RenderFontConfig& font) {
+    if (!cairo_) return static_cast<int>(font.size);
+    PangoLayout* layout = pango_cairo_create_layout(cairo_->cr);
+    PangoFontDescription* desc = pango_font_description_new();
+    pango_font_description_set_family(desc, font.family.c_str());
+    pango_font_description_set_size(desc, static_cast<int>(font.size * PANGO_SCALE));
+    if (font.bold) pango_font_description_set_weight(desc, PANGO_WEIGHT_BOLD);
+    pango_layout_set_font_description(layout, desc);
+    pango_layout_set_text(layout, "Ayg", -1);   // includes ascenders + descenders
+    PangoRectangle logical;
+    pango_layout_get_pixel_extents(layout, nullptr, &logical);
+    int h = logical.height;
+    pango_font_description_free(desc);
+    g_object_unref(layout);
+    return h;
 }
 
 namespace {

@@ -104,22 +104,6 @@ std::string icon_for_file(const std::string& path) {
     return "text-x-generic";
 }
 
-std::string human_kind(const ListItem& it) {
-    switch (it.kind) {
-        case ItemKind::Application: return "Application";
-        case ItemKind::Folder:      return "Folder";
-        case ItemKind::Calculator:  return "Calculator";
-        case ItemKind::Command:     return "Command";
-        case ItemKind::File:
-        case ItemKind::Content: {
-            std::string ext = std::filesystem::path(it.path).extension().string();
-            if (ext.size() > 1) return to_lower(ext.substr(1)) + " file";
-            return "Document";
-        }
-    }
-    return "";
-}
-
 std::string format_size(off_t bytes) {
     const char* u[] = {"B", "KB", "MB", "GB", "TB"};
     double v = static_cast<double>(bytes);
@@ -137,6 +121,74 @@ std::string format_time(time_t t) {
     localtime_r(&t, &tmv);
     strftime(buf, sizeof(buf), "%b %d, %Y  %H:%M", &tmv);
     return buf;
+}
+
+// Content snippets carry the matched runs wrapped in these sentinel bytes (the
+// hl markers passed to Store::search). They're control chars the extractor's
+// sanitizer strips from body text, so they never collide with real content.
+constexpr char kHlOpen = '\x02';
+constexpr char kHlClose = '\x03';
+
+// Escape text for Pango markup (so a stray '&'/'<' in a filename or excerpt
+// can't corrupt the markup we build around highlighted runs).
+std::string escape_markup(const std::string& s) {
+    std::string o;
+    o.reserve(s.size() + 8);
+    for (char c : s) {
+        switch (c) {
+            case '&': o += "&amp;"; break;
+            case '<': o += "&lt;"; break;
+            case '>': o += "&gt;"; break;
+            case '"': o += "&quot;"; break;
+            case '\'': o += "&apos;"; break;
+            default: o += c;
+        }
+    }
+    return o;
+}
+
+std::string color_hex(const Color& c) {
+    auto b = [](double v) { return static_cast<int>(std::clamp(v, 0.0, 1.0) * 255.0 + 0.5); };
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "#%02x%02x%02x", b(c.r), b(c.g), b(c.b));
+    return buf;
+}
+
+// Turn a sentinel-marked snippet into Pango markup: plain text is escaped, and
+// each matched run becomes an accent-coloured bold span.
+std::string snippet_markup(const std::string& snip, const std::string& accent_hex) {
+    std::string out;
+    size_t i = 0;
+    while (i < snip.size()) {
+        size_t o = snip.find(kHlOpen, i);
+        if (o == std::string::npos) { out += escape_markup(snip.substr(i)); break; }
+        out += escape_markup(snip.substr(i, o - i));
+        size_t c = snip.find(kHlClose, o + 1);
+        if (c == std::string::npos) { out += escape_markup(snip.substr(o + 1)); break; }
+        out += "<span foreground=\"" + accent_hex + "\" weight=\"bold\">";
+        out += escape_markup(snip.substr(o + 1, c - o - 1));
+        out += "</span>";
+        i = c + 1;
+    }
+    return out;
+}
+
+// Short uppercase type tag for the preview badge (PDF, XLSX, FOLDER, APP…).
+std::string kind_badge(const ListItem& it) {
+    switch (it.kind) {
+        case ItemKind::Application: return "APP";
+        case ItemKind::Folder:      return "FOLDER";
+        case ItemKind::Calculator:  return "=";
+        case ItemKind::Command:     return "CMD";
+        default: break;
+    }
+    std::string ext = to_lower(std::filesystem::path(it.path).extension().string());
+    if (ext.size() > 1) {
+        ext = ext.substr(1);
+        for (auto& ch : ext) ch = static_cast<char>(std::toupper((unsigned char)ch));
+        return ext.size() <= 5 ? ext : ext.substr(0, 5);
+    }
+    return "FILE";
 }
 
 int path_depth(const std::string& p) {
@@ -686,7 +738,8 @@ void LauncherUI::file_worker_loop() {
         // CONTENTS section below apps/files.
         std::vector<ListItem> content_out;
         if (content_store_ && static_cast<int>(q.size()) >= content_min_query_) {
-            auto hits = content_store_->search(q, content_max_results_);
+            auto hits = content_store_->search(q, content_max_results_,
+                                               std::string(1, kHlOpen), std::string(1, kHlClose));
             for (auto& h : hits) {
                 ListItem it;
                 it.kind = ItemKind::Content;
@@ -990,33 +1043,40 @@ void LauncherUI::render_frame() {
     }
 
     // --- Search field (spans the whole panel width) ---
+    // Center the magnifier glyph and the text on one shared midline so they line
+    // up. The glyph's visual mass sits ~0.41 down its box (lens + handle toward
+    // the lower-right), and text is centered by its measured logical height.
+    int midline = py + layout_.search_h / 2;
     int glyph_size = 26;
     int gx = px + layout_.search_pad_x;
-    int gy = py + (layout_.search_h - glyph_size) / 2;
+    int gy = midline - static_cast<int>(glyph_size * 0.41);
     renderer_->draw_search_glyph(gx, gy, glyph_size,
                                  Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.9));
 
     int text_x = gx + glyph_size + 16;
     RenderFontConfig sf = t.input_font;
     sf.size = 24;
+    int text_h = renderer_->text_height(sf);
+    int text_y = midline - text_h / 2;
     if (query_.empty()) {
-        renderer_->draw_text(text_x, py + (layout_.search_h - static_cast<int>(sf.size)) / 2,
-                             config_->get().search.placeholder, sf,
+        renderer_->draw_text(text_x, text_y, config_->get().search.placeholder, sf,
                              Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.8));
     } else {
-        renderer_->draw_text(text_x, py + (layout_.search_h - static_cast<int>(sf.size)) / 2,
-                             query_, sf, Color::from_rgba(1, 1, 1, 1));
+        renderer_->draw_text(text_x, text_y, query_, sf, Color::from_rgba(1, 1, 1, 1));
         int caret_x = text_x + renderer_->text_width(query_.substr(0, cursor_pos_), sf);
-        renderer_->fill_rect(caret_x + 1, py + 16, 2, layout_.search_h - 32, t.accent);
+        int caret_h = text_h + 6;
+        renderer_->fill_rect(caret_x + 1, midline - caret_h / 2, 2, caret_h, t.accent);
     }
     // --- Empty state: just the search bar (S---
     if (items_.empty()) {
         if (!query_.empty()) {
             renderer_->fill_rect(px, py + layout_.search_h, pw, 1,
                                  Color::from_rgba(t.border.r, t.border.g, t.border.b, 0.35));
-            renderer_->draw_text(px + layout_.pad_x + 4,
+            int nw = renderer_->text_width("No Results", t.result_font);
+            renderer_->draw_text(px + (pw - nw) / 2,
                                  py + layout_.search_h + layout_.row_h / 2 - 8,
-                                 "No Results", t.result_font, t.text_muted);
+                                 "No Results", t.result_font,
+                                 Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.7));
         }
         renderer_->end();
         wayland_->submit_buffer(buf, 0, 0);
@@ -1032,10 +1092,13 @@ void LauncherUI::render_frame() {
     int row_x = px + layout_.pad_x;
     int row_w = layout_.list_w - 2 * layout_.pad_x;
 
+    std::string accent_hex = color_hex(t.accent);
+
     // Draw one result row (icon + name + subtitle). Hero rows get a larger icon.
+    // Content rows show a highlighted excerpt as the subtitle instead of the path.
     auto draw_row = [&](const ListItem& it, int ry, bool sel, int icon) {
-        if (sel) renderer_->rounded_rect(row_x - 6, ry - 2, row_w + 12, layout_.row_h, 9,
-                                         Color::from_rgba(t.selection.r, t.selection.g, t.selection.b, 0.6));
+        if (sel) renderer_->rounded_rect(row_x - 6, ry - 2, row_w + 12, layout_.row_h, 10,
+                                         Color::from_rgba(t.selection.r, t.selection.g, t.selection.b, 0.55));
         renderer_->draw_icon(row_x, ry + (layout_.row_h - icon) / 2, icon, it.icon_name, it.name, t.accent);
         int tx = row_x + icon + layout_.icon_pad;
         int avail = row_w - icon - layout_.icon_pad - 6;
@@ -1044,26 +1107,38 @@ void LauncherUI::render_frame() {
             while (name.size() > 1 && renderer_->text_width(name + "…", t.result_font) > avail) name.pop_back();
             name += "…";
         }
-        if (it.description.empty()) {
+        bool has_snip = it.kind == ItemKind::Content && !it.snippet.empty();
+        if (it.description.empty() && !has_snip) {
             renderer_->draw_text(tx, ry + (layout_.row_h - static_cast<int>(t.result_font.size)) / 2 - 2,
                                  name, t.result_font, Color::from_rgba(1, 1, 1, 1));
         } else {
             renderer_->draw_text(tx, ry + 7, name, t.result_font, Color::from_rgba(1, 1, 1, 1));
-            std::string sub = it.description;
-            if (renderer_->text_width(sub, t.result_detail_font) > avail) {
-                while (sub.size() > 1 && renderer_->text_width(sub + "…", t.result_detail_font) > avail) sub.pop_back();
-                sub += "…";
+            int suby = ry + 7 + static_cast<int>(t.result_font.size) + 3;
+            if (has_snip) {
+                renderer_->draw_markup(tx, suby, snippet_markup(it.snippet, accent_hex),
+                                       t.result_detail_font, t.text_muted, avail, 1);
+            } else {
+                std::string sub = it.description;
+                if (renderer_->text_width(sub, t.result_detail_font) > avail) {
+                    while (sub.size() > 1 && renderer_->text_width(sub + "…", t.result_detail_font) > avail) sub.pop_back();
+                    sub += "…";
+                }
+                renderer_->draw_text(tx, suby, sub, t.result_detail_font, t.text_muted);
             }
-            renderer_->draw_text(tx, ry + 7 + static_cast<int>(t.result_font.size) + 3,
-                                 sub, t.result_detail_font, t.text_muted);
         }
     };
 
-    Color hdr = Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.7);
+    Color hdr = Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.65);
 
     // Section headers and rows come from the precomputed layout (relayout()).
+    // Letter-spacing gives the uppercase category labels a refined, intentional
+    // "Spotlight" tracking.
+    RenderFontConfig hf = t.result_detail_font;
+    hf.size = std::max(10.0, t.result_detail_font.size - 1);
     for (const auto& h : headers_)
-        renderer_->draw_text(row_x, py + h.y, h.label, t.result_detail_font, hdr);
+        renderer_->draw_markup(row_x, py + h.y,
+                               "<span letter_spacing=\"1400\">" + escape_markup(h.label) + "</span>",
+                               hf, hdr);
     int total_rows = static_cast<int>(rows_.size());
     // Compute visible rows within the panel, for scrollbar.
     int vis_rows = 0;
@@ -1125,12 +1200,22 @@ void LauncherUI::render_preview(int px, int py, int pw, int ph, const Theme& t) 
         renderer_->draw_text(col_x + (col_w - w) / 2, cy, text, f, c);
     };
 
-    // Name (bold-ish) + kind.
+    // Name (bold-ish) + a centered type badge pill.
     RenderFontConfig nf = t.result_font; nf.size = 15; nf.bold = true;
     draw_centered(it.name, nf, Color::from_rgba(1, 1, 1, 1));
-    cy += static_cast<int>(nf.size) + 8;
-    draw_centered(human_kind(it), t.result_detail_font, t.text_muted);
-    cy += static_cast<int>(t.result_detail_font.size) + 16;
+    cy += static_cast<int>(nf.size) + 10;
+    {
+        std::string bl = kind_badge(it);
+        RenderFontConfig bf = t.result_detail_font; bf.bold = true;
+        bf.size = std::max(10.0, t.result_detail_font.size - 1);
+        int tw = renderer_->text_width(bl, bf);
+        int padx = 9, bh = static_cast<int>(bf.size) + 9, bw = tw + 2 * padx;
+        int bx = col_x + (col_w - bw) / 2;
+        renderer_->rounded_rect(bx, cy, bw, bh, bh / 2,
+                                Color::from_rgba(t.accent.r, t.accent.g, t.accent.b, 0.16));
+        renderer_->draw_text(bx + padx, cy + 4, bl, bf, t.accent);
+        cy += bh + 16;
+    }
 
     // Divider then key/value details.
     renderer_->fill_rect(inner_x, cy, inner_w, 1, Color::from_rgba(t.border.r, t.border.g, t.border.b, 0.3));
@@ -1169,34 +1254,20 @@ void LauncherUI::render_preview(int px, int py, int pw, int ph, const Theme& t) 
         renderer_->draw_text(inner_x, ph + py - 34, "⏎ Copy result", t.result_detail_font, t.text_muted);
     } else if (it.kind == ItemKind::Content) {
         draw_kv("Where", abbreviate_home(std::filesystem::path(it.path).parent_path().string()));
+        struct stat st;
+        bool have = stat(it.path.c_str(), &st) == 0;
+        if (have) draw_kv("Size", format_size(st.st_size));
+        if (have) draw_kv("Modified", format_time(st.st_mtime));
         if (!it.snippet.empty()) {
             renderer_->draw_text(inner_x, cy, "Match", t.result_detail_font,
                                  Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.9));
-            cy += static_cast<int>(t.result_detail_font.size) + 4;
-            // Greedy word-wrap the excerpt across a few lines.
-            std::string rest = it.snippet;
-            for (int line = 0; line < 5 && !rest.empty(); ++line) {
-                size_t fit = rest.size();
-                for (size_t n = 1; n <= rest.size(); ++n) {
-                    if (renderer_->text_width(rest.substr(0, n), t.result_detail_font) > inner_w) {
-                        fit = n - 1; break;
-                    }
-                }
-                size_t brk = fit;
-                if (fit < rest.size()) {
-                    size_t sp = rest.rfind(' ', fit);
-                    if (sp != std::string::npos && sp > fit / 2) brk = sp;
-                }
-                renderer_->draw_text(inner_x, cy, rest.substr(0, brk), t.result_detail_font,
-                                     Color::from_rgba(0.9, 0.9, 0.95, 1));
-                cy += static_cast<int>(t.result_detail_font.size) + 4;
-                rest = brk < rest.size() ? rest.substr(brk) : "";
-                while (!rest.empty() && rest.front() == ' ') rest.erase(rest.begin());
-            }
-            cy += 8;
+            cy += static_cast<int>(t.result_detail_font.size) + 6;
+            // Native word-wrap + inline highlight of the matched runs (up to 6 lines).
+            int h = renderer_->draw_markup(inner_x, cy, snippet_markup(it.snippet, color_hex(t.accent)),
+                                           t.result_detail_font, Color::from_rgba(0.9, 0.9, 0.95, 1),
+                                           inner_w, 6);
+            cy += h + 8;
         }
-        struct stat st;
-        if (stat(it.path.c_str(), &st) == 0) draw_kv("Modified", format_time(st.st_mtime));
         renderer_->draw_text(inner_x, ph + py - 34, "⏎ Open   ·   right-click: reveal",
                              t.result_detail_font, t.text_muted);
     }
