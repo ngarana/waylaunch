@@ -7,8 +7,10 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/waylaunchd
-ExecReload=/usr/bin/waylaunchctl reconcile
+# Paths are substituted from the install prefix at configure time (a plain
+# /usr/bin here would break a /usr/local install with status=203/EXEC).
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/waylaunchd
+ExecReload=@CMAKE_INSTALL_FULL_BINDIR@/waylaunchctl reconcile
 Restart=on-failure
 RestartSec=5
 
