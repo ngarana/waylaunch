@@ -2,6 +2,47 @@
 #include "waylaunch/launcher_ui.h"
 #include <iostream>
 #include <string>
+#include <csignal>
+#include <cstdlib>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+
+namespace {
+
+// Single-instance guard with toggle semantics: the launcher is a keyboard-
+// grabbing overlay, so a second invocation (e.g. pressing the Super+D bind
+// again) must not stack a new window on top. We hold an flock on a per-user
+// lock file for our whole lifetime. If another instance already holds it, we
+// signal that one to quit (so the bind toggles the launcher closed) and exit.
+// Returns the held fd (keep it open), -1 to indicate "exit now", or -2 if the
+// lock is unavailable (proceed anyway — never block the launcher from opening).
+int acquire_single_instance() {
+    const char* rt = std::getenv("XDG_RUNTIME_DIR");
+    std::string path = (rt && rt[0] ? std::string(rt) : "/tmp") + "/waylaunch-launcher.lock";
+    int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) return -2;
+    if (::flock(fd, LOCK_EX | LOCK_NB) == 0) {
+        if (::ftruncate(fd, 0) == 0) {
+            std::string pid = std::to_string(::getpid()) + "\n";
+            ssize_t w = ::write(fd, pid.data(), pid.size());
+            (void)w;
+        }
+        return fd;   // we own it; keep the fd open for our lifetime
+    }
+    // Another instance holds the lock → toggle it closed and step aside.
+    char buf[32] = {0};
+    ::lseek(fd, 0, SEEK_SET);
+    ssize_t n = ::read(fd, buf, sizeof(buf) - 1);
+    if (n > 0) {
+        long other = std::atol(buf);
+        if (other > 1) ::kill(static_cast<pid_t>(other), SIGTERM);
+    }
+    ::close(fd);
+    return -1;
+}
+
+} // namespace
 
 // SIGINT/SIGTERM are handled inside LauncherUI::run() (wired into its poll loop),
 // so the keyboard-grabbing overlay exits cleanly on a kill signal.
@@ -43,6 +84,12 @@ int main(int argc, char* argv[]) {
             config.get().general.debug = true;
         }
     }
+
+    // Single-instance toggle: if the launcher is already up, close it and exit
+    // (so the Super+D bind opens/closes rather than stacking overlays).
+    int lock_fd = acquire_single_instance();
+    if (lock_fd == -1) return 0;
+    (void)lock_fd;   // held open for our lifetime; the OS releases it on exit
 
     if (config_path.empty()) config_path = waylaunch::Config::default_config_path();
 
