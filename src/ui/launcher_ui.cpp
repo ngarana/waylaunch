@@ -48,13 +48,23 @@ void on_terminate_signal(int) {
     }
 }
 
-// A re-invocation of the switcher (a second Alt+Tab during startup, before the
-// first instance grabs the keyboard) sends SIGUSR1 to advance the selection.
+// A re-invocation of the switcher signals the resident instance rather than
+// stacking a new window: SIGUSR1 = forward (show if dormant, else advance),
+// SIGUSR2 = reverse (show-at-far-end if dormant, else step back).
 int g_switcher_advance_fd = -1;
 void on_switcher_advance_signal(int) {
     if (g_switcher_advance_fd >= 0) {
         uint64_t one = 1;
         ssize_t w = write(g_switcher_advance_fd, &one, sizeof(one));
+        (void)w;
+    }
+}
+
+int g_switcher_reverse_fd = -1;
+void on_switcher_reverse_signal(int) {
+    if (g_switcher_reverse_fd >= 0) {
+        uint64_t one = 1;
+        ssize_t w = write(g_switcher_reverse_fd, &one, sizeof(one));
         (void)w;
     }
 }
@@ -279,6 +289,8 @@ LauncherUI::~LauncherUI() {
     if (signal_fd_ >= 0) close(signal_fd_);
     g_switcher_advance_fd = -1;
     if (switcher_advance_fd_ >= 0) close(switcher_advance_fd_);
+    g_switcher_reverse_fd = -1;
+    if (switcher_reverse_fd_ >= 0) close(switcher_reverse_fd_);
 }
 
 bool LauncherUI::init(Config& config) {
@@ -356,11 +368,18 @@ bool LauncherUI::init(Config& config) {
 
     switcher_manager_->set_change_callback([this]() {
         needs_redraw_ = true;
-        // In dedicated switcher mode the overlay's whole lifetime is the switch:
-        // once it has shown and then hidden (a confirm or cancel), we're done.
+        // Resident switcher: the first Alt+Tab starts this process; it then stays
+        // alive and warm. On show it maps + grabs the keyboard; on hide (confirm
+        // or cancel) it unmaps — releasing the grab so the user's windows get the
+        // keyboard back — but keeps running, so every later Alt+Tab (delivered as
+        // SIGUSR1/SIGUSR2) shows instantly with a reliable grab.
         if (switcher_mode_) {
-            if (switcher_manager_->is_visible()) switcher_shown_ = true;
-            else if (switcher_shown_) quit();
+            if (switcher_manager_->is_visible()) {
+                switcher_shown_ = true;
+            } else if (switcher_shown_) {
+                switcher_shown_ = false;
+                wayland_->unmap_surface();   // go dormant; do NOT quit
+            }
         }
     });
 #endif
@@ -416,14 +435,21 @@ bool LauncherUI::init(Config& config) {
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
 
-    // SIGUSR1 → advance the switcher selection (used when the Alt+Tab bind fires
-    // again while a switcher instance is already up; see main.cpp).
+    // The Alt+Tab bind re-invocation signals this resident instance (see main.cpp):
+    // SIGUSR1 = forward (show if dormant, else advance), SIGUSR2 = reverse.
     switcher_advance_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     g_switcher_advance_fd = switcher_advance_fd_;
     struct sigaction su{};
     su.sa_handler = on_switcher_advance_signal;
     sigemptyset(&su.sa_mask);
     sigaction(SIGUSR1, &su, nullptr);
+
+    switcher_reverse_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    g_switcher_reverse_fd = switcher_reverse_fd_;
+    struct sigaction sr{};
+    sr.sa_handler = on_switcher_reverse_signal;
+    sigemptyset(&sr.sa_mask);
+    sigaction(SIGUSR2, &sr, nullptr);
 
     if (!initial_query_.empty()) {
         query_ = initial_query_;
@@ -449,25 +475,47 @@ void LauncherUI::run() {
     wl_display* dpy = wayland_->display();
     int wlfd = wl_display_get_fd(dpy);
 
+    // Show (or reverse-show) the switcher: activate the state machine and preselect
+    // the previous app — or the far end for a reverse cycle. Used for both the first
+    // show and every warm re-show triggered by a later Alt+Tab.
+    auto show_switcher = [&](bool reverse) {
+        if (!switcher_input_ || !switcher_manager_) return;
+        // Waking from dormancy: the unmap discarded the layer-surface state, so
+        // start the re-map handshake. Rendering stays blocked (is_configured()
+        // false) until the fresh configure arrives, whose redraw callback then
+        // paints and maps in the same loop iteration.
+        if (!wayland_->is_configured()) wayland_->remap_surface();
+        switcher_input_->trigger();   // Hidden → active; show() preselects index 1
+        if (reverse) {
+            size_t nn = switcher_manager_->app_groups().size();
+            if (nn > 1) switcher_manager_->jump_to(nn - 1);
+        }
+        needs_redraw_ = true;
+    };
+
     // Dedicated Alt+Tab overlay: let the layer surface configure and the
     // foreign-toplevel manager announce the existing windows (handle + app_id/
-    // title/state), then show the switcher with the previous app preselected.
+    // title/state), then show the switcher with the previous app preselected. The
+    // process then stays resident (see the change callback): it unmaps on confirm
+    // but keeps tracking windows, so later Alt+Tabs re-show it instantly.
     if (switcher_mode_ && switcher_input_) {
         wl_display_roundtrip(dpy);
         wl_display_roundtrip(dpy);
-        switcher_input_->trigger();   // shows with the previous app (index 1) selected
-        if (switcher_reverse_ && switcher_manager_) {
-            size_t n = switcher_manager_->app_groups().size();
-            if (n > 1) switcher_manager_->jump_to(n - 1);   // reverse: far end of the MRU list
-        }
-        needs_redraw_ = true;
+        show_switcher(switcher_reverse_);
+        // Map NOW, before entering the loop: poll() below blocks until an fd
+        // event arrives, but an unmapped surface gets no events from the
+        // compositor — so without this render the first show would sit
+        // invisible until the *next* Alt+Tab's SIGUSR1 woke the loop (the
+        // "press Tab twice to see it" bug).
+        render_frame();
     }
 
-    struct pollfd fds[4];
+    struct pollfd fds[5];
     fds[0].fd = wlfd;               fds[0].events = POLLIN;
     fds[1].fd = results_fd_;        fds[1].events = POLLIN;
     fds[2].fd = signal_fd_;         fds[2].events = POLLIN;
     fds[3].fd = switcher_advance_fd_; fds[3].events = POLLIN;
+    fds[4].fd = switcher_reverse_fd_; fds[4].events = POLLIN;
 
     while (wayland_->is_running()) {
         // Canonical libwayland poll integration.
@@ -475,8 +523,8 @@ void LauncherUI::run() {
             wl_display_dispatch_pending(dpy);
         wl_display_flush(dpy);
 
-        fds[0].revents = fds[1].revents = fds[2].revents = fds[3].revents = 0;
-        int n = poll(fds, 4, -1);
+        for (auto& f : fds) f.revents = 0;
+        int n = poll(fds, 5, -1);
         if (n < 0) {
             wl_display_cancel_read(dpy);
             if (errno == EINTR) continue;
@@ -496,11 +544,22 @@ void LauncherUI::run() {
             apply_file_results();
         }
 
-        if (fds[3].revents & POLLIN) {   // SIGUSR1 → advance the switcher
+        if (fds[3].revents & POLLIN) {   // SIGUSR1 → forward: show if dormant, else advance
             uint64_t v;
             while (read(switcher_advance_fd_, &v, sizeof(v)) == static_cast<ssize_t>(sizeof(v))) {}
-            if (switcher_manager_ && switcher_manager_->is_visible())
-                switcher_manager_->navigate_next();
+            if (switcher_manager_) {
+                if (switcher_manager_->is_visible()) switcher_manager_->navigate_next();
+                else show_switcher(false);
+            }
+        }
+
+        if (fds[4].revents & POLLIN) {   // SIGUSR2 → reverse: reverse-show if dormant, else step back
+            uint64_t v;
+            while (read(switcher_reverse_fd_, &v, sizeof(v)) == static_cast<ssize_t>(sizeof(v))) {}
+            if (switcher_manager_) {
+                if (switcher_manager_->is_visible()) switcher_manager_->navigate_prev();
+                else show_switcher(true);
+            }
         }
 
         if (fds[2].revents & POLLIN) {   // SIGINT/SIGTERM → exit cleanly

@@ -92,11 +92,23 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // A rapid second Alt+Tab can signal this process before LauncherUI installs
+    // the real SIGUSR1/SIGUSR2 handlers — and their default action would kill the
+    // nascent resident instance mid-startup ("press Tab several times" symptom).
+    // Ignore them for now; init() rewires them to the advance/reverse eventfds.
+    if (switcher_mode) {
+        std::signal(SIGUSR1, SIG_IGN);
+        std::signal(SIGUSR2, SIG_IGN);
+    }
+
     // Single-instance: the search launcher toggles (Super+D opens/closes); the
-    // switcher advances a running instance (a repeated Alt+Tab), keeping them on
-    // separate locks so opening one never disturbs the other.
+    // switcher is resident (a repeated Alt+Tab wakes/advances the running instance),
+    // keeping them on separate locks so opening one never disturbs the other. The
+    // resident switcher distinguishes direction by signal: SIGUSR1 forward,
+    // SIGUSR2 reverse (Alt+Shift+Tab).
     int lock_fd = switcher_mode
-        ? acquire_single_instance("waylaunch-switcher.lock", SIGUSR1)
+        ? acquire_single_instance("waylaunch-switcher.lock",
+                                  switcher_reverse ? SIGUSR2 : SIGUSR1)
         : acquire_single_instance("waylaunch-launcher.lock", SIGTERM);
     if (lock_fd == -1) return 0;
     (void)lock_fd;   // held open for our lifetime; the OS releases it on exit

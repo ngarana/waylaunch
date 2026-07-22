@@ -97,6 +97,17 @@ public:
 
     Buffer* acquire_buffer();
     void submit_buffer(Buffer* buf, int x = 0, int y = 0);
+    // Unmap the surface (attach a null buffer): the compositor takes it off-screen
+    // and releases its keyboard grab, without tearing down the connection. Used by
+    // the resident switcher to go dormant between Alt+Tab presses. Per layer-shell,
+    // the unmap discards the layer_surface state, so is_configured() goes false and
+    // re-showing must call remap_surface() and wait for the fresh configure before
+    // any buffer is attached.
+    void unmap_surface();
+    // Redo the initial-commit handshake after unmap_surface(): re-applies the layer
+    // properties and commits bufferless; the resulting configure re-enables
+    // rendering (is_configured()) and fires the redraw handler.
+    void remap_surface();
 
     void set_key_handler(KeyHandler handler);
     void set_modifiers_handler(ModifiersHandler handler);

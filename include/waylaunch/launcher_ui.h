@@ -172,8 +172,9 @@ private:
     std::unique_ptr<SwitcherRenderer> switcher_renderer_;
     bool switcher_mode_ = false;    // launched as the dedicated Alt+Tab overlay
     bool switcher_reverse_ = false; // preselect the far end (Alt+Shift+Tab)
-    bool switcher_shown_ = false;   // switcher has been visible at least once
-    int  switcher_advance_fd_ = -1; // SIGUSR1 (re-invocation) → advance selection
+    bool switcher_shown_ = false;   // switcher currently mapped (visible this cycle)
+    int  switcher_advance_fd_ = -1; // SIGUSR1 (re-invocation) → show/advance forward
+    int  switcher_reverse_fd_ = -1; // SIGUSR2 (re-invocation) → show/step reverse
 };
 
 } // namespace waylaunch
