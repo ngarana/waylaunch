@@ -1,7 +1,129 @@
 #include "waylaunch/switcher/app_switcher_manager.h"
 #include <algorithm>
+#include <fstream>
+#include <cstdlib>
+#include <cstring>
+#include <cctype>
+#include <filesystem>
 
 namespace waylaunch {
+
+namespace {
+
+std::string resolve_icon_name(const std::string& app_id) {
+    if (app_id.empty()) return "";
+
+    static std::unordered_map<std::string, std::string> cache;
+    static std::vector<std::string> search_dirs;
+    static bool dirs_ready = false;
+
+    if (!dirs_ready) {
+        const char* home = std::getenv("HOME");
+        const char* xdg_data = std::getenv("XDG_DATA_HOME");
+        std::string local_apps = std::string(home ? home : "") + "/.local/share/applications";
+        std::string user_apps = std::string(xdg_data ? xdg_data : "") + "/applications";
+
+        search_dirs = {
+            "/usr/share/applications",
+            "/usr/local/share/applications",
+            user_apps,
+            local_apps,
+            "/usr/share/gnome/apps",
+            "/usr/share/mate/applications",
+        };
+        dirs_ready = true;
+    }
+
+    auto cached = cache.find(app_id);
+    if (cached != cache.end()) return cached->second;
+
+    std::vector<std::string> candidates;
+    const char* xdg_data_dirs = std::getenv("XDG_DATA_DIRS");
+    if (xdg_data_dirs) {
+        std::string_view v(xdg_data_dirs);
+        size_t pos = 0;
+        while (pos < v.size()) {
+            size_t end = v.find(':', pos);
+            if (end == std::string_view::npos) end = v.size();
+            std::string dir(v.substr(pos, end - pos));
+            if (!dir.empty()) {
+                std::string apps = dir + "/applications";
+                search_dirs.push_back(apps);
+            }
+            pos = (end < v.size()) ? end + 1 : end;
+        }
+    }
+
+    auto make_candidates = [&](const std::string& id) -> std::vector<std::string> {
+        std::vector<std::string> c;
+        c.push_back(id + ".desktop");
+        size_t last_dot = id.find_last_of('.');
+        if (last_dot != std::string::npos) {
+            std::string seg = id.substr(last_dot + 1);
+            c.push_back(seg + ".desktop");
+        }
+        size_t first_dot = id.find('.');
+        if (first_dot != std::string::npos) {
+            std::string no_dots = id.substr(0, first_dot);
+            c.push_back(no_dots + ".desktop");
+        }
+        std::string dashed = id;
+        for (char& ch : dashed) if (ch == '.') ch = '-';
+        c.push_back(dashed + ".desktop");
+        std::string underscored = id;
+        for (char& ch : underscored) if (ch == '.') ch = '_';
+        c.push_back(underscored + ".desktop");
+
+        std::sort(c.begin(), c.end());
+        c.erase(std::unique(c.begin(), c.end()), c.end());
+        return c;
+    };
+
+    auto find_desktop_file = [&](const std::vector<std::string>& cands) -> std::string {
+        for (const auto& name : cands) {
+            for (const auto& dir : search_dirs) {
+                std::string path = dir + "/" + name;
+                if (std::filesystem::exists(path)) return path;
+            }
+        }
+        return {};
+    };
+
+    std::vector<std::string> candidates_list = make_candidates(app_id);
+    std::string desktop_path = find_desktop_file(candidates_list);
+
+    std::string result;
+    if (!desktop_path.empty()) {
+        std::ifstream file(desktop_path);
+        if (file.is_open()) {
+            std::string line;
+            bool in_desktop_entry = false;
+            while (std::getline(file, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                size_t start = line.find_first_not_of(" \t");
+                if (start == std::string::npos) continue;
+                line = line.substr(start);
+                if (line.empty() || line[0] == '#') continue;
+                if (line[0] == '[') {
+                    in_desktop_entry = (line == "[Desktop Entry]");
+                    continue;
+                }
+                if (!in_desktop_entry) continue;
+                size_t eq = line.find('=');
+                if (eq == std::string::npos) continue;
+                if (line.substr(0, eq) == "Icon") {
+                    result = line.substr(eq + 1);
+                    break;
+                }
+            }
+        }
+    }
+
+    cache[app_id] = result;
+    return result;
+}
+
+} // namespace
 
 AppSwitcherManager::AppSwitcherManager(IToplevelBackend* backend)
     : backend_(backend) {
@@ -140,7 +262,9 @@ void AppSwitcherManager::rebuild_groups() {
             g.display_name = group_by_app_
                 ? key
                 : (win.title.empty() ? (win.app_id.empty() ? "window" : win.app_id) : win.title);
-            g.icon_name = win.icon_name.empty() ? win.app_id : win.icon_name;
+            g.icon_name = win.icon_name.empty()
+                ? resolve_icon_name(win.app_id)
+                : win.icon_name;
             g.windows.push_back(win);
             
             // Preserve existing MRU timestamp if present
