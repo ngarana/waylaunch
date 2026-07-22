@@ -149,6 +149,19 @@ bool Config::load(const std::string& path) {
             }
         }
 
+        if (auto switcher = tbl["app_switcher"].as_table()) {
+            auto& sw = config_.app_switcher;
+            sw.enabled = get_bool(*switcher, "enabled", sw.enabled);
+            sw.modifier = get_str(*switcher, "modifier", sw.modifier);
+            sw.icon_size = get_int(*switcher, "icon_size", sw.icon_size);
+            sw.card_size = get_int(*switcher, "card_size", sw.card_size);
+            sw.corner_radius = get_int(*switcher, "corner_radius", sw.corner_radius);
+            sw.show_app_names = get_bool(*switcher, "show_app_names", sw.show_app_names);
+            sw.group_by_app = get_bool(*switcher, "group_by_app", sw.group_by_app);
+            sw.quick_actions = get_bool(*switcher, "quick_actions", sw.quick_actions);
+            sw.activate_command = get_str(*switcher, "activate_command", sw.activate_command);
+        }
+
         if (auto commands = tbl["commands"].as_array()) {
             for (auto& entry : *commands) {
                 if (auto tbl2 = entry.as_table()) {

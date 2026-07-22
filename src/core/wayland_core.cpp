@@ -20,6 +20,9 @@ extern "C" {
 #ifdef HAS_SCREENCOPY
 #include "wlr-screencopy-client-protocol.h"
 #endif
+#ifdef HAS_FOREIGN_TOPLEVEL
+#include "wlr-foreign-toplevel-management-client-protocol.h"
+#endif
 }
 
 namespace waylaunch {
@@ -229,6 +232,15 @@ static void registry_global_cb(void* data, wl_registry* reg, uint32_t name, cons
 #ifdef HAS_SCREENCOPY
     else if (std::strcmp(interface, zwlr_screencopy_manager_v1_interface.name) == 0) {
         self->screencopy_manager_ = static_cast<zwlr_screencopy_manager_v1*>(wl_registry_bind(reg, name, &zwlr_screencopy_manager_v1_interface, 1));
+    }
+#endif
+#ifdef HAS_FOREIGN_TOPLEVEL
+    else if (std::strcmp(interface, zwlr_foreign_toplevel_manager_v1_interface.name) == 0) {
+        self->foreign_toplevel_manager_ = static_cast<zwlr_foreign_toplevel_manager_v1*>(
+            wl_registry_bind(reg, name, &zwlr_foreign_toplevel_manager_v1_interface, 1));
+        if (self->foreign_toplevel_listener_) {
+            self->foreign_toplevel_listener_(self->foreign_toplevel_manager_);
+        }
     }
 #endif
 }

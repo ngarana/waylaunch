@@ -93,11 +93,28 @@ struct GeneralConfig {
     bool debug = false;
 };
 
+struct AppSwitcherConfig {
+    bool enabled = true;
+    std::string modifier = "Super"; // "Super" | "Alt"
+    int icon_size = 64;
+    int card_size = 104;
+    int corner_radius = 20;
+    bool show_app_names = true;
+    bool group_by_app = true;
+    bool quick_actions = true;
+    // Optional shell command run when a window is activated, in addition to the
+    // standard protocol request. The selected window is exported as $WL_APP_ID /
+    // $WL_CLASS / $WL_TITLE. An escape hatch for compositors where `activate`
+    // doesn't follow the window to its workspace; empty = protocol activate only.
+    std::string activate_command;
+};
+
 struct LauncherConfig {
     GeneralConfig general;
     AppearanceConfig appearance;
     ThemeConfig theme;
     SearchConfig search;
+    AppSwitcherConfig app_switcher;
     std::vector<Command> commands;
 };
 

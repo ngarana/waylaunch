@@ -8,6 +8,10 @@
 #include "waylaunch/subprocess.h"
 #include "waylaunch/content/store.h"
 #include "waylaunch/content/config.h"
+#include "waylaunch/switcher/wlr_toplevel_backend.h"
+#include "waylaunch/switcher/app_switcher_manager.h"
+#include "waylaunch/switcher/switcher_input_controller.h"
+#include "waylaunch/switcher/switcher_renderer.h"
 #include <xkbcommon/xkbcommon.h>
 #include <wayland-client.h>
 #include <algorithm>
@@ -40,6 +44,17 @@ void on_terminate_signal(int) {
     if (g_signal_fd >= 0) {
         uint64_t one = 1;
         ssize_t w = write(g_signal_fd, &one, sizeof(one));   // async-signal-safe
+        (void)w;
+    }
+}
+
+// A re-invocation of the switcher (a second Alt+Tab during startup, before the
+// first instance grabs the keyboard) sends SIGUSR1 to advance the selection.
+int g_switcher_advance_fd = -1;
+void on_switcher_advance_signal(int) {
+    if (g_switcher_advance_fd >= 0) {
+        uint64_t one = 1;
+        ssize_t w = write(g_switcher_advance_fd, &one, sizeof(one));
         (void)w;
     }
 }
@@ -262,6 +277,8 @@ LauncherUI::~LauncherUI() {
     if (results_fd_ >= 0) close(results_fd_);
     g_signal_fd = -1;   // stop the handler before the fd goes away
     if (signal_fd_ >= 0) close(signal_fd_);
+    g_switcher_advance_fd = -1;
+    if (switcher_advance_fd_ >= 0) close(switcher_advance_fd_);
 }
 
 bool LauncherUI::init(Config& config) {
@@ -280,12 +297,29 @@ bool LauncherUI::init(Config& config) {
 
     // Backdrop blur: "off" disables glass entirely (opaque panel). Otherwise try
     // the compositor rule first, then fall back to client-side capture blur.
-    bool want_blur = (ap.blur != "off");
+    // The switcher must appear instantly on Alt+Tab, so it skips the (slow,
+    // synchronous) screen capture + blur entirely — its HUD floats over the
+    // desktop without it.
+    bool want_blur = (ap.blur != "off") && !switcher_mode_;
     bool compositor_blur = false;
     if (want_blur) compositor_blur = try_enable_backdrop_blur();
 
     wayland_ = std::make_unique<WaylandCore>();
     wayland_->set_want_backdrop(want_blur);
+
+#ifdef HAS_FOREIGN_TOPLEVEL
+    // Create the toplevel backend and register the manager listener BEFORE
+    // wayland_->init(): the manager global is bound during init's registry
+    // roundtrip, and the compositor emits the `toplevel` events for already-open
+    // windows immediately after that bind. If the listener isn't in place yet,
+    // those initial windows are missed and the switcher shows nothing.
+    switcher_backend_ = std::make_unique<WlrForeignToplevelBackend>();
+    switcher_backend_->set_activate_command(config.get().app_switcher.activate_command);
+    wayland_->set_foreign_toplevel_listener([this](zwlr_foreign_toplevel_manager_v1* mgr) {
+        if (switcher_backend_) switcher_backend_->bind_manager(mgr);
+    });
+#endif
+
     if (!wayland_->init()) return false;
 
     renderer_ = std::make_unique<Renderer>();
@@ -301,10 +335,35 @@ bool LauncherUI::init(Config& config) {
                           wayland_->has_backdrop(), renderer_->has_backdrop(), blur_enabled_);
 
     wayland_->set_key_handler([this](uint32_t k, uint32_t u, bool p) { on_key(k, u, p); });
+    wayland_->set_modifiers_handler([this](uint32_t mods) {
+        if (switcher_input_) switcher_input_->handle_modifiers(mods);
+    });
     wayland_->set_mouse_handler([this](double x, double y, uint32_t b, bool p) { on_mouse(x, y, b, p); });
     wayland_->set_axis_handler([this](double x, double y, int32_t a, double v) { on_axis(x, y, a, v); });
     wayland_->set_close_handler([this]() { on_close(); });
     wayland_->set_redraw_handler([this]() { on_redraw(); });
+
+#ifdef HAS_FOREIGN_TOPLEVEL
+    // The backend + manager listener were set up before init() (above), so the
+    // backend already holds the initial windows. Build the rest of the switcher,
+    // which reads them via the manager's initial rebuild.
+    if (wayland_->foreign_toplevel_manager_)
+        switcher_backend_->bind_manager(wayland_->foreign_toplevel_manager_);  // fallback (no-op if already bound)
+    switcher_manager_ = std::make_unique<AppSwitcherManager>(switcher_backend_.get());
+    switcher_manager_->set_group_by_app(config.get().app_switcher.group_by_app);
+    switcher_input_ = std::make_unique<SwitcherInputController>(switcher_manager_.get(), wayland_->seat_);
+    switcher_renderer_ = std::make_unique<SwitcherRenderer>();
+
+    switcher_manager_->set_change_callback([this]() {
+        needs_redraw_ = true;
+        // In dedicated switcher mode the overlay's whole lifetime is the switch:
+        // once it has shown and then hidden (a confirm or cancel), we're done.
+        if (switcher_mode_) {
+            if (switcher_manager_->is_visible()) switcher_shown_ = true;
+            else if (switcher_shown_) quit();
+        }
+    });
+#endif
 
     // File-search settings from [search].
     const auto& sc = config.get().search;
@@ -327,7 +386,8 @@ bool LauncherUI::init(Config& config) {
 
     // Content search: open the waylaunchd index read-only. Absent/locked index →
     // content_store_ stays null and we silently degrade to filename search (NFR8).
-    {
+    // Skipped in switcher mode (no search UI → no reason to open the index).
+    if (!switcher_mode_) {
         content::ContentConfig cc = content::load_content_config(config_path_);
         content_enabled_ = cc.enable;
         content_min_query_ = std::max(1, cc.min_query);
@@ -356,13 +416,27 @@ bool LauncherUI::init(Config& config) {
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
 
+    // SIGUSR1 → advance the switcher selection (used when the Alt+Tab bind fires
+    // again while a switcher instance is already up; see main.cpp).
+    switcher_advance_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    g_switcher_advance_fd = switcher_advance_fd_;
+    struct sigaction su{};
+    su.sa_handler = on_switcher_advance_signal;
+    sigemptyset(&su.sa_mask);
+    sigaction(SIGUSR1, &su, nullptr);
+
     if (!initial_query_.empty()) {
         query_ = initial_query_;
         cursor_pos_ = query_.size();
     }
 
-    scan_apps();
-    update_search();
+    // The dedicated switcher never runs the search providers — skip scanning apps
+    // and kicking the file/content workers (pure waste that also delays showing
+    // the overlay).
+    if (!switcher_mode_) {
+        scan_apps();
+        update_search();
+    }
     return true;
 }
 
@@ -375,10 +449,25 @@ void LauncherUI::run() {
     wl_display* dpy = wayland_->display();
     int wlfd = wl_display_get_fd(dpy);
 
-    struct pollfd fds[3];
-    fds[0].fd = wlfd;         fds[0].events = POLLIN;
-    fds[1].fd = results_fd_;  fds[1].events = POLLIN;
-    fds[2].fd = signal_fd_;   fds[2].events = POLLIN;
+    // Dedicated Alt+Tab overlay: let the layer surface configure and the
+    // foreign-toplevel manager announce the existing windows (handle + app_id/
+    // title/state), then show the switcher with the previous app preselected.
+    if (switcher_mode_ && switcher_input_) {
+        wl_display_roundtrip(dpy);
+        wl_display_roundtrip(dpy);
+        switcher_input_->trigger();   // shows with the previous app (index 1) selected
+        if (switcher_reverse_ && switcher_manager_) {
+            size_t n = switcher_manager_->app_groups().size();
+            if (n > 1) switcher_manager_->jump_to(n - 1);   // reverse: far end of the MRU list
+        }
+        needs_redraw_ = true;
+    }
+
+    struct pollfd fds[4];
+    fds[0].fd = wlfd;               fds[0].events = POLLIN;
+    fds[1].fd = results_fd_;        fds[1].events = POLLIN;
+    fds[2].fd = signal_fd_;         fds[2].events = POLLIN;
+    fds[3].fd = switcher_advance_fd_; fds[3].events = POLLIN;
 
     while (wayland_->is_running()) {
         // Canonical libwayland poll integration.
@@ -386,8 +475,8 @@ void LauncherUI::run() {
             wl_display_dispatch_pending(dpy);
         wl_display_flush(dpy);
 
-        fds[0].revents = fds[1].revents = fds[2].revents = 0;
-        int n = poll(fds, 3, -1);
+        fds[0].revents = fds[1].revents = fds[2].revents = fds[3].revents = 0;
+        int n = poll(fds, 4, -1);
         if (n < 0) {
             wl_display_cancel_read(dpy);
             if (errno == EINTR) continue;
@@ -407,6 +496,13 @@ void LauncherUI::run() {
             apply_file_results();
         }
 
+        if (fds[3].revents & POLLIN) {   // SIGUSR1 → advance the switcher
+            uint64_t v;
+            while (read(switcher_advance_fd_, &v, sizeof(v)) == static_cast<ssize_t>(sizeof(v))) {}
+            if (switcher_manager_ && switcher_manager_->is_visible())
+                switcher_manager_->navigate_next();
+        }
+
         if (fds[2].revents & POLLIN) {   // SIGINT/SIGTERM → exit cleanly
             quit();
             break;
@@ -414,6 +510,10 @@ void LauncherUI::run() {
 
         if (needs_redraw_) render_frame();
     }
+
+    // Flush any final requests (e.g. the switcher's window-activate) before the
+    // process exits, since the loop stops without another flush pass.
+    wl_display_flush(dpy);
 }
 
 void LauncherUI::quit() { wayland_->quit(); }
@@ -869,6 +969,21 @@ void LauncherUI::open_file_location(int index) {
 
 void LauncherUI::on_key(uint32_t keysym, uint32_t utf32, bool pressed) {
     if (ui_dbg()) fprintf(stderr, "[ui] on_key sym=0x%x utf32=%u pressed=%d\n", keysym, utf32, pressed);
+
+    if (switcher_input_ && switcher_input_->is_active()) {
+        if (switcher_input_->handle_key(keysym, pressed)) return;
+    }
+
+    bool alt = wayland_->kbd_.state && xkb_state_mod_name_is_active(
+        wayland_->kbd_.state, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE);
+    bool super = wayland_->kbd_.state && xkb_state_mod_name_is_active(
+        wayland_->kbd_.state, XKB_MOD_NAME_LOGO, XKB_STATE_MODS_EFFECTIVE);
+
+    if ((alt || super) && keysym == XKB_KEY_Tab && pressed && switcher_input_) {
+        switcher_input_->trigger();
+        return;
+    }
+
     if (!pressed) return;
 
     bool ctrl = wayland_->kbd_.state && xkb_state_mod_name_is_active(
@@ -997,6 +1112,19 @@ void LauncherUI::render_frame() {
     // can wake the loop before that happens — don't paint until we're configured.
     if (!wayland_->is_configured()) return;
 
+    // Dedicated switcher overlay: do NOT attach a buffer (which maps the surface)
+    // until the switcher is actually visible. Mapping a keyboard-exclusive layer
+    // surface makes the compositor grab the keyboard and begin delivering modifier
+    // events; if that happens before trigger(), a quick Alt+Tab's modifier-release
+    // arrives while the state machine is still Hidden and is dropped — which forced
+    // a second Tab. Staying unmapped until visible guarantees the grab, and every
+    // modifier event, lands after trigger(). (After a confirm/cancel we hide then
+    // quit, so no repaint is needed there either.)
+    if (switcher_mode_ && !(switcher_manager_ && switcher_manager_->is_visible())) {
+        needs_redraw_ = false;
+        return;
+    }
+
     Buffer* buf = wayland_->acquire_buffer();
     if (!buf) return;
 
@@ -1006,6 +1134,17 @@ void LauncherUI::render_frame() {
 
     renderer_->begin(buf->data, buf->stride, bw, bh);
     renderer_->clear(Color::from_rgba(0, 0, 0, 0));   // transparent everywhere but the panel
+
+    if (switcher_manager_ && switcher_manager_->is_visible()) {
+        if (ui_dbg()) fprintf(stderr, "[sw] render %dx%d groups=%zu sel=%zu\n",
+                              bw, bh, switcher_manager_->app_groups().size(),
+                              switcher_manager_->selected_index());
+        switcher_renderer_->render(*renderer_, *switcher_manager_, t, bw, bh);
+        renderer_->end();
+        wayland_->submit_buffer(buf, 0, 0);
+        needs_redraw_ = false;
+        return;
+    }
 
     int ph = panel_height();
     int pw = layout_.win_w;
