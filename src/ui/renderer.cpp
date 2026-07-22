@@ -352,8 +352,10 @@ cairo_surface_t* Renderer::load_icon_surface(const std::string& icon_name, int s
                 const unsigned char* p = src + y * sstride + x * nch;
                 unsigned char* d = dst + y * dstride + x * 4;
                 unsigned char a = has_alpha ? p[3] : 255;
-                // un-premultiply not needed: store straight ARGB
-                d[0] = p[0]; d[1] = p[1]; d[2] = p[2]; d[3] = a;
+                d[0] = (p[2] * a) / 255;
+                d[1] = (p[1] * a) / 255;
+                d[2] = (p[0] * a) / 255;
+                d[3] = a;
             }
         }
         cairo_surface_mark_dirty(s);
