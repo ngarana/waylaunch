@@ -431,6 +431,39 @@ void WaylandCore::submit_buffer(Buffer* buf, int x, int y) {
     wl_surface_commit(surface_);
 }
 
+void WaylandCore::unmap_surface() {
+    if (!surface_) return;
+    // A null buffer unmaps the surface: it leaves the screen and the compositor
+    // drops its keyboard focus, so the user's windows get the keyboard back.
+    // Per wlr-layer-shell, unmapping DISCARDS the layer_surface state and the
+    // surface reverts to just-created: it must not get a buffer again until the
+    // remap_surface() handshake has produced a fresh configure.
+    wl_surface_attach(surface_, nullptr, 0, 0);
+    wl_surface_commit(surface_);
+    configured_ = false;
+}
+
+void WaylandCore::remap_surface() {
+#ifdef HAS_LAYER_SHELL
+    if (!surface_ || !layer_surface_) return;
+    // Re-mapping after an unmap = the initial-commit handshake all over again:
+    // the unmap discarded anchor/size/interactivity, so re-apply them (same
+    // values as init()), then commit WITHOUT a buffer. The compositor answers
+    // with a configure; its handler acks and fires the redraw handler, whose
+    // render attaches the first buffer and thereby maps + regains the keyboard.
+    zwlr_layer_surface_v1_set_keyboard_interactivity(
+        layer_surface_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
+    zwlr_layer_surface_v1_set_anchor(layer_surface_,
+        ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
+        ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
+        ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
+        ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+    zwlr_layer_surface_v1_set_size(layer_surface_, 0, 0);
+    zwlr_layer_surface_v1_set_exclusive_zone(layer_surface_, -1);
+    wl_surface_commit(surface_);
+#endif
+}
+
 void WaylandCore::handle_buffer_release(wl_buffer* wl_buf) {
     for (auto& buf : buffers_) {
         if (buf->wl_buf == wl_buf) {
