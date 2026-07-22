@@ -164,6 +164,13 @@ public:
     zwlr_layer_surface_v1* layer_surface_ = nullptr;
 #endif
 
+#ifdef HAS_FOREIGN_TOPLEVEL
+    zwlr_foreign_toplevel_manager_v1* foreign_toplevel_manager_ = nullptr;
+    using ForeignToplevelListener = std::function<void(zwlr_foreign_toplevel_manager_v1*)>;
+    ForeignToplevelListener foreign_toplevel_listener_;
+    void set_foreign_toplevel_listener(ForeignToplevelListener h) { foreign_toplevel_listener_ = std::move(h); }
+#endif
+
 #ifdef HAS_SCREENCOPY
     zwlr_screencopy_manager_v1* screencopy_manager_ = nullptr;
     // Backdrop capture state (written by frame-listener trampolines).

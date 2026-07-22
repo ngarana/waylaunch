@@ -16,6 +16,10 @@ class WaylandCore;
 class Renderer;
 class Config;
 class AppLauncher;
+class WlrForeignToplevelBackend;
+class AppSwitcherManager;
+class SwitcherInputController;
+class SwitcherRenderer;
 namespace content { class Store; }
 
 // What a result represents — drives its action (launch/copy/open) and grouping.
@@ -64,6 +68,11 @@ public:
 
     void set_initial_query(std::string q) { initial_query_ = std::move(q); }
     void set_config_path(std::string p) { config_path_ = std::move(p); }
+    // Start straight into the app switcher (Alt+Tab entry) instead of search:
+    // show the switcher at startup and exit when a selection is confirmed.
+    void set_switcher_mode(bool v) { switcher_mode_ = v; }
+    // Preselect the far end of the list (Alt+Shift+Tab / reverse cycle).
+    void set_switcher_reverse(bool v) { switcher_reverse_ = v; }
 
 private:
     // Precomputed layout of the result list (headers + rows), so panel_height(),
@@ -155,6 +164,16 @@ private:
     int  content_min_query_ = 3;
     int  content_max_results_ = 6;
     std::vector<ListItem> content_ready_;             // worker → main (guarded by file_mtx_)
+
+    // App Switcher (Command+Tab / Alt+Tab)
+    std::unique_ptr<WlrForeignToplevelBackend> switcher_backend_;
+    std::unique_ptr<AppSwitcherManager> switcher_manager_;
+    std::unique_ptr<SwitcherInputController> switcher_input_;
+    std::unique_ptr<SwitcherRenderer> switcher_renderer_;
+    bool switcher_mode_ = false;    // launched as the dedicated Alt+Tab overlay
+    bool switcher_reverse_ = false; // preselect the far end (Alt+Shift+Tab)
+    bool switcher_shown_ = false;   // switcher has been visible at least once
+    int  switcher_advance_fd_ = -1; // SIGUSR1 (re-invocation) → advance selection
 };
 
 } // namespace waylaunch

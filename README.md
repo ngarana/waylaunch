@@ -8,6 +8,7 @@ A minimal, fast, keyboard-first Wayland-native launcher. One keystroke opens a u
 - **Frosted Glass** — client-side backdrop blur via `wlr-screencopy`. Captures the desktop, downsamples, and applies a separable box blur for a glassmorphism look. Works on any compositor.
 - **Async File Search** — dedicated worker thread runs `fd` with prefix/substring ranking, recency bonuses, and path-depth penalties. Results stream into the UI without blocking.
 - **Content Search** — index-backed full-text search *inside* your documents (Spotlight's "find in contents"), served by the `waylaunchd` daemon. An inverted index (SQLite FTS5, BM25) over text, code, PDF, **Office/ODF spreadsheets & slides** (`.docx`/`.xlsx`/`.pptx`/`.odt`/`.ods`/`.odp`), EPUB, and HTML; the launcher queries it read-only and shows a **CONTENTS** section with a highlighted snippet. Queries are O(index-lookup), not O(filesystem), and stay bounded even on ultra-common terms. Extracted text is stored zstd-compressed, extraction runs in a sandboxed subprocess, and the index self-heals on corruption or schema change. Kept fresh incrementally with inotify plus a periodic reconcile backstop for when watches are exhausted. Supports **`mdfind`-style filters** — `kind:pdf quarterly revenue`, `kind:spreadsheet`, `size:>1M`, `modified:<7d`. See [`docs/CONTENT_SEARCH.md`](docs/CONTENT_SEARCH.md).
+- **App Switcher** — an Alt+Tab overlay grouping open windows by application (MRU-ordered) via `wlr-foreign-toplevel-management`. Launch it with `waylaunch --switch`: hold the modifier and tap Tab to cycle, release to confirm — or Enter/Space to confirm, ` / arrows to move, `q` to close an app, Esc to cancel. See [App switcher](#app-switcher-alttab) for the Hyprland binding.
 - **Application Launcher** — scans `.desktop` files from XDG data directories, filters in-memory per keystroke.
 - **Calculator** — built-in recursive-descent expression evaluator with trig, logs, and constants. A valid math expression becomes the Top Hit.
 - **Custom Commands** — user-defined shell commands in the config file (Lock Screen, Sleep, etc.), matched by name.
@@ -85,9 +86,46 @@ waylaunch -q "fire"
 # Save current config (merged defaults + overrides) to a file
 waylaunch --save [path]
 
+# Open the app switcher (normally bound to Alt+Tab — see below)
+waylaunch --switch
+
 # Debug output to stderr
 waylaunch --debug
 ```
+
+### App switcher (Alt+Tab)
+
+`waylaunch --switch` opens a full-screen overlay that grabs the keyboard and
+lists open windows grouped by application, most-recently-used first, with the
+previous app preselected — so a quick Alt+Tab flips to the last window.
+
+Bind it in Hyprland (`~/.config/hypr/hyprland.conf`):
+
+```ini
+# Alt+Tab → app switcher. Hold Alt and tap Tab to cycle; release Alt to confirm.
+bind = ALT, Tab, exec, waylaunch --switch
+# Optional: also open it going the other way (then Shift+Tab / ` cycles back).
+bind = ALT SHIFT, Tab, exec, waylaunch --switch
+```
+
+How it works: the overlay maps as a `keyboard_interactivity: exclusive` layer
+surface, so once it's up it owns the keyboard — subsequent Tab presses advance
+the selection and the Alt release confirms and activates the chosen window.
+Because Hyprland's keybind consumes each Tab before the surface sees it, a
+repeated Alt+Tab re-runs `waylaunch --switch`, which signals the already-running
+overlay to advance (single-instance via `$XDG_RUNTIME_DIR/waylaunch-switcher.lock`)
+rather than stacking a new one. Inside the switcher: **Tab/→/`** next · **Shift+Tab/←**
+previous · **release Alt / Enter / Space** confirm · **Esc** cancel · **q** close
+the app · **h** minimize · **1–9** jump.
+
+Requires a compositor that implements `wlr-foreign-toplevel-management` (Hyprland,
+sway, and other wlroots-based compositors do).
+
+**Cross-workspace:** activating a window is a standard `wlr-foreign-toplevel`
+request; most compositors follow it to the window's workspace. If yours doesn't
+(some custom/scripted setups), set `[app_switcher].activate_command` — it runs on
+confirm with the window exported as `$WL_CLASS`/`$WL_TITLE`/`$WL_APP_ID`, e.g.
+`hyprctl dispatch focuswindow class:"$WL_CLASS"`. See `config/waylaunch.toml`.
 
 ### Content search (the `waylaunchd` daemon)
 

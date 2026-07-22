@@ -185,14 +185,30 @@ category = "System"
 
 
 # ============================================================================
-#  [platform] — Wayland integration.
+#  [app_switcher] — macOS-style Command+Tab Application Switcher HUD.
 # ============================================================================
-[platform]
-compositor             = "auto"   # informational
-use_layer_shell        = true     # overlay layer + keyboard grab (needed for
-                                  # the focus/dismiss behaviour search has)
-show_on_all_workspaces = true
-notifications          = true
+[app_switcher]
+enabled        = true     # enable Command+Tab application switcher overlay
+modifier       = "Super"  # modifier key to hold ("Super" | "Alt")
+icon_size      = 64       # application icon size in px
+card_size      = 104      # card size in px
+corner_radius  = 20       # glass HUD corner radius
+show_app_names = true     # show active application title below HUD
+group_by_app   = true     # true: one entry per app (macOS style). false: one
+                          #   entry per window, so you can switch to a specific
+                          #   instance (e.g. the same app on another workspace).
+                          #   Pair false with a title-based activate_command below.
+quick_actions  = true     # enable 'Q' (quit app) and 'H' (hide/minimize)
+
+# Optional command run when a window is activated, *in addition* to the standard
+# wlr-foreign-toplevel activate request. The selected window is exported as
+# $WL_APP_ID / $WL_CLASS / $WL_TITLE. Use this only if your compositor doesn't
+# follow the activate to the window's workspace (most — Hyprland, sway — do).
+#   Standard Hyprland:
+# activate_command = 'hyprctl dispatch focuswindow class:"$WL_CLASS"'
+#   Lua-scripted Hyprland (hl.dsp.* dispatch over the IPC socket):
+# activate_command = '''printf 'dispatch hl.dsp.focus({window="class:%s"})' "$WL_CLASS" | socat - UNIX-CONNECT:"$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock"'''
+
 
 
 # ============================================================================

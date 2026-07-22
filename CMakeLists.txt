@@ -74,6 +74,20 @@ else()
     set(HAS_SCREENCOPY FALSE)
 endif()
 
+# wlr-foreign-toplevel-management protocol (for Command+Tab app switcher)
+set(FOREIGN_TOPLEVEL_XML ${CMAKE_SOURCE_DIR}/protocols/wlr-foreign-toplevel-management-unstable-v1.xml)
+if(EXISTS ${FOREIGN_TOPLEVEL_XML})
+    add_custom_command(
+        OUTPUT ${PROTOCOL_BUILD_DIR}/wlr-foreign-toplevel-management-protocol.c ${PROTOCOL_BUILD_DIR}/wlr-foreign-toplevel-management-client-protocol.h
+        COMMAND ${WAYLAND_SCANNER} private-code ${FOREIGN_TOPLEVEL_XML} ${PROTOCOL_BUILD_DIR}/wlr-foreign-toplevel-management-protocol.c
+        COMMAND ${WAYLAND_SCANNER} client-header ${FOREIGN_TOPLEVEL_XML} ${PROTOCOL_BUILD_DIR}/wlr-foreign-toplevel-management-client-protocol.h
+        DEPENDS ${FOREIGN_TOPLEVEL_XML}
+    )
+    set(HAS_FOREIGN_TOPLEVEL TRUE)
+else()
+    set(HAS_FOREIGN_TOPLEVEL FALSE)
+endif()
+
 # Collect generated protocol sources
 set(PROTOCOL_SOURCES
     ${PROTOCOL_BUILD_DIR}/xdg-shell-protocol.c
@@ -83,6 +97,9 @@ if(HAS_LAYER_SHELL)
 endif()
 if(HAS_SCREENCOPY)
     list(APPEND PROTOCOL_SOURCES ${PROTOCOL_BUILD_DIR}/wlr-screencopy-protocol.c)
+endif()
+if(HAS_FOREIGN_TOPLEVEL)
+    list(APPEND PROTOCOL_SOURCES ${PROTOCOL_BUILD_DIR}/wlr-foreign-toplevel-management-protocol.c)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -127,6 +144,11 @@ set(SOURCES
     src/modes/calculator.cpp
     src/modes/clipboard.cpp
     src/config/config.cpp
+    src/switcher/wlr_toplevel_backend.cpp
+    src/switcher/app_switcher_manager.cpp
+    src/switcher/switcher_state_machine.cpp
+    src/switcher/switcher_input_controller.cpp
+    src/switcher/switcher_renderer.cpp
     ${PROTOCOL_SOURCES}
 )
 
@@ -176,6 +198,9 @@ endif()
 if(HAS_SCREENCOPY)
     target_compile_definitions(waylaunch PRIVATE HAS_SCREENCOPY)
 endif()
+if(HAS_FOREIGN_TOPLEVEL)
+    target_compile_definitions(waylaunch PRIVATE HAS_FOREIGN_TOPLEVEL)
+endif()
 
 # waylaunchd (indexing daemon) + waylaunchctl (control CLI)
 add_executable(waylaunchd src/content/waylaunchd_main.cpp)
@@ -199,6 +224,41 @@ if(BUILD_TESTING)
         target_compile_options(${t} PRIVATE -Wall -Wextra)
         add_test(NAME ${t} COMMAND ${t})
     endforeach()
+
+    add_executable(app_switcher_test
+        tests/app_switcher_test.cpp
+        src/switcher/wlr_toplevel_backend.cpp
+        src/switcher/app_switcher_manager.cpp
+        src/switcher/switcher_state_machine.cpp
+        src/switcher/switcher_input_controller.cpp
+        src/switcher/switcher_renderer.cpp
+        src/ui/renderer.cpp
+        ${PROTOCOL_SOURCES}
+    )
+    target_include_directories(app_switcher_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${PROTOCOL_BUILD_DIR}
+        ${WAYLAND_INCLUDE_DIRS}
+        ${XKBCOMMON_INCLUDE_DIRS}
+        ${CAIRO_INCLUDE_DIRS}
+        ${PANGO_INCLUDE_DIRS}
+        ${FONTCONFIG_INCLUDE_DIRS}
+        ${GDK_PIXBUF_INCLUDE_DIRS}
+        ${GTK_INCLUDE_DIRS}
+    )
+    target_link_libraries(app_switcher_test PRIVATE
+        ${WAYLAND_LIBRARIES}
+        ${XKBCOMMON_LIBRARIES}
+        ${CAIRO_LIBRARIES}
+        ${PANGO_LIBRARIES}
+        ${FONTCONFIG_LIBRARIES}
+        ${GDK_PIXBUF_LIBRARIES}
+        ${GTK_LIBRARIES}
+    )
+    if(HAS_FOREIGN_TOPLEVEL)
+        target_compile_definitions(app_switcher_test PRIVATE HAS_FOREIGN_TOPLEVEL)
+    endif()
+    add_test(NAME app_switcher_test COMMAND app_switcher_test)
     set_tests_properties(content_indexer_test PROPERTIES TIMEOUT 60)
     set_tests_properties(content_freshness_test PROPERTIES TIMEOUT 60)
 
