@@ -51,13 +51,18 @@ public:
     void clear(const Color& color);
     void fill_rect(int x, int y, int w, int h, const Color& color);
     void rounded_rect(int x, int y, int w, int h, int radius, const Color& color);
+    // Accent selection pill (fill + brighter overlay) — the one treatment shared
+    // by the switcher and power HUD cards, factored here so it can't diverge.
+    void draw_selection_pill(int x, int y, int w, int h, int radius, const Color& accent);
     void draw_text(int x, int y, const std::string& text, const RenderFontConfig& font, const Color& color);
     // Draw Pango-markup text (supports <span>, <b>, …) with `color` as the base.
     // max_width>0 constrains width (in px); max_lines: 0 = unlimited (wrap if
     // width set), 1 = single line ellipsized, >1 = wrap capped to N lines then
-    // ellipsized. Returns the pixel height drawn (for stacking).
+    // ellipsized. center=true centers lines within max_width (dialog layouts).
+    // Returns the pixel height drawn (for stacking).
     int draw_markup(int x, int y, const std::string& markup, const RenderFontConfig& font,
-                    const Color& color, int max_width = 0, int max_lines = 0);
+                    const Color& color, int max_width = 0, int max_lines = 0,
+                    bool center = false);
     // Draw a macOS-style search (magnifier) glyph at (cx, cy).
     void draw_search_glyph(int cx, int cy, int size, const Color& color);
 
@@ -72,6 +77,11 @@ public:
 
     // Path-only rounded rectangle (for clipping).
     void round_rect_path(cairo_t* cr, int x, int y, int w, int h, int radius);
+
+    // The active cairo context between begin()/end() (nullptr otherwise) — for
+    // feature renderers drawing custom vector paths (glyphs, arcs) with the
+    // toolkit primitives above as a base.
+    cairo_t* cr() const;
 
     // Measure pixel width of text in the given font (for caret placement).
     int text_width(const std::string& text, const RenderFontConfig& font);

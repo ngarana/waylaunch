@@ -162,6 +162,28 @@ bool Config::load(const std::string& path) {
             sw.activate_command = get_str(*switcher, "activate_command", sw.activate_command);
         }
 
+        if (auto power = tbl["power"].as_table()) {
+            auto& pw = config_.power;
+            pw.confirm_destructive = get_bool(*power, "confirm_destructive", pw.confirm_destructive);
+            pw.countdown_seconds = get_int(*power, "countdown_seconds", pw.countdown_seconds);
+            pw.font_scale = get_double(*power, "font_scale", pw.font_scale);
+            // An explicitly-present empty array disables the overlay, so only
+            // replace the defaults when the key exists.
+            if (auto acts = (*power)["enabled_actions"].as_array()) {
+                pw.enabled_actions.clear();
+                for (auto& e : *acts)
+                    if (auto s = e.value<std::string>()) pw.enabled_actions.push_back(*s);
+            }
+            if (auto cmds = (*power)["commands"].as_table()) {
+                for (auto& [k, v] : *cmds)
+                    if (auto s = v.value<std::string>()) pw.commands[std::string(k.str())] = *s;
+            }
+            if (auto texts = (*power)["confirm_text"].as_table()) {
+                for (auto& [k, v] : *texts)
+                    if (auto s = v.value<std::string>()) pw.confirm_text[std::string(k.str())] = *s;
+            }
+        }
+
         if (auto commands = tbl["commands"].as_array()) {
             for (auto& entry : *commands) {
                 if (auto tbl2 = entry.as_table()) {
@@ -266,6 +288,24 @@ bool Config::save(const std::string& path) const {
         file << "type = \"" << p.type << "\"\n";
         file << "enabled = " << (p.enabled ? "true" : "false") << "\n";
     }
+
+    file << "\n[power]\n";
+    file << "enabled_actions = [";
+    for (size_t i = 0; i < config_.power.enabled_actions.size(); i++) {
+        if (i > 0) file << ", ";
+        file << "\"" << config_.power.enabled_actions[i] << "\"";
+    }
+    file << "]\n";
+    file << "confirm_destructive = " << (config_.power.confirm_destructive ? "true" : "false") << "\n";
+    file << "countdown_seconds = " << config_.power.countdown_seconds << "\n";
+    file << "font_scale = " << config_.power.font_scale << "\n";
+    auto write_map = [&](const std::string& sec, const std::map<std::string, std::string>& m) {
+        if (m.empty()) return;
+        file << "\n[power." << sec << "]\n";
+        for (const auto& [k, v] : m) file << k << " = \"" << v << "\"\n";
+    };
+    write_map("commands", config_.power.commands);
+    write_map("confirm_text", config_.power.confirm_text);
 
     for (const auto& cmd : config_.commands) {
         file << "\n[[commands]]\n";

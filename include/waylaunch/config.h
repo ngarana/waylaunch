@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <string>
 #include <vector>
 #include <optional>
@@ -109,12 +110,25 @@ struct AppSwitcherConfig {
     std::string activate_command;
 };
 
+// [power] — the power-actions overlay (waylaunch --power). Additive: omitting
+// the section yields full defaults; enabled_actions = [] disables the overlay.
+struct PowerConfig {
+    std::vector<std::string> enabled_actions =
+        {"lock", "restart", "exit", "hibernate", "suspend", "shutdown"};
+    bool confirm_destructive = true;
+    int countdown_seconds = 60;                     // dialog auto-confirms at 0; 0 = off
+    double font_scale = 1.0;                        // power overlay only
+    std::map<std::string, std::string> commands;    // [power.commands] id → command
+    std::map<std::string, std::string> confirm_text;// [power.confirm_text] id → phrase
+};
+
 struct LauncherConfig {
     GeneralConfig general;
     AppearanceConfig appearance;
     ThemeConfig theme;
     SearchConfig search;
     AppSwitcherConfig app_switcher;
+    PowerConfig power;
     std::vector<Command> commands;
 };
 

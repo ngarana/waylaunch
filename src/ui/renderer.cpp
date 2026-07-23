@@ -187,6 +187,11 @@ void Renderer::rounded_rect(int x, int y, int w, int h, int radius, const Color&
     cairo_fill(cairo_->cr);
 }
 
+void Renderer::draw_selection_pill(int x, int y, int w, int h, int radius, const Color& accent) {
+    rounded_rect(x, y, w, h, radius, Color::from_rgba(accent.r, accent.g, accent.b, 0.28));
+    rounded_rect(x, y, w, h, radius, Color::from_rgba(accent.r, accent.g, accent.b, 0.6));
+}
+
 void Renderer::draw_text(int x, int y, const std::string& text, const RenderFontConfig& font, const Color& color) {
     PangoLayout* layout = pango_cairo_create_layout(cairo_->cr);
     PangoFontDescription* desc = pango_font_description_new();
@@ -204,7 +209,7 @@ void Renderer::draw_text(int x, int y, const std::string& text, const RenderFont
 }
 
 int Renderer::draw_markup(int x, int y, const std::string& markup, const RenderFontConfig& font,
-                          const Color& color, int max_width, int max_lines) {
+                          const Color& color, int max_width, int max_lines, bool center) {
     if (!cairo_) return 0;
     PangoLayout* layout = pango_cairo_create_layout(cairo_->cr);
     PangoFontDescription* desc = pango_font_description_new();
@@ -215,6 +220,7 @@ int Renderer::draw_markup(int x, int y, const std::string& markup, const RenderF
     pango_layout_set_font_description(layout, desc);
 
     if (max_width > 0) pango_layout_set_width(layout, max_width * PANGO_SCALE);
+    if (max_width > 0 && center) pango_layout_set_alignment(layout, PANGO_ALIGN_CENTER);
     if (max_lines == 1) {
         pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);   // single line
     } else if (max_lines > 1) {
@@ -257,6 +263,8 @@ void Renderer::draw_search_glyph(int cx, int cy, int size, const Color& color) {
     cairo_line_to(cr, cx + r * 1.7, cy + r * 1.7);
     cairo_stroke(cr);
 }
+
+cairo_t* Renderer::cr() const { return cairo_ ? cairo_->cr : nullptr; }
 
 void Renderer::round_rect_path(cairo_t* cr, int x, int y, int w, int h, int radius) {
     double r = std::min({static_cast<double>(radius), w / 2.0, h / 2.0});

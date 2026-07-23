@@ -9,6 +9,7 @@ A minimal, fast, keyboard-first Wayland-native launcher. One keystroke opens a u
 - **Async File Search** — dedicated worker thread runs `fd` with prefix/substring ranking, recency bonuses, and path-depth penalties. Results stream into the UI without blocking.
 - **Content Search** — index-backed full-text search *inside* your documents (Spotlight's "find in contents"), served by the `waylaunchd` daemon. An inverted index (SQLite FTS5, BM25) over text, code, PDF, **Office/ODF spreadsheets & slides** (`.docx`/`.xlsx`/`.pptx`/`.odt`/`.ods`/`.odp`), EPUB, and HTML; the launcher queries it read-only and shows a **CONTENTS** section with a highlighted snippet. Queries are O(index-lookup), not O(filesystem), and stay bounded even on ultra-common terms. Extracted text is stored zstd-compressed, extraction runs in a sandboxed subprocess, and the index self-heals on corruption or schema change. Kept fresh incrementally with inotify plus a periodic reconcile backstop for when watches are exhausted. Supports **`mdfind`-style filters** — `kind:pdf quarterly revenue`, `kind:spreadsheet`, `size:>1M`, `modified:<7d`. See [`docs/CONTENT_SEARCH.md`](docs/CONTENT_SEARCH.md).
 - **App Switcher** — an Alt+Tab overlay grouping open windows by application (MRU-ordered) via `wlr-foreign-toplevel-management`. Launch it with `waylaunch --switch`: hold the modifier and tap Tab to cycle, release to confirm — or Enter/Space to confirm, ` / arrows to move, `q` to close an app, Esc to cancel. See [App switcher](#app-switcher-alttab) for the Hyprland binding.
+- **Power Actions** — `waylaunch --power` opens a switcher-style HUD with Lock / Restart / Exit / Hibernate / Suspend / Shut Down. Destructive actions get a macOS-style confirmation card; commands are configurable and run without a shell. See [Power actions](#power-actions).
 - **Application Launcher** — scans `.desktop` files from XDG data directories, filters in-memory per keystroke.
 - **Calculator** — built-in recursive-descent expression evaluator with trig, logs, and constants. A valid math expression becomes the Top Hit.
 - **Custom Commands** — user-defined shell commands in the config file (Lock Screen, Sleep, etc.), matched by name.
@@ -89,6 +90,9 @@ waylaunch --save [path]
 # Open the app switcher (normally bound to Alt+Tab — see below)
 waylaunch --switch
 
+# Open the power-actions overlay (see below)
+waylaunch --power
+
 # Debug output to stderr
 waylaunch --debug
 ```
@@ -126,6 +130,43 @@ request; most compositors follow it to the window's workspace. If yours doesn't
 (some custom/scripted setups), set `[app_switcher].activate_command` — it runs on
 confirm with the window exported as `$WL_CLASS`/`$WL_TITLE`/`$WL_APP_ID`, e.g.
 `hyprctl dispatch focuswindow class:"$WL_CLASS"`. See `config/waylaunch.toml`.
+
+### Power actions
+
+`waylaunch --power` opens a switcher-style frosted HUD with six power actions —
+**Lock · Restart · Exit · Hibernate · Suspend · Shut Down** — as round icon
+buttons with hand-drawn vector glyphs (crisp at any size, independent of the
+icon theme) and the familiar selection pill. Keyboard-first, one-shot: pick an
+action, it runs, the process exits.
+
+Bind it in Hyprland (`~/.config/hypr/hyprland.conf`):
+
+```ini
+bind = SUPER SHIFT, Q, exec, waylaunch --power
+```
+
+Inside the overlay: **←/→/Tab/Shift+Tab** move · **Home/End** first/last ·
+**1–6** jump · **Return/Space** select · **Esc** cancel. Destructive actions
+(everything but Lock) open a glassmorphic macOS-style confirmation card with a
+**countdown**: a depleting ring around the action glyph and a counter in the
+confirm button ("Shut Down · 42"); when it reaches zero the action runs on its
+own (`countdown_seconds`, 0 disables). **←/→/Tab** move focus between Cancel
+and the confirm button, **Return/Space** press the focused one, **Esc** always
+goes back to the grid. The overlay tears down its surface *before* the command
+runs, so it never lingers over a suspend or shutdown.
+
+Everything is configurable under `[power]` (see `config/waylaunch.toml`):
+`enabled_actions` filters and orders the cards (`[]` disables the overlay),
+`[power.commands]` overrides any command (argv-split, executed without a
+shell), `[power.confirm_text]` localizes the confirmation phrases, and
+`confirm_destructive = false` skips the dialog globally. Defaults use
+`systemctl` for the power verbs and `loginctl lock-session` for Lock; at
+action time the power verbs are normalized to whichever binary owns them on
+your init system (`systemctl` on systemd, `loginctl` on elogind), and "Exit"
+prefers `wayland-logout`, falling back to terminating your login session. A
+failed command is reported on stderr instead of exiting silently. A second
+`waylaunch --power` while one is showing is a no-op (single-instance via
+`$XDG_RUNTIME_DIR/waylaunch-power.lock`).
 
 ### Content search (the `waylaunchd` daemon)
 
@@ -218,7 +259,27 @@ icon    = "system-lock-screen"
 | `[theme]` | Colors and fonts (Catppuccin dark default) |
 | `[search]` | Provider toggles, file search roots/excludes |
 | `[content]` | Content-index daemon: roots, excludes, privacy paths, size caps, match mode, reconcile interval |
+| `[app_switcher]` | Alt+Tab overlay config (modifier, icon size, grouping, quick actions) |
+| `[power]` | Power overlay: action list/order, confirmation toggle, command + text overrides |
 | `[[commands]]` | Custom shell commands shown as results |
+
+### App switcher config
+
+```toml
+[app_switcher]
+enabled        = true     # enable Alt+Tab overlay
+modifier       = "Super"  # "Super" or "Alt"
+icon_size      = 64       # icon size in px
+card_size      = 104      # card size in px
+corner_radius  = 20       # glass HUD corner radius
+show_app_names = true     # show application title below HUD
+group_by_app   = true     # true: one entry per app (macOS style)
+quick_actions  = true     # enable Q (quit app) and H (hide/minimize)
+
+# Optional: compositor-specific fallback for compositors that don't follow the
+# standard wlr-foreign-toplevel activate request to the window's workspace.
+# activate_command = 'hyprctl dispatch focuswindow class:"$WL_CLASS"'
+```
 
 ## Keybindings
 

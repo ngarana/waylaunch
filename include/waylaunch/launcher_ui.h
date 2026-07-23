@@ -20,6 +20,10 @@ class WlrForeignToplevelBackend;
 class AppSwitcherManager;
 class SwitcherInputController;
 class SwitcherRenderer;
+class PowerActionBackend;
+class PowerManager;
+class PowerInputController;
+class PowerRenderer;
 namespace content { class Store; }
 
 // What a result represents — drives its action (launch/copy/open) and grouping.
@@ -73,6 +77,8 @@ public:
     void set_switcher_mode(bool v) { switcher_mode_ = v; }
     // Preselect the far end of the list (Alt+Shift+Tab / reverse cycle).
     void set_switcher_reverse(bool v) { switcher_reverse_ = v; }
+    // Start as the one-shot power-actions overlay (waylaunch --power).
+    void set_power_mode(bool v) { power_mode_ = v; }
 
 private:
     // Precomputed layout of the result list (headers + rows), so panel_height(),
@@ -175,6 +181,15 @@ private:
     bool switcher_shown_ = false;   // switcher currently mapped (visible this cycle)
     int  switcher_advance_fd_ = -1; // SIGUSR1 (re-invocation) → show/advance forward
     int  switcher_reverse_fd_ = -1; // SIGUSR2 (re-invocation) → show/step reverse
+
+    // Power overlay (waylaunch --power): one-shot switcher-style HUD. All power
+    // logic lives in src/power/; this class only creates, routes, and renders.
+    std::unique_ptr<PowerActionBackend> power_backend_;
+    std::unique_ptr<PowerManager> power_manager_;
+    std::unique_ptr<PowerInputController> power_input_;
+    std::unique_ptr<PowerRenderer> power_renderer_;
+    bool power_mode_ = false;
+    int  power_last_remaining_ = -1;   // last countdown second painted
 };
 
 } // namespace waylaunch

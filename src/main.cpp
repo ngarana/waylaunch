@@ -15,8 +15,10 @@ namespace {
 // an flock on a per-mode lock file for our lifetime. If another instance already
 // holds it, we send it `existing_signal` and step aside — SIGTERM for the search
 // launcher (the Super+D bind toggles it closed), SIGUSR1 for the switcher (a
-// repeated Alt+Tab advances the running switcher). Returns the held fd (keep it
-// open), -1 to "exit now", or -2 if the lock is unavailable (proceed anyway).
+// repeated Alt+Tab advances the running switcher), 0 for the power overlay (a
+// second invocation is a pure no-op — the visible overlay already has focus).
+// Returns the held fd (keep it open), -1 to "exit now", or -2 if the lock is
+// unavailable (proceed anyway).
 int acquire_single_instance(const char* lock_name, int existing_signal) {
     const char* rt = std::getenv("XDG_RUNTIME_DIR");
     std::string path = (rt && rt[0] ? std::string(rt) : "/tmp") + "/" + lock_name;
@@ -36,7 +38,8 @@ int acquire_single_instance(const char* lock_name, int existing_signal) {
     ssize_t n = ::read(fd, buf, sizeof(buf) - 1);
     if (n > 0) {
         long other = std::atol(buf);
-        if (other > 1) ::kill(static_cast<pid_t>(other), existing_signal);
+        if (other > 1 && existing_signal > 0)
+            ::kill(static_cast<pid_t>(other), existing_signal);
     }
     ::close(fd);
     return -1;
@@ -52,6 +55,7 @@ int main(int argc, char* argv[]) {
     std::string initial_query;
     bool switcher_mode = false;
     bool switcher_reverse = false;
+    bool power_mode = false;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -61,6 +65,8 @@ int main(int argc, char* argv[]) {
             initial_query = argv[++i];
         } else if (arg == "--switch" || arg == "--switcher" || arg == "--command-tab") {
             switcher_mode = true;
+        } else if (arg == "--power") {
+            power_mode = true;
         } else if (arg == "--reverse") {
             switcher_reverse = true;   // preselect the far end (Alt+Shift+Tab)
         } else if (arg == "--save") {
@@ -80,6 +86,7 @@ int main(int argc, char* argv[]) {
                       << "  -c, --config <path>  Config file path\n"
                       << "  -q, --query <text>   Prefill the search query\n"
                       << "  --switch             Open the app switcher (bind to Alt+Tab)\n"
+                      << "  --power              Open the power-actions overlay\n"
                       << "  --save [path]        Serialize current config to a file\n"
                       << "  --debug              Enable debug output\n"
                       << "  -h, --help           Show this help\n"
@@ -102,11 +109,14 @@ int main(int argc, char* argv[]) {
     }
 
     // Single-instance: the search launcher toggles (Super+D opens/closes); the
-    // switcher is resident (a repeated Alt+Tab wakes/advances the running instance),
-    // keeping them on separate locks so opening one never disturbs the other. The
+    // switcher is resident (a repeated Alt+Tab wakes/advances the running instance);
+    // the power overlay is one-shot (a second invocation is a no-op — signal 0),
+    // keeping them on separate locks so opening one never disturbs another. The
     // resident switcher distinguishes direction by signal: SIGUSR1 forward,
     // SIGUSR2 reverse (Alt+Shift+Tab).
-    int lock_fd = switcher_mode
+    int lock_fd = power_mode
+        ? acquire_single_instance("waylaunch-power.lock", 0)
+        : switcher_mode
         ? acquire_single_instance("waylaunch-switcher.lock",
                                   switcher_reverse ? SIGUSR2 : SIGUSR1)
         : acquire_single_instance("waylaunch-launcher.lock", SIGTERM);
@@ -122,11 +132,18 @@ int main(int argc, char* argv[]) {
     // Propagate debug flag to environment so worker threads see it too.
     if (config.get().general.debug) setenv("WAYLAUNCH_DEBUG", "1", 0);
 
+    // [power] enabled_actions = [] is the documented off switch for the overlay.
+    if (power_mode && config.get().power.enabled_actions.empty()) {
+        std::cout << "waylaunch: power overlay disabled ([power].enabled_actions is empty)\n";
+        return 0;
+    }
+
     waylaunch::LauncherUI launcher;
     if (!initial_query.empty()) launcher.set_initial_query(initial_query);
     launcher.set_config_path(config_path);
     launcher.set_switcher_mode(switcher_mode);
     launcher.set_switcher_reverse(switcher_reverse);
+    launcher.set_power_mode(power_mode);
     if (!launcher.init(config)) {
         std::cerr << "Error: Failed to initialize launcher\n";
         return 1;

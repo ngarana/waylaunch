@@ -212,6 +212,44 @@ quick_actions  = true     # enable 'Q' (quit app) and 'H' (hide/minimize)
 
 
 # ============================================================================
+#  [power] — the power-actions overlay (waylaunch --power). A switcher-style
+#  frosted HUD with Lock / Restart / Exit / Hibernate / Suspend / Shut Down.
+#  Bind it to a compositor key, e.g. Hyprland:
+#      bind = SUPER SHIFT, Q, exec, waylaunch --power
+#  Destructive actions ask for confirmation first (Return confirms, Esc goes
+#  back). Every value below is the default; the whole section is optional.
+# ============================================================================
+[power]
+# Which actions appear, in this order. [] disables the overlay entirely.
+enabled_actions     = ["lock", "restart", "exit", "hibernate", "suspend", "shutdown"]
+confirm_destructive = true    # false → every action runs immediately on Return
+countdown_seconds   = 60      # dialog auto-confirms when the counter hits 0 (0 = off)
+font_scale          = 1.0     # text size multiplier inside the power overlay only
+
+# Override any command. Commands are argv-split (quotes supported), executed
+# directly — NOT through a shell. "exit" falls back to loginctl terminating
+# your session when wayland-logout isn't installed. The four power verbs
+# (poweroff/reboot/suspend/hibernate) are normalized at action time to the
+# binary that has them here: systemctl on systemd, loginctl on elogind.
+[power.commands]
+lock      = "loginctl lock-session"
+restart   = "systemctl reboot"
+exit      = "wayland-logout"
+hibernate = "systemctl hibernate"
+suspend   = "systemctl suspend"
+shutdown  = "systemctl poweroff"
+
+# Localize/replace the confirmation phrase per action. It is inserted into the
+# headline: "Are you sure you want to <phrase>?"
+[power.confirm_text]
+restart   = "restart your computer"
+exit      = "log out now"
+hibernate = "hibernate your computer"
+suspend   = "put your computer to sleep"
+shutdown  = "shut down your computer now"
+
+
+# ============================================================================
 #  Keybindings (fixed — not user-configurable yet)
 #  ----------------------------------------------------------------------------
 #    Type            filter results live

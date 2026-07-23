@@ -12,6 +12,10 @@
 #include "waylaunch/switcher/app_switcher_manager.h"
 #include "waylaunch/switcher/switcher_input_controller.h"
 #include "waylaunch/switcher/switcher_renderer.h"
+#include "waylaunch/power/power_action_backend.h"
+#include "waylaunch/power/power_manager.h"
+#include "waylaunch/power/power_input_controller.h"
+#include "waylaunch/power/power_renderer.h"
 #include <xkbcommon/xkbcommon.h>
 #include <wayland-client.h>
 #include <algorithm>
@@ -325,11 +329,14 @@ bool LauncherUI::init(Config& config) {
     // roundtrip, and the compositor emits the `toplevel` events for already-open
     // windows immediately after that bind. If the listener isn't in place yet,
     // those initial windows are missed and the switcher shows nothing.
-    switcher_backend_ = std::make_unique<WlrForeignToplevelBackend>();
-    switcher_backend_->set_activate_command(config.get().app_switcher.activate_command);
-    wayland_->set_foreign_toplevel_listener([this](zwlr_foreign_toplevel_manager_v1* mgr) {
-        if (switcher_backend_) switcher_backend_->bind_manager(mgr);
-    });
+    // The power overlay has no use for window tracking — skip it entirely.
+    if (!power_mode_) {
+        switcher_backend_ = std::make_unique<WlrForeignToplevelBackend>();
+        switcher_backend_->set_activate_command(config.get().app_switcher.activate_command);
+        wayland_->set_foreign_toplevel_listener([this](zwlr_foreign_toplevel_manager_v1* mgr) {
+            if (switcher_backend_) switcher_backend_->bind_manager(mgr);
+        });
+    }
 #endif
 
     if (!wayland_->init()) return false;
@@ -356,6 +363,7 @@ bool LauncherUI::init(Config& config) {
     wayland_->set_redraw_handler([this]() { on_redraw(); });
 
 #ifdef HAS_FOREIGN_TOPLEVEL
+    if (switcher_backend_) {
     // The backend + manager listener were set up before init() (above), so the
     // backend already holds the initial windows. Build the rest of the switcher,
     // which reads them via the manager's initial rebuild.
@@ -382,7 +390,30 @@ bool LauncherUI::init(Config& config) {
             }
         }
     });
+    }   // if (switcher_backend_)
 #endif
+
+    // Power overlay (one-shot): backend builds the actions from [power], the
+    // manager/input/renderer trio mirrors the switcher's decoupling. When the
+    // manager hides, §4.7 requires the surface gone BEFORE the command runs so
+    // the overlay never lingers over a suspend/shutdown — then the process exits.
+    if (power_mode_) {
+        power_backend_ = std::make_unique<PowerActionBackend>(config.get().power);
+        power_manager_ = std::make_unique<PowerManager>(power_backend_.get());
+        power_manager_->set_confirm_destructive(config.get().power.confirm_destructive);
+        power_manager_->set_countdown_seconds(config.get().power.countdown_seconds);
+        power_input_ = std::make_unique<PowerInputController>(power_manager_.get());
+        power_renderer_ = std::make_unique<PowerRenderer>();
+        power_manager_->set_change_callback([this]() {
+            needs_redraw_ = true;
+            if (!power_manager_->is_visible()) {
+                wayland_->unmap_surface();
+                wl_display_flush(wayland_->display());
+                power_manager_->execute_pending();   // no-op when cancelled
+                quit();
+            }
+        });
+    }
 
     // File-search settings from [search].
     const auto& sc = config.get().search;
@@ -405,8 +436,8 @@ bool LauncherUI::init(Config& config) {
 
     // Content search: open the waylaunchd index read-only. Absent/locked index →
     // content_store_ stays null and we silently degrade to filename search (NFR8).
-    // Skipped in switcher mode (no search UI → no reason to open the index).
-    if (!switcher_mode_) {
+    // Skipped in switcher/power mode (no search UI → no reason to open the index).
+    if (!switcher_mode_ && !power_mode_) {
         content::ContentConfig cc = content::load_content_config(config_path_);
         content_enabled_ = cc.enable;
         content_min_query_ = std::max(1, cc.min_query);
@@ -456,10 +487,10 @@ bool LauncherUI::init(Config& config) {
         cursor_pos_ = query_.size();
     }
 
-    // The dedicated switcher never runs the search providers — skip scanning apps
-    // and kicking the file/content workers (pure waste that also delays showing
-    // the overlay).
-    if (!switcher_mode_) {
+    // The dedicated switcher/power overlays never run the search providers —
+    // skip scanning apps and kicking the file/content workers (pure waste that
+    // also delays showing the overlay).
+    if (!switcher_mode_ && !power_mode_) {
         scan_apps();
         update_search();
     }
@@ -498,6 +529,13 @@ void LauncherUI::run() {
     // title/state), then show the switcher with the previous app preselected. The
     // process then stays resident (see the change callback): it unmaps on confirm
     // but keeps tracking windows, so later Alt+Tabs re-show it instantly.
+    // One-shot power overlay: show immediately; the layer surface's configure
+    // (arriving on the wl fd below) triggers the first paint via on_redraw.
+    if (power_mode_ && power_input_) {
+        power_input_->trigger();
+        needs_redraw_ = true;
+    }
+
     if (switcher_mode_ && switcher_input_) {
         wl_display_roundtrip(dpy);
         wl_display_roundtrip(dpy);
@@ -524,7 +562,11 @@ void LauncherUI::run() {
         wl_display_flush(dpy);
 
         for (auto& f : fds) f.revents = 0;
-        int n = poll(fds, 5, -1);
+        // The only timed work in any overlay is the power dialog's auto-confirm
+        // countdown: while it runs, wake ~5×/s to tick it; otherwise block.
+        bool power_counting = power_manager_ && power_manager_->confirm_dialog().is_open() &&
+                              power_manager_->confirm_dialog().has_countdown();
+        int n = poll(fds, 5, power_counting ? 200 : -1);
         if (n < 0) {
             wl_display_cancel_read(dpy);
             if (errno == EINTR) continue;
@@ -565,6 +607,19 @@ void LauncherUI::run() {
         if (fds[2].revents & POLLIN) {   // SIGINT/SIGTERM → exit cleanly
             quit();
             break;
+        }
+
+        // Tick the power dialog's countdown: auto-confirm on expiry, repaint
+        // only when the displayed second changes (not every poll wakeup).
+        if (power_counting && power_input_) {
+            power_input_->tick();
+            if (power_manager_->confirm_dialog().is_open()) {
+                int r = power_manager_->confirm_dialog().remaining_seconds();
+                if (r != power_last_remaining_) {
+                    power_last_remaining_ = r;
+                    needs_redraw_ = true;
+                }
+            }
         }
 
         if (needs_redraw_) render_frame();
@@ -1029,6 +1084,12 @@ void LauncherUI::open_file_location(int index) {
 void LauncherUI::on_key(uint32_t keysym, uint32_t utf32, bool pressed) {
     if (ui_dbg()) fprintf(stderr, "[ui] on_key sym=0x%x utf32=%u pressed=%d\n", keysym, utf32, pressed);
 
+    // Power overlay owns every key while it is up (its dialog is modal).
+    if (power_mode_) {
+        if (power_input_) power_input_->handle_key(keysym, pressed);
+        return;
+    }
+
     if (switcher_input_ && switcher_input_->is_active()) {
         if (switcher_input_->handle_key(keysym, pressed)) return;
     }
@@ -1105,6 +1166,7 @@ void LauncherUI::on_key(uint32_t keysym, uint32_t utf32, bool pressed) {
 
 void LauncherUI::on_mouse(double x, double y, uint32_t button, bool pressed) {
     if (ui_dbg()) fprintf(stderr, "[ui] on_mouse x=%.0f y=%.0f btn=0x%x pressed=%d\n", x, y, button, pressed);
+    if (power_mode_) return;   // keyboard-only for v1 (§11)
     if (!pressed) return;
 
     constexpr uint32_t BTN_LEFT = 0x110;
@@ -1133,6 +1195,7 @@ void LauncherUI::on_mouse(double x, double y, uint32_t button, bool pressed) {
 }
 
 void LauncherUI::on_axis(double, double, int32_t axis, double value) {
+    if (power_mode_) return;
     if (axis == 0) {
         if (value < 0) select_item(selected_index_ - 3);
         else if (value > 0) select_item(selected_index_ + 3);
@@ -1183,6 +1246,12 @@ void LauncherUI::render_frame() {
         needs_redraw_ = false;
         return;
     }
+    // Power overlay: once dismissed we are tearing down (unmap + exit) — never
+    // repaint, which would re-map the surface.
+    if (power_mode_ && !(power_manager_ && power_manager_->is_visible())) {
+        needs_redraw_ = false;
+        return;
+    }
 
     Buffer* buf = wayland_->acquire_buffer();
     if (!buf) return;
@@ -1199,6 +1268,19 @@ void LauncherUI::render_frame() {
                               bw, bh, switcher_manager_->app_groups().size(),
                               switcher_manager_->selected_index());
         switcher_renderer_->render(*renderer_, *switcher_manager_, t, bw, bh);
+        renderer_->end();
+        wayland_->submit_buffer(buf, 0, 0);
+        needs_redraw_ = false;
+        return;
+    }
+
+    if (power_manager_ && power_manager_->is_visible()) {
+        if (ui_dbg()) fprintf(stderr, "[power] render %dx%d actions=%zu sel=%zu dialog=%d\n",
+                              bw, bh, power_manager_->actions().size(),
+                              power_manager_->selected_index(),
+                              power_manager_->confirm_dialog().is_open());
+        power_renderer_->render(*renderer_, *power_manager_, t, bw, bh,
+                                config_->get().power.font_scale);
         renderer_->end();
         wayland_->submit_buffer(buf, 0, 0);
         needs_redraw_ = false;

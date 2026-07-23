@@ -66,10 +66,8 @@ void SwitcherRenderer::render(Renderer& renderer,
 
         // Selection card background pill
         if (is_selected) {
-            Color sel_color = Color::from_rgba(theme.accent.r, theme.accent.g, theme.accent.b, 0.28);
-            renderer.rounded_rect(ix + 4, iy + 4, item_width - 8, item_height - 8, item_radius, sel_color);
-            renderer.rounded_rect(ix + 4, iy + 4, item_width - 8, item_height - 8, item_radius,
-                                  Color::from_rgba(theme.accent.r, theme.accent.g, theme.accent.b, 0.6));
+            renderer.draw_selection_pill(ix + 4, iy + 4, item_width - 8, item_height - 8,
+                                         item_radius, theme.accent);
         }
 
         // Draw Icon

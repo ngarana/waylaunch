@@ -149,6 +149,13 @@ set(SOURCES
     src/switcher/switcher_state_machine.cpp
     src/switcher/switcher_input_controller.cpp
     src/switcher/switcher_renderer.cpp
+    src/power/power_action_backend.cpp
+    src/power/power_manager.cpp
+    src/power/power_state_machine.cpp
+    src/power/power_input_controller.cpp
+    src/power/power_renderer.cpp
+    src/power/confirm_dialog_renderer.cpp
+    src/power/power_glyphs.cpp
     ${PROTOCOL_SOURCES}
 )
 
@@ -258,9 +265,33 @@ if(BUILD_TESTING)
     if(HAS_FOREIGN_TOPLEVEL)
         target_compile_definitions(app_switcher_test PRIVATE HAS_FOREIGN_TOPLEVEL)
     endif()
+    # assert-based — keep the checks alive under Release-family builds (NDEBUG).
+    target_compile_options(app_switcher_test PRIVATE -UNDEBUG)
     add_test(NAME app_switcher_test COMMAND app_switcher_test)
     set_tests_properties(content_indexer_test PROPERTIES TIMEOUT 60)
     set_tests_properties(content_freshness_test PROPERTIES TIMEOUT 60)
+
+    # Power overlay unit tests — header-only includable (no Wayland, no cairo):
+    # they instantiate PowerManager with a stub backend, mirroring the switcher
+    # tests. waylaunch_content supplies Subprocess + toml++ include dirs.
+    add_executable(power_state_machine_test tests/power_state_machine_test.cpp
+        src/power/power_state_machine.cpp)
+    add_executable(confirm_dialog_test tests/confirm_dialog_test.cpp)
+    add_executable(power_action_backend_test tests/power_action_backend_test.cpp
+        src/power/power_action_backend.cpp)
+    add_executable(power_manager_test tests/power_manager_test.cpp
+        src/power/power_manager.cpp
+        src/power/power_input_controller.cpp
+        src/power/power_state_machine.cpp)
+    foreach(t power_state_machine_test confirm_dialog_test
+              power_action_backend_test power_manager_test)
+        target_link_libraries(${t} PRIVATE waylaunch_content)
+        target_include_directories(${t} PRIVATE ${XKBCOMMON_INCLUDE_DIRS})
+        # -UNDEBUG: these are assert-based; Release-family builds define NDEBUG
+        # which would silently turn every check into a no-op.
+        target_compile_options(${t} PRIVATE -Wall -Wextra -UNDEBUG)
+        add_test(NAME ${t} COMMAND ${t})
+    endforeach()
 
     # Performance harness (NFR1/NFR5) — built but not a pass/fail ctest; run
     # manually with a doc count, e.g. ./content_bench 1000000.
