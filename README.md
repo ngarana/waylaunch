@@ -9,7 +9,7 @@ A minimal, fast, keyboard-first Wayland-native launcher. One keystroke opens a u
 - **Async File Search** — dedicated worker thread runs `fd` with prefix/substring ranking, recency bonuses, and path-depth penalties. Results stream into the UI without blocking.
 - **Content Search** — index-backed full-text search *inside* your documents (Spotlight's "find in contents"), served by the `waylaunchd` daemon. An inverted index (SQLite FTS5, BM25) over text, code, PDF, **Office/ODF spreadsheets & slides** (`.docx`/`.xlsx`/`.pptx`/`.odt`/`.ods`/`.odp`), EPUB, and HTML; the launcher queries it read-only and shows a **CONTENTS** section with a highlighted snippet. Queries are O(index-lookup), not O(filesystem), and stay bounded even on ultra-common terms. Extracted text is stored zstd-compressed, extraction runs in a sandboxed subprocess, and the index self-heals on corruption or schema change. Kept fresh incrementally with inotify plus a periodic reconcile backstop for when watches are exhausted. Supports **`mdfind`-style filters** — `kind:pdf quarterly revenue`, `kind:spreadsheet`, `size:>1M`, `modified:<7d`. See [`docs/CONTENT_SEARCH.md`](docs/CONTENT_SEARCH.md).
 - **App Switcher** — an Alt+Tab overlay grouping open windows by application (MRU-ordered) via `wlr-foreign-toplevel-management`. Launch it with `waylaunch --switch`: hold the modifier and tap Tab to cycle, release to confirm — or Enter/Space to confirm, ` / arrows to move, `q` to close an app, Esc to cancel. See [App switcher](#app-switcher-alttab) for the Hyprland binding.
-- **Power Actions** — `waylaunch --power` opens a switcher-style HUD with Lock / Restart / Exit / Hibernate / Suspend / Shut Down. Destructive actions get a macOS-style confirmation card; commands are configurable and run without a shell. See [Power actions](#power-actions).
+- **Power Actions** — `waylaunch --power` opens a switcher-style HUD with Lock / Restart / Exit / Hibernate / Suspend / Shut Down. Destructive actions get a confirmation card; commands are configurable and run without a shell. See [Power actions](#power-actions).
 - **Application Launcher** — scans `.desktop` files from XDG data directories, filters in-memory per keystroke.
 - **Calculator** — built-in recursive-descent expression evaluator with trig, logs, and constants. A valid math expression becomes the Top Hit.
 - **Custom Commands** — user-defined shell commands in the config file (Lock Screen, Sleep, etc.), matched by name.
@@ -147,7 +147,7 @@ bind = SUPER SHIFT, Q, exec, waylaunch --power
 
 Inside the overlay: **←/→/Tab/Shift+Tab** move · **Home/End** first/last ·
 **1–6** jump · **Return/Space** select · **Esc** cancel. Destructive actions
-(everything but Lock) open a glassmorphic macOS-style confirmation card with a
+(everything but Lock) open a glassmorphic confirmation card with a
 **countdown**: a depleting ring around the action glyph and a counter in the
 confirm button ("Shut Down · 42"); when it reaches zero the action runs on its
 own (`countdown_seconds`, 0 disables). **←/→/Tab** move focus between Cancel
@@ -273,7 +273,7 @@ icon_size      = 64       # icon size in px
 card_size      = 104      # card size in px
 corner_radius  = 20       # glass HUD corner radius
 show_app_names = true     # show application title below HUD
-group_by_app   = true     # true: one entry per app (macOS style)
+group_by_app   = true     # true: one entry per app 
 quick_actions  = true     # enable Q (quit app) and H (hide/minimize)
 
 # Optional: compositor-specific fallback for compositors that don't follow the
@@ -311,6 +311,20 @@ src/
 │   ├── app_launcher.cpp     # .desktop file scanning and filtering
 │   ├── calculator.cpp       # Recursive-descent expression parser
 │   └── clipboard.cpp        # wl-copy / wl-paste integration
+├── switcher/                 # app-switcher subsystem (Alt+Tab overlay)
+│   ├── app_switcher_manager.cpp   # Open-window grouping, MRU ordering, icon resolution
+│   ├── switcher_input_controller.cpp # Keyboard input for the switcher overlay
+│   ├── switcher_renderer.cpp      # Cairo rendering of the switcher HUD
+│   ├── switcher_state_machine.cpp # Interaction state machine
+│   └── wlr_toplevel_backend.cpp   # wlr-foreign-toplevel-management protocol
+├── power/                    # power-actions subsystem (Lock/Restart/Exit/…)
+│   ├── power_manager.cpp          # Overlay lifecycle and action dispatch
+│   ├── power_renderer.cpp         # Cairo rendering of frosted HUD and vector glyphs
+│   ├── power_input_controller.cpp # Keyboard input for the power overlay
+│   ├── power_state_machine.cpp    # Confirmation flow state machine
+│   ├── power_action_backend.cpp   # Command normalization (systemd/elogind)
+│   ├── power_glyphs.cpp           # Hand-drawn vector glyphs for power actions
+│   └── confirm_dialog_renderer.cpp # Confirmation dialog with countdown
 ├── content/                 # content-search subsystem (lib + daemon + CLI)
 │   ├── store.cpp            # SQLite FTS5 store: tokenizer, zstd docs, planner, metadata filters
 │   ├── extractor.cpp        # MIME dispatch + per-format text extraction (sandboxed subprocesses)
