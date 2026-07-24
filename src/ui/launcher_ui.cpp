@@ -3,8 +3,11 @@
 #include "waylaunch/renderer.h"
 #include "waylaunch/config.h"
 #include "waylaunch/clipboard.h"
-#include "waylaunch/calculator.h"
 #include "waylaunch/app_launcher.h"
+#include "waylaunch/providers/result_provider.h"
+#include "waylaunch/providers/calculator_provider.h"
+#include "waylaunch/providers/command_provider.h"
+#include "waylaunch/providers/app_provider.h"
 #include "waylaunch/subprocess.h"
 #include "waylaunch/content/store.h"
 #include "waylaunch/content/config.h"
@@ -273,29 +276,6 @@ bool try_enable_backdrop_blur() {
     return true;
 }
 
-// Launch a command fully detached from waylaunch (double-fork + setsid) using an
-// argv vector, so arguments are never re-parsed by a shell. The intermediate
-// child is reaped immediately; the grandchild is reparented to init.
-void spawn_detached(const std::vector<std::string>& argv) {
-    if (argv.empty()) return;
-    pid_t pid = fork();
-    if (pid == 0) {
-        setsid();
-        if (fork() == 0) {
-            std::vector<char*> c_argv;
-            c_argv.reserve(argv.size() + 1);
-            for (const auto& s : argv) c_argv.push_back(const_cast<char*>(s.c_str()));
-            c_argv.push_back(nullptr);
-            execvp(c_argv[0], c_argv.data());
-            _exit(127);
-        }
-        _exit(0);
-    } else if (pid > 0) {
-        int status;
-        waitpid(pid, &status, 0);
-    }
-}
-
 } // namespace
 
 LauncherUI::LauncherUI() = default;
@@ -517,6 +497,7 @@ bool LauncherUI::init(Config& config) {
     // also delays showing the overlay).
     if (!switcher_mode_ && !power_mode_) {
         scan_apps();
+        register_providers();
         update_search();
     }
     return true;
@@ -707,6 +688,18 @@ void LauncherUI::scan_apps() {
     apps_->scan();   // once — filtering afterwards is in-memory
 }
 
+// Build the enabled ResultProvider list. Ported providers own their query and
+// activation; the rest still runs through the inline pipeline (migration §5.2).
+void LauncherUI::register_providers() {
+    const auto& sc = config_->get().search;
+    if (sc.enable_calculator)
+        providers_.push_back(std::make_unique<CalculatorProvider>());
+    if (sc.enable_commands)
+        providers_.push_back(std::make_unique<CommandProvider>(&config_->get().commands, &history_));
+    if (sc.enable_applications)
+        providers_.push_back(std::make_unique<AppProvider>(apps_.get(), &history_));
+}
+
 void LauncherUI::rebuild_app_items() {
     app_items_.clear();
     if (query_.empty()) {
@@ -728,68 +721,12 @@ void LauncherUI::rebuild_app_items() {
         return;
     }
 
-    const auto& sc = config_->get().search;
-    std::string q = to_lower(query_);
-
-    // Calculator: a valid math expression becomes the Top Hit.
-    if (sc.enable_calculator) {
-        Calculator calc;
-        auto r = calc.evaluate(query_);
-        if (r.valid && calc.is_calculator_query(query_)) {
-            ListItem it;
-            it.kind = ItemKind::Calculator;
-            it.name = "= " + r.result;
-            it.description = query_;
-            it.icon_name = "accessories-calculator";
-            it.path = r.result;          // payload copied to clipboard on Return
-            it.score = 1e6f;
-            app_items_.push_back(std::move(it));
-        }
-    }
-
-    // Custom commands from [[commands]], matched by name.
-    if (sc.enable_commands) {
-        for (const auto& cmd : config_->get().commands) {
-            if (cmd.name.empty() || cmd.command.empty()) continue;
-            std::string n = to_lower(cmd.name);
-            size_t pos = n.find(q);
-            if (pos == std::string::npos) continue;
-            ListItem it;
-            it.kind = ItemKind::Command;
-            it.name = cmd.name;
-            it.action_command = cmd.command;
-            it.icon_name = cmd.icon.empty() ? "utilities-terminal" : cmd.icon;
-            it.description = cmd.category.empty() ? "Command" : cmd.category;
-            it.score = (pos == 0 ? 900.0f : 400.0f) - std::min<size_t>(pos, 200);
-            it.score += history_.frecency("command:" + cmd.command);
-            app_items_.push_back(std::move(it));
-        }
-    }
-
-    // Applications (in-memory over the cached scan), ranked by name match.
-    if (sc.enable_applications) {
-        std::vector<ListItem> apps;
-        for (const auto& e : apps_->search(query_)) {
-            ListItem it;
-            it.kind = ItemKind::Application;
-            it.name = e.name;
-            it.path = e.exec;
-            it.reveal_path = e.desktop_path;   // right-click → reveal the .desktop file
-            it.description = e.comment.empty() ? e.generic_name : e.comment;
-            it.icon_name = e.icon;
-            std::string n = to_lower(e.name);
-            size_t pos = n.find(q);
-            if (pos == 0)                        it.score = 1000.0f - std::min<size_t>(n.size(), 500);
-            else if (pos != std::string::npos)   it.score = 600.0f - std::min<size_t>(pos, 300);
-            else                                 it.score = 50.0f;   // matched via comment/category
-            it.score += history_.frecency(e.desktop_path.empty() ? "app:" + e.name : e.desktop_path);
-            apps.push_back(std::move(it));
-        }
-        std::stable_sort(apps.begin(), apps.end(),
-                         [](const ListItem& a, const ListItem& b) { return a.score > b.score; });
-        if (apps.size() > static_cast<size_t>(layout_.max_per_group))
-            apps.resize(layout_.max_per_group);
-        for (auto& a : apps) app_items_.push_back(std::move(a));
+    // Synchronous ResultProviders: calculator (Top Hit), commands, applications —
+    // in registration order, which preserves the previous sectioning and ranking.
+    ProviderQuery pq{query_, to_lower(query_), layout_.max_per_group};
+    for (auto& p : providers_) {
+        if (p->is_async() || !p->is_available()) continue;
+        for (auto& it : p->query(pq)) app_items_.push_back(std::move(it));
     }
 }
 
@@ -1071,28 +1008,26 @@ void LauncherUI::launch_selected() {
         if (!key.empty()) history_.record(query_, key, item.name);
     }
 
+    // Ported providers activate their own items; unported kinds fall through to
+    // the switch below (migration §5.2).
+    for (auto& p : providers_) {
+        if (p->activate(item)) { quit(); return; }
+    }
+
+    // Files/folders/content open with the default handler. Applications, commands
+    // and the calculator were handled by their providers above; History returned
+    // earlier — so nothing else reaches here.
     switch (item.kind) {
-        case ItemKind::Calculator:
-            if (!item.path.empty()) Clipboard::copy_text(item.path);
-            break;
-        case ItemKind::Command:
-            if (!item.action_command.empty()) spawn_detached({"/bin/sh", "-c", item.action_command});
-            break;
-        case ItemKind::Application:
-            // item.path is the .desktop Exec line — run it via a shell so
-            // arguments/env prefixes work. It is a command, not a file.
-            if (!item.path.empty()) spawn_detached({"/bin/sh", "-c", item.path});
-            break;
         case ItemKind::File:
         case ItemKind::Folder:
         case ItemKind::Content:
             if (!item.path.empty()) {
                 Clipboard::copy_file_path(item.path);
-                spawn_detached({"xdg-open", item.path});
+                Subprocess::spawn_detached({"xdg-open", item.path});
             }
             break;
-        case ItemKind::History:
-            break; // handled before the activation switch
+        default:
+            break;
     }
     quit();
 }
@@ -1134,7 +1069,7 @@ void LauncherUI::open_file_location(int index) {
     // Fallback: open the enclosing directory with the default handler.
     std::string dir = abs.parent_path().string();
     if (dir.empty()) dir = ".";
-    spawn_detached({"xdg-open", dir});
+    Subprocess::spawn_detached({"xdg-open", dir});
     quit();
 }
 

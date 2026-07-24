@@ -351,9 +351,23 @@ Each phase is independently shippable and leaves `main` runnable.
 - [~] Extract `Layout` (pure geometry): largely done already — `SpotlightLayout`
       + `relayout()` precompute `rows_`/`headers_`/`panel_total_h_`; `render_frame`
       consumes the slots. Only panel origin math remains inline.
-- [ ] **Introduce `ResultProvider` (§5.2); port Apps/Files/Content/Calculator to
-      it.** The one large item left — restructures the search pipeline. Deferred
-      to its own focused change (see §7 note).
+- [~] **Introduce `ResultProvider` (§5.2); port Apps/Files/Content/Calculator.**
+      In progress:
+      - [x] `ResultProvider` interface + `ProviderQuery`; `ListItem`/`ItemKind`
+            extracted to `list_item.h`; `spawn_detached` promoted to
+            `Subprocess::spawn_detached`.
+      - [x] **Sync providers ported** — `CalculatorProvider`, `CommandProvider`,
+            `AppProvider` own their query + activation. `register_providers()`
+            builds the list from `[search]` flags; `rebuild_app_items()` just runs
+            the sync providers; `launch_selected()` dispatches to
+            `provider->activate()` (unported kinds fall through).
+      - [ ] **Async providers** — `FileProvider` (fd) and `ContentProvider`
+            (index) still run inline in `file_worker_loop`. Porting them means
+            extracting the shared path helpers (`icon_for_file`, `abbreviate_home`,
+            `path_depth`, `recency_bonus`) and unifying `file_items_`/
+            `content_items_` marshaling into one async result list keyed by
+            `ItemKind` — the riskier half (touches the worker threading), so it's
+            the next focused increment.
 
 ### Phase 4 — Wire config → behavior (2–3 days)
 

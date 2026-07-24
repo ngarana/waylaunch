@@ -142,6 +142,9 @@ set(SOURCES
     src/modes/app_launcher.cpp
     src/modes/calculator.cpp
     src/modes/clipboard.cpp
+    src/providers/calculator_provider.cpp
+    src/providers/command_provider.cpp
+    src/providers/app_provider.cpp
     src/config/config.cpp
     src/switcher/wlr_toplevel_backend.cpp
     src/switcher/app_switcher_manager.cpp

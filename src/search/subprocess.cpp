@@ -213,4 +213,26 @@ bool Subprocess::command_exists(const std::string& command) {
     return false;
 }
 
+// Double-fork + setsid so the launched process outlives waylaunch and is
+// reparented to init; the intermediate child is reaped immediately.
+void Subprocess::spawn_detached(const std::vector<std::string>& argv) {
+    if (argv.empty()) return;
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        if (fork() == 0) {
+            std::vector<char*> c_argv;
+            c_argv.reserve(argv.size() + 1);
+            for (const auto& s : argv) c_argv.push_back(const_cast<char*>(s.c_str()));
+            c_argv.push_back(nullptr);
+            execvp(c_argv[0], c_argv.data());
+            _exit(127);
+        }
+        _exit(0);
+    } else if (pid > 0) {
+        int status;
+        waitpid(pid, &status, 0);
+    }
+}
+
 } // namespace waylaunch

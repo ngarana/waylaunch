@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include "waylaunch/renderer.h"
 #include "waylaunch/history.h"
+#include "waylaunch/list_item.h"
 
 namespace waylaunch {
 
@@ -25,23 +26,8 @@ class PowerActionBackend;
 class PowerManager;
 class PowerInputController;
 class PowerRenderer;
+class ResultProvider;
 namespace content { class Store; }
-
-// What a result represents — drives its action (launch/copy/open) and grouping.
-// Content = a file matched by its indexed *contents* (the CONTENTS section).
-enum class ItemKind { Application, File, Folder, Calculator, Command, Content, History };
-
-struct ListItem {
-    std::string name;            // primary label
-    std::string path;            // app: exec line · file/folder: fs path · calc: result payload
-    std::string description;     // subtitle (comment / abbreviated path / expression)
-    std::string icon_name;
-    std::string action_command;  // custom command, if any
-    std::string reveal_path;     // filesystem path to reveal on right-click (app → .desktop)
-    std::string snippet;         // content hit: highlighted excerpt of the matched body
-    ItemKind    kind = ItemKind::Application;
-    float       score = 0.0f;
-};
 
 // macOS Spotlight visual geometry (two-column: result list + preview pane).
 struct SpotlightLayout {
@@ -95,6 +81,7 @@ private:
 
     // --- Unified search ---
     void scan_apps();                 // scan .desktop files once at startup
+    void register_providers();        // build the enabled ResultProvider list (§5.2)
     void update_search();             // query changed: rebuild sync results, kick async files
     void rebuild_app_items();         // apps + calculator for the current query (synchronous)
     void rebuild_items();             // merge app_items_ + file_items_ into items_
@@ -123,6 +110,11 @@ private:
     std::unique_ptr<AppLauncher> apps_;
     Config* config_ = nullptr;
     HistoryStore history_;
+
+    // Pluggable search sources (§5.2). Being migrated incrementally; providers
+    // already registered here own their query + activation, the rest still runs
+    // through the inline pipeline below.
+    std::vector<std::unique_ptr<ResultProvider>> providers_;
 
     std::string query_;
     size_t cursor_pos_ = 0;
