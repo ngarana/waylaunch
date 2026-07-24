@@ -146,14 +146,18 @@ bind = SUPER SHIFT, Q, exec, waylaunch --power
 ```
 
 Inside the overlay: **←/→/Tab/Shift+Tab** move · **Home/End** first/last ·
-**1–6** jump · **Return/Space** select · **Esc** cancel. Destructive actions
-(everything but Lock) open a glassmorphic confirmation card with a
-**countdown**: a depleting ring around the action glyph and a counter in the
-confirm button ("Shut Down · 42"); when it reaches zero the action runs on its
-own (`countdown_seconds`, 0 disables). **←/→/Tab** move focus between Cancel
-and the confirm button, **Return/Space** press the focused one, **Esc** always
-goes back to the grid. The overlay tears down its surface *before* the command
-runs, so it never lingers over a suspend or shutdown.
+**1–6** jump · **Return/Space** select · **Esc** cancel.
+
+Destructive actions (everything but Lock) *replace* the picker with a
+glassmorphic confirmation card — it stands alone rather than stacking over the
+HUD, since committing to an action ends the picking. It carries a **countdown**:
+a depleting ring around the action glyph and a counter in the confirm button
+("Shut Down · 42"); when it reaches zero the action runs on its own
+(`countdown_seconds`, 0 disables). **←/→/Tab** move focus between Cancel and
+the confirm button, **Return/Space** press the focused one. **Cancel and Esc
+dismiss the whole overlay** — they don't drop you back on the picker, so a
+change of mind is one keystroke, not two. The overlay tears down its surface
+*before* the command runs, so it never lingers over a suspend or shutdown.
 
 Everything is configurable under `[power]` (see `config/waylaunch.toml`):
 `enabled_actions` filters and orders the cards (`[]` disables the overlay),

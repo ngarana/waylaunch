@@ -28,6 +28,18 @@
 > loginctl on elogind) — same action-time-choice principle as the Exit
 > fallback. Failed commands are reported on stderr (failure reporting, not the
 > §7-prohibited command logging).
+> **Amendment 4 (2026-07-24):** the confirmation dialog **replaces** the HUD
+> instead of layering over it (§4.4's "centered *inside* the overlay… dims the
+> grid behind it" is superseded): both cards are screen-centered, so stacking
+> left the HUD's ends protruding either side of the dialog — two competing
+> floating panels. The dialog now renders alone; its glyph badge already
+> identifies the action. Consequently **Cancel/Esc in the dialog dismiss the
+> whole overlay** rather than returning to the picker (supersedes §4.3's "close
+> dialog if open, otherwise close overlay", §4.4, and the §10 criterion "Esc
+> inside the dialog returns to the grid"): declining a destructive action means
+> you are done, and re-invoking the one-shot overlay is a single keybind. The
+> state graph is therefore Hidden → Active → ConfirmOpen → Dismissing, with no
+> ConfirmOpen → Active edge (supersedes §9.2).
 >
 > **Cross-cutting principles:** DRY · KISS · SOLID · no god modules ·
 > low cyclomatic complexity · minimum resource usage · minimum dependencies.

@@ -98,13 +98,10 @@ void test_destructive_gated_behind_dialog() {
     assert(m.is_visible());          // still up, waiting on the dialog
     assert(!m.has_pending_action());
 
-    // Esc inside the dialog → back to the grid, nothing pending.
+    // Cancelling the dialog dismisses the whole overlay — it does NOT drop back
+    // on the picker — and nothing is executed.
     m.cancel();
     assert(!m.confirm_dialog().is_open());
-    assert(m.is_visible());
-
-    // Esc at the grid → hide, still nothing pending (hide-on-cancel).
-    m.cancel();
     assert(!m.is_visible());
     assert(!m.has_pending_action());
     assert(m.execute_pending() == -1);
@@ -176,14 +173,15 @@ void test_input_controller_dispatch() {
     assert(input.handle_key(XKB_KEY_Tab, true));
     assert(m.selected_index() == 1);
 
-    // Esc: dialog → grid (still active), then grid → dismissed.
+    // Esc inside the dialog dismisses the overlay outright (same as Cancel).
     assert(input.handle_key(XKB_KEY_Escape, true));
     assert(!m.confirm_dialog().is_open());
-    assert(input.is_active());
-    assert(input.handle_key(XKB_KEY_Escape, true));
     assert(!m.is_visible());
     assert(!input.is_active());
     assert(backend.executed.empty());
+
+    // Keys after dismissal are no longer ours to consume.
+    assert(!input.handle_key(XKB_KEY_Escape, true));
 
     std::cout << "[PASS] input controller dispatch\n";
 }
@@ -208,23 +206,36 @@ void test_dialog_focus_navigation() {
     input.handle_key(XKB_KEY_Right, true);
     assert(m.confirm_dialog().focused_button() == ConfirmDialog::Button::Cancel);
 
-    // Return on a focused Cancel closes the dialog — nothing executes.
+    // Return on a focused Cancel dismisses the overlay — nothing executes, and
+    // the picker does not come back.
     input.handle_key(XKB_KEY_Return, true);
     assert(!m.confirm_dialog().is_open());
-    assert(m.is_visible());                          // back at the grid
-    assert(input.is_active());
+    assert(!m.is_visible());
+    assert(!input.is_active());
     assert(!m.has_pending_action());
     assert(backend.executed.empty());
 
-    // Reopen: focus reset to Confirm; Return executes.
+    std::cout << "[PASS] dialog focus navigation\n";
+}
+
+// A fresh overlay: focus starts on Confirm, so a plain Return still executes.
+void test_dialog_confirm_focus_default() {
+    StubPowerBackend backend;
+    PowerManager m(&backend);
+    PowerInputController input(&m);
+
+    input.trigger();
+    input.handle_key(XKB_KEY_2, true);               // "restart" (destructive)
     input.handle_key(XKB_KEY_Return, true);
     assert(m.confirm_dialog().focused_button() == ConfirmDialog::Button::Confirm);
+
     input.handle_key(XKB_KEY_Return, true);
     assert(!m.is_visible());
+    assert(m.has_pending_action());
     m.execute_pending();
     assert(backend.executed == (std::vector<std::string>{"restart"}));
 
-    std::cout << "[PASS] dialog focus navigation\n";
+    std::cout << "[PASS] dialog confirm focus default\n";
 }
 
 void test_countdown_auto_confirm() {
@@ -280,6 +291,7 @@ int main() {
     test_confirm_destructive_off();
     test_input_controller_dispatch();
     test_dialog_focus_navigation();
+    test_dialog_confirm_focus_default();
     test_countdown_auto_confirm();
     test_tick_ignored_outside_dialog();
     std::cout << "All power manager tests passed!\n";

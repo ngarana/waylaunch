@@ -15,8 +15,10 @@ void PowerStateMachine::process_event(PowerEvent event) {
             break;
 
         case PowerState::ConfirmOpen:
-            if (event == PowerEvent::Execute)     state_ = PowerState::Dismissing;
-            else if (event == PowerEvent::Cancel) state_ = PowerState::Active;
+            // Cancel dismisses the overlay outright — it does not return to the
+            // picker (see PowerManager::cancel).
+            if (event == PowerEvent::Execute || event == PowerEvent::Cancel)
+                state_ = PowerState::Dismissing;
             break;
 
         case PowerState::Dismissing:

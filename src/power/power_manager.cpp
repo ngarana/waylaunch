@@ -70,11 +70,10 @@ void PowerManager::toggle_dialog_focus() {
 }
 
 void PowerManager::cancel() {
-    if (dialog_.is_open()) {
-        dialog_.close();   // back to the grid
-        notify_change();
-        return;
-    }
+    // One escape hatch, one meaning: cancelling a confirmation dismisses the
+    // whole overlay rather than dropping you back on the picker. "No, don't
+    // shut down" means you are done — not that you want to choose something
+    // else. hide() closes the dialog too.
     hide();
 }
 

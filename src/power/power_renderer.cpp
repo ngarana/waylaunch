@@ -15,6 +15,17 @@ void PowerRenderer::render(Renderer& renderer,
     const auto& actions = manager.actions();
     if (actions.empty()) return;
 
+    // Confirming replaces the HUD rather than stacking on it: the two cards are
+    // both centered, so layering left the HUD's ends poking out either side of
+    // the dialog — two competing floating panels. Once you have committed to an
+    // action the picker is done, so the dialog stands alone (and its own glyph
+    // badge says which action you are confirming).
+    if (manager.confirm_dialog().is_open()) {
+        dialog_renderer_.render(renderer, manager.confirm_dialog(), theme,
+                                screen_w, screen_h, font_scale);
+        return;
+    }
+
     // Same HUD geometry as SwitcherRenderer: a compact frosted card centered on
     // screen — the overlay is switcher-like, not full-screen.
     constexpr int item_width = 104;
@@ -95,14 +106,6 @@ void PowerRenderer::render(Renderer& renderer,
     // No title pill below the HUD: unlike the switcher — whose cards are bare
     // icons — every action card is self-labelled, so a pill naming the
     // selection would only repeat the label already under the highlighted card.
-
-    // 3. Modal confirmation: dim the grid behind it, then draw the card.
-    if (manager.confirm_dialog().is_open()) {
-        renderer.rounded_rect(hud_x, hud_y, hud_width, hud_height, corner_radius,
-                              Color::from_rgba(0.0, 0.0, 0.0, 0.45));
-        dialog_renderer_.render(renderer, manager.confirm_dialog(), theme,
-                                screen_w, screen_h, font_scale);
-    }
 }
 
 } // namespace waylaunch

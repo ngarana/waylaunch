@@ -4,7 +4,8 @@
 
 using namespace waylaunch;
 
-// Hidden → Active → ConfirmOpen → Active | Dismissing (§9.2).
+// Hidden → Active → ConfirmOpen → Dismissing (§9.2, as amended: cancelling a
+// confirmation dismisses the overlay instead of returning to the picker).
 void test_transitions() {
     PowerStateMachine fsm;
     assert(fsm.current_state() == PowerState::Hidden);
@@ -15,18 +16,13 @@ void test_transitions() {
     assert(fsm.is_active());
     assert(!fsm.is_confirm_open());
 
-    // Destructive selection opens the dialog; Esc returns to the grid.
+    // Destructive selection opens the dialog.
     fsm.process_event(PowerEvent::OpenConfirm);
     assert(fsm.current_state() == PowerState::ConfirmOpen);
     assert(fsm.is_active());
     assert(fsm.is_confirm_open());
 
-    fsm.process_event(PowerEvent::Cancel);
-    assert(fsm.current_state() == PowerState::Active);
-    assert(!fsm.is_confirm_open());
-
     // Confirming inside the dialog dismisses the overlay.
-    fsm.process_event(PowerEvent::OpenConfirm);
     fsm.process_event(PowerEvent::Execute);
     assert(fsm.current_state() == PowerState::Dismissing);
     assert(!fsm.is_active());
@@ -35,6 +31,21 @@ void test_transitions() {
     assert(fsm.current_state() == PowerState::Hidden);
 
     std::cout << "[PASS] transitions\n";
+}
+
+// Cancelling a confirmation dismisses outright — no bounce back to the picker.
+void test_cancel_in_dialog_dismisses() {
+    PowerStateMachine fsm;
+    fsm.process_event(PowerEvent::Trigger);
+    fsm.process_event(PowerEvent::OpenConfirm);
+    assert(fsm.is_confirm_open());
+
+    fsm.process_event(PowerEvent::Cancel);
+    assert(fsm.current_state() == PowerState::Dismissing);
+    assert(!fsm.is_active());
+    assert(!fsm.is_confirm_open());
+
+    std::cout << "[PASS] cancel in dialog dismisses\n";
 }
 
 void test_cancel_at_grid_dismisses() {
@@ -59,6 +70,7 @@ void test_invalid_events_ignored() {
 
 int main() {
     test_transitions();
+    test_cancel_in_dialog_dismisses();
     test_cancel_at_grid_dismisses();
     test_invalid_events_ignored();
     std::cout << "All power state machine tests passed!\n";
