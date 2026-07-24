@@ -137,6 +137,7 @@ set(SOURCES
     src/main.cpp
     src/core/wayland_core.cpp
     src/ui/renderer.cpp
+    src/ui/history.cpp
     src/ui/launcher_ui.cpp
     src/modes/app_launcher.cpp
     src/modes/calculator.cpp
@@ -294,6 +295,34 @@ if(BUILD_TESTING)
     target_include_directories(subprocess_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
     target_compile_options(subprocess_test PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME subprocess_test COMMAND subprocess_test)
+
+    add_executable(history_test tests/history_test.cpp src/ui/history.cpp)
+    target_include_directories(history_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_options(history_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    add_test(NAME history_test COMMAND history_test)
+
+    add_executable(config_test tests/config_test.cpp src/config/config.cpp)
+    target_link_libraries(config_test PRIVATE tomlplusplus::tomlplusplus)
+    target_include_directories(config_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_options(config_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    add_test(NAME config_test COMMAND config_test)
+
+    add_executable(renderer_golden_test tests/renderer_golden_test.cpp src/ui/renderer.cpp)
+    target_include_directories(renderer_golden_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CAIRO_INCLUDE_DIRS}
+        ${PANGO_INCLUDE_DIRS}
+        ${FONTCONFIG_INCLUDE_DIRS}
+        ${LIBRSVG_INCLUDE_DIRS}
+    )
+    target_link_libraries(renderer_golden_test PRIVATE
+        ${CAIRO_LIBRARIES}
+        ${PANGO_LIBRARIES}
+        ${FONTCONFIG_LIBRARIES}
+        ${LIBRSVG_LIBRARIES}
+    )
+    target_compile_options(renderer_golden_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    add_test(NAME renderer_golden_test COMMAND renderer_golden_test)
 endif()
 
 # Install

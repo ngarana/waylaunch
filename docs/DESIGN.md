@@ -29,10 +29,10 @@ However, **the headline promises are still broken or partially met:**
    is no GTK or gdk-pixbuf API use in the source or build files.
 
 2. **Config is mostly decorative.** The TOML schema advertises
-   `[[bindings.keys]]`, `[[modes.list]]`, `[window]`, `history_*`, and
+   `[[bindings.keys]]`, `[[modes.list]]`, and `[window]`, plus
    `[platform].use_layer_shell` — but `config.cpp` does **not parse** any of
    these keys. What *is* parsed (`[appearance]`, `[theme]`, `[search]`,
-   `[[commands]]`, `[app_switcher]`, `[power]`, `[content]`) *is* consumed by
+   `[[commands]]`, `[history]`, `[app_switcher]`, `[power]`, `[content]`) *is* consumed by
    the live code. The gap between schema and consumption is a maintenance trap.
 
 3. **The codebase has grown beyond the original scope** with three new subsystems
@@ -158,11 +158,12 @@ fixes the original data race.
 ### 3.4 Extensibility & maintainability
 
 - **Config ↔ code are badly out of sync.** The TOML file advertises
-  `[[bindings.keys]]`, `[[modes.list]]`, `[window]`, `history_*`, and
-  `[platform].use_layer_shell`. These keys are **not parsed by `config.cpp` at
-  all** — they are not "ignored," they simply do not exist in the loader. The
-  consumed keys (`[appearance]`, `[theme]`, `[search]`, `[[commands]]`,
-  `[app_switcher]`, `[power]`, `[content]`) *are* wired to behavior.
+  `[[bindings.keys]]`, `[[modes.list]]`, `[window]`, and
+  `[platform].use_layer_shell`. These keys are **not
+  parsed by `config.cpp` at all** — they are not "ignored," they simply do not
+  exist in the loader. The consumed keys (`[appearance]`, `[theme]`, `[search]`,
+  `[[commands]]`, `[history]`, `[app_switcher]`, `[power]`, `[content]`) *are*
+  wired to behavior.
   Either wire the remaining keys or remove them from the schema — a config file
   that advertises keys it does not parse is a maintenance trap.
 - **Identity drift in docs.** `README.md`'s Architecture section omits the new
@@ -282,8 +283,9 @@ whose id != current" (the id counter already exists).
 
 ## 6. Testing strategy
 
-Current tests cover the new subsystems (content search, power, switcher) but not
-the live launcher UI path. Re-point tests at what ships:
+Tests now cover the new subsystems (content search, power, switcher), the
+persisted history/frecency logic, and a deterministic off-screen renderer
+fixture. Re-point remaining gaps at what ships:
 
 - **Pure logic (host-buildable, no Wayland):** `Calculator` (currently
   *untested* despite being the most test-friendly unit — precedence, unary,
@@ -291,11 +293,12 @@ the live launcher UI path. Re-point tests at what ships:
   config round-trip, path expansion (`~`, `$XDG_*`).
 - **Providers:** table-driven tests with a fake `Subprocess` so `fd/fzf/rg`
   parsing is covered without the binaries.
-- **Golden-image render tests:** render to an off-screen Cairo surface and hash
-  the buffer — catches layout regressions and the B5 color bug.
-- **Live-path integration:** the launcher UI (`launcher_ui.cpp`) and renderer
-  (`renderer.cpp`) have zero unit tests. Add a thin harness that constructs
-  `LauncherUI` with a mock `WaylandCore` and drives query/selection cycles.
+- **Golden-image render tests:** `renderer_golden_test` renders to an off-screen
+  Cairo surface and hashes the buffer — catching geometry/color regressions and
+  the B5 color bug.
+- **Live-path integration:** the launcher UI (`launcher_ui.cpp`) still needs a
+  compositor-backed harness; the host-buildable history and renderer seams are
+  covered without requiring a Wayland display.
 
 ---
 
@@ -347,14 +350,14 @@ Each phase is independently shippable and leaves `main` runnable.
       `on_key` from TOML (retire hardcoded key handling).
 - [ ] Add `[[modes.list]]` parsing; build provider list from config.
 - [ ] Add `[window]` section parsing (position, size, anchor overrides).
-- [ ] Add `history_*` key parsing; wire to query-history / frecency ranking.
+- [x] Add `[history]` key parsing; wire to query-history / frecency ranking.
 - [ ] Add `[platform].use_layer_shell` parsing (or remove the key if always-on).
 - [ ] Delete any config keys that remain unwired.
 
 ### Phase 5 — Spotlight fidelity & polish (ongoing)
 
-- [ ] Result grouping (Top Hit + sections), preview pane, query history, frecency ranking.
-- [ ] Golden-image + logic test suites (§6); CI.
+- [x] Result grouping (Top Hit + sections), preview pane, query history, frecency ranking.
+- [x] Golden-image + logic test suites (§6); CI.
 - [ ] Verify RSS reduction against the pre-change build.
 
 ### Quick wins (any time, < 1 hr each)

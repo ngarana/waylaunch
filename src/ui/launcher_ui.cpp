@@ -209,6 +209,7 @@ std::string kind_badge(const ListItem& it) {
         case ItemKind::Folder:      return "FOLDER";
         case ItemKind::Calculator:  return "=";
         case ItemKind::Command:     return "CMD";
+        case ItemKind::History:     return "RECENT";
         default: break;
     }
     std::string ext = to_lower(std::filesystem::path(it.path).extension().string());
@@ -218,6 +219,24 @@ std::string kind_badge(const ListItem& it) {
         return ext.size() <= 5 ? ext : ext.substr(0, 5);
     }
     return "FILE";
+}
+
+std::string history_key(const ListItem& item) {
+    switch (item.kind) {
+        case ItemKind::Application:
+            return item.reveal_path.empty() ? "app:" + item.name : item.reveal_path;
+        case ItemKind::Command:
+            return "command:" + item.action_command;
+        case ItemKind::Calculator:
+            return "calculator";
+        case ItemKind::File:
+        case ItemKind::Folder:
+        case ItemKind::Content:
+            return item.path;
+        case ItemKind::History:
+            break;
+    }
+    return {};
 }
 
 int path_depth(const std::string& p) {
@@ -299,6 +318,12 @@ LauncherUI::~LauncherUI() {
 
 bool LauncherUI::init(Config& config) {
     config_ = &config;
+
+    const auto& hc = config.get().history;
+    history_.configure(HistoryStore::default_path(), hc.max_entries, hc.max_age_days,
+                       hc.frecency_half_life_days);
+    if (hc.enabled && !history_.load() && ui_dbg())
+        fprintf(stderr, "[ui] unable to load query history\n");
 
     // Apply panel geometry from [appearance].
     const auto& ap = config.get().appearance;
@@ -684,7 +709,24 @@ void LauncherUI::scan_apps() {
 
 void LauncherUI::rebuild_app_items() {
     app_items_.clear();
-    if (query_.empty()) return;   // search shows nothing until you type
+    if (query_.empty()) {
+        if (config_->get().history.enabled) {
+            auto recent = history_.recent(static_cast<size_t>(layout_.max_per_group));
+            for (size_t i = 0; i < recent.size(); ++i) {
+                const auto& h = recent[i];
+                ListItem it;
+                it.kind = ItemKind::History;
+                it.name = h.query;
+                it.path = h.query; // Return feeds this value back into the query field.
+                it.description = "Recent search · " + std::to_string(h.uses) +
+                                 (h.uses == 1 ? " use" : " uses");
+                it.icon_name = "document-open-recent";
+                it.score = 1000.0f - static_cast<float>(i);
+                app_items_.push_back(std::move(it));
+            }
+        }
+        return;
+    }
 
     const auto& sc = config_->get().search;
     std::string q = to_lower(query_);
@@ -719,6 +761,7 @@ void LauncherUI::rebuild_app_items() {
             it.icon_name = cmd.icon.empty() ? "utilities-terminal" : cmd.icon;
             it.description = cmd.category.empty() ? "Command" : cmd.category;
             it.score = (pos == 0 ? 900.0f : 400.0f) - std::min<size_t>(pos, 200);
+            it.score += history_.frecency("command:" + cmd.command);
             app_items_.push_back(std::move(it));
         }
     }
@@ -739,6 +782,7 @@ void LauncherUI::rebuild_app_items() {
             if (pos == 0)                        it.score = 1000.0f - std::min<size_t>(n.size(), 500);
             else if (pos != std::string::npos)   it.score = 600.0f - std::min<size_t>(pos, 300);
             else                                 it.score = 50.0f;   // matched via comment/category
+            it.score += history_.frecency(e.desktop_path.empty() ? "app:" + e.name : e.desktop_path);
             apps.push_back(std::move(it));
         }
         std::stable_sort(apps.begin(), apps.end(),
@@ -801,11 +845,13 @@ void LauncherUI::relayout() {
             case ItemKind::File:
             case ItemKind::Folder:     return 1;
             case ItemKind::Content:    return 2;
+            case ItemKind::History:    return 3;
         }
         return 1;
     };
     auto cat_label = [](int c) {
-        return c == 0 ? "APPLICATIONS" : c == 2 ? "CONTENTS" : "FILES & FOLDERS";
+        return c == 0 ? "APPLICATIONS" : c == 1 ? "FILES & FOLDERS" :
+               c == 2 ? "CONTENTS" : "RECENT SEARCHES";
     };
 
     int y = layout_.search_h + 8;
@@ -937,6 +983,7 @@ void LauncherUI::file_worker_loop() {
                 s -= path_depth(line) * 6.0f;
                 if (is_dir) s += 15.0f;
                 if (have_stat) s += recency_bonus(st.st_mtime);
+                s += history_.frecency(line);
                 it.score = s;
 
                 out.push_back(std::move(it));
@@ -964,7 +1011,7 @@ void LauncherUI::file_worker_loop() {
                 it.description = abbreviate_home(h.path);
                 it.snippet = h.snippet;
                 it.icon_name = icon_for_file(h.path);
-                it.score = static_cast<float>(h.score);
+                it.score = static_cast<float>(h.score) + 0.25f * history_.frecency(h.path);
                 content_out.push_back(std::move(it));
             }
         }
@@ -1012,6 +1059,18 @@ void LauncherUI::launch_selected() {
     if (ui_dbg()) fprintf(stderr, "[ui] activate kind=%d name='%s' path='%s'\n",
                           static_cast<int>(item.kind), item.name.c_str(), item.path.c_str());
 
+    if (item.kind == ItemKind::History) {
+        query_ = item.path;
+        cursor_pos_ = query_.size();
+        update_search();
+        return;
+    }
+
+    if (config_->get().history.enabled && !query_.empty()) {
+        const std::string key = history_key(item);
+        if (!key.empty()) history_.record(query_, key, item.name);
+    }
+
     switch (item.kind) {
         case ItemKind::Calculator:
             if (!item.path.empty()) Clipboard::copy_text(item.path);
@@ -1032,6 +1091,8 @@ void LauncherUI::launch_selected() {
                 spawn_detached({"xdg-open", item.path});
             }
             break;
+        case ItemKind::History:
+            break; // handled before the activation switch
     }
     quit();
 }
@@ -1532,6 +1593,10 @@ void LauncherUI::render_preview(int px, int py, int pw, int ph, const Theme& t) 
         draw_kv("Expression", it.description);
         draw_kv("Result", it.path);
         renderer_->draw_text(inner_x, ph + py - 34, "⏎ Copy result", t.result_detail_font, t.text_muted);
+    } else if (it.kind == ItemKind::Command) {
+        draw_kv("Category", it.description);
+        draw_kv("Command", it.action_command);
+        renderer_->draw_text(inner_x, ph + py - 34, "⏎ Run command", t.result_detail_font, t.text_muted);
     } else if (it.kind == ItemKind::Content) {
         draw_kv("Where", abbreviate_home(std::filesystem::path(it.path).parent_path().string()));
         struct stat st;
@@ -1550,6 +1615,10 @@ void LauncherUI::render_preview(int px, int py, int pw, int ph, const Theme& t) 
         }
         renderer_->draw_text(inner_x, ph + py - 34, "⏎ Open   ·   right-click: reveal",
                              t.result_detail_font, t.text_muted);
+    } else if (it.kind == ItemKind::History) {
+        draw_kv("Query", it.path);
+        draw_kv("Usage", it.description);
+        renderer_->draw_text(inner_x, ph + py - 34, "⏎ Search again", t.result_detail_font, t.text_muted);
     }
 }
 

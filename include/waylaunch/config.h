@@ -80,6 +80,13 @@ struct SearchConfig {
     int max_file_results = 6;                 // rows kept after ranking
 };
 
+struct HistoryConfig {
+    bool enabled = true;
+    int max_entries = 100;
+    int max_age_days = 365;
+    double frecency_half_life_days = 30.0;
+};
+
 struct Command {
     std::string name;
     std::string command;
@@ -127,6 +134,7 @@ struct LauncherConfig {
     AppearanceConfig appearance;
     ThemeConfig theme;
     SearchConfig search;
+    HistoryConfig history;
     AppSwitcherConfig app_switcher;
     PowerConfig power;
     std::vector<Command> commands;

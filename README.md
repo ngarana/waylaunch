@@ -14,6 +14,7 @@ A minimal, fast, keyboard-first Wayland-native launcher. One keystroke opens a u
 - **Calculator** — built-in recursive-descent expression evaluator with trig, logs, and constants. A valid math expression becomes the Top Hit.
 - **Custom Commands** — user-defined shell commands in the config file (Lock Screen, Sleep, etc.), matched by name.
 - **Preview Pane** — two-column layout: results on the left, preview with details on the right. Right-click reveals files/apps in the file manager.
+- **Spotlight history** — recent empty-query suggestions and activation-aware frecency ranking, persisted under `$XDG_STATE_HOME`.
 - **TOML Configuration** — modern, human-readable format with sane defaults.
 - **Config Save** — snapshot current config (including merged defaults) with `waylaunch --save [path]`.
 - **Theming** — customizable Catppuccin-inspired dark palette, fonts (family, size, weight, style), and layout.
@@ -260,6 +261,7 @@ icon    = "system-lock-screen"
 | `[appearance]` | Panel geometry and glassmorphism |
 | `[theme]` | Colors and fonts (Catppuccin dark default) |
 | `[search]` | Provider toggles, file search roots/excludes |
+| `[history]` | Persistent recent searches and frecency retention/decay |
 | `[content]` | Content-index daemon: roots, excludes, privacy paths, size caps, match mode, reconcile interval |
 | `[app_switcher]` | Alt+Tab overlay config (modifier, icon size, grouping, quick actions) |
 | `[power]` | Power overlay: action list/order, confirmation toggle, command + text overrides |

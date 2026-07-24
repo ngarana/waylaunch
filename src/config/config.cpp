@@ -149,6 +149,15 @@ bool Config::load(const std::string& path) {
             }
         }
 
+        if (auto history = tbl["history"].as_table()) {
+            auto& h = config_.history;
+            h.enabled = get_bool(*history, "enabled", h.enabled);
+            h.max_entries = get_int(*history, "max_entries", h.max_entries);
+            h.max_age_days = get_int(*history, "max_age_days", h.max_age_days);
+            h.frecency_half_life_days = get_double(*history, "frecency_half_life_days",
+                                                   h.frecency_half_life_days);
+        }
+
         if (auto switcher = tbl["app_switcher"].as_table()) {
             auto& sw = config_.app_switcher;
             sw.enabled = get_bool(*switcher, "enabled", sw.enabled);
@@ -288,6 +297,12 @@ bool Config::save(const std::string& path) const {
         file << "type = \"" << p.type << "\"\n";
         file << "enabled = " << (p.enabled ? "true" : "false") << "\n";
     }
+
+    file << "\n[history]\n";
+    file << "enabled = " << (config_.history.enabled ? "true" : "false") << "\n";
+    file << "max_entries = " << config_.history.max_entries << "\n";
+    file << "max_age_days = " << config_.history.max_age_days << "\n";
+    file << "frecency_half_life_days = " << config_.history.frecency_half_life_days << "\n";
 
     file << "\n[power]\n";
     file << "enabled_actions = [";

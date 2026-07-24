@@ -9,6 +9,7 @@
 #include <thread>
 #include <condition_variable>
 #include "waylaunch/renderer.h"
+#include "waylaunch/history.h"
 
 namespace waylaunch {
 
@@ -28,7 +29,7 @@ namespace content { class Store; }
 
 // What a result represents — drives its action (launch/copy/open) and grouping.
 // Content = a file matched by its indexed *contents* (the CONTENTS section).
-enum class ItemKind { Application, File, Folder, Calculator, Command, Content };
+enum class ItemKind { Application, File, Folder, Calculator, Command, Content, History };
 
 struct ListItem {
     std::string name;            // primary label
@@ -121,6 +122,7 @@ private:
     std::unique_ptr<Renderer> renderer_;
     std::unique_ptr<AppLauncher> apps_;
     Config* config_ = nullptr;
+    HistoryStore history_;
 
     std::string query_;
     size_t cursor_pos_ = 0;
