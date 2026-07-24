@@ -101,6 +101,13 @@ file_min_query   = 2         # min characters typed before file search fires
 max_file_results = 6         # files kept after ranking (prefix > substring,
                              # shallower + more-recent scores higher)
 
+# Persisted empty-query suggestions and activation-aware ranking.
+[history]
+enabled                    = true
+max_entries                = 100
+max_age_days               = 365
+frecency_half_life_days    = 30.0
+
 # Application scan locations (type = "desktop"). These are scanned once at
 # startup. Non-"desktop" entries can seed file_roots when file_roots is empty.
 [[search.paths]]

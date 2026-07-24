@@ -32,7 +32,13 @@ PrivateNetwork=true
 NoNewPrivileges=true
 ProtectSystem=strict
 RestrictAddressFamilies=AF_UNIX
-ReadWritePaths=%h/.local/share/waylaunch %t/waylaunch
+# Create (and own) the runtime dir for the control socket. Without this, the
+# %t/waylaunch bind for ReadWritePaths under ProtectSystem=strict fails on any
+# boot where the dir doesn't already exist — /run is tmpfs, wiped each reboot —
+# with status=226/NAMESPACE. RuntimeDirectory makes systemd mkdir it (and clean
+# it up) before the sandbox is set up, on every start.
+RuntimeDirectory=waylaunch
+ReadWritePaths=%h/.local/share/waylaunch
 
 [Install]
 WantedBy=graphical-session.target
