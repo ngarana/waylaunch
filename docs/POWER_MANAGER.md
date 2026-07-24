@@ -7,10 +7,11 @@
 > Shutdown — visually and behaviourally modeled on the macOS power dialog.
 > **Amendment (2026-07-23):** the overlay is NOT full-screen. It renders as a
 > compact switcher-style HUD — the same centered frosted-glass card, geometry,
-> and selection pill as the Alt+Tab switcher — with one row of action cards and
-> the selected action's name below. §2.1/§4.5 as written below are superseded
-> accordingly (single row instead of a 2×3 full-screen grid; ↑/↓ map to
-> prev/next).
+> and selection pill as the Alt+Tab switcher — with one row of action cards.
+> §2.1/§4.5 as written below are superseded accordingly (single row instead of
+> a 2×3 full-screen grid; ↑/↓ map to prev/next). Each card is **self-labelled**,
+> so unlike the switcher there is no title pill naming the selection beneath the
+> HUD; the selected card's own label goes bold/full-strength instead.
 > **Amendment 2 (2026-07-23):** refinements over §4.4/§4.5 as drafted:
 > icons are hand-drawn vector glyphs (`src/power/power_glyphs.cpp`) in round
 > buttons — no icon-theme lookups; the confirmation dialog is glassmorphic

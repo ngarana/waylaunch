@@ -7,9 +7,10 @@
 namespace waylaunch {
 
 // Draws the power HUD — the same compact frosted-glass card as the switcher
-// (not full-screen): one row of action cards + the selected action's name
-// below. Delegates the confirmation dialog to ConfirmDialogRenderer. Pure
-// output: reads a PowerManager, never mutates it.
+// (not full-screen): one row of self-labelled action cards, no title pill
+// beneath (the switcher needs one because its cards are bare icons; these
+// name themselves). Delegates the confirmation dialog to ConfirmDialogRenderer.
+// Pure output: reads a PowerManager, never mutates it.
 class PowerRenderer {
 public:
     PowerRenderer() = default;

@@ -24,7 +24,6 @@ void PowerRenderer::render(Renderer& renderer,
     constexpr int padding_y = 20;
     constexpr int corner_radius = 24;
     constexpr int item_radius = 16;
-    constexpr int title_margin = 18;
 
     int num_items = static_cast<int>(actions.size());
     int hud_width = num_items * item_width + padding_x * 2;
@@ -58,7 +57,8 @@ void PowerRenderer::render(Renderer& renderer,
         if (ix + item_width > hud_x + hud_width - padding_x) break;
 
         const auto& action = actions[i];
-        if (static_cast<size_t>(i) == selected_idx) {
+        bool is_selected = (static_cast<size_t>(i) == selected_idx);
+        if (is_selected) {
             renderer.draw_selection_pill(ix + 4, iy + 4, item_width - 8, item_height - 8,
                                          item_radius, theme.accent);
         }
@@ -81,32 +81,22 @@ void PowerRenderer::render(Renderer& renderer,
                                theme.foreground.b, 0.92);
         power_glyphs::draw(renderer, action.id, cx, cy, icon_size * 0.66, glyph);
 
-        int lw = renderer.text_width(action.name, label_font);
+        // The label is the only name this action gets, so the selected one goes
+        // full-strength — carrying the emphasis the removed title pill used to.
+        RenderFontConfig lf = label_font;
+        lf.bold = is_selected;
+        int lw = renderer.text_width(action.name, lf);
         renderer.draw_text(ix + (item_width - std::min(lw, item_width - 8)) / 2,
-                           iy + 10 + icon_size + 6, action.name, label_font,
+                           iy + 10 + icon_size + 6, action.name, lf,
                            Color::from_rgba(theme.foreground.r, theme.foreground.g,
-                                            theme.foreground.b, 0.85));
+                                            theme.foreground.b, is_selected ? 1.0 : 0.78));
     }
 
-    // 3. Selected action name below the HUD (the switcher's title pill).
-    const PowerAction* sel = manager.selected_action();
-    if (sel) {
-        RenderFontConfig font;
-        font.family = theme.result_font.family;
-        font.size = 15.0 * font_scale;
-        font.bold = true;
+    // No title pill below the HUD: unlike the switcher — whose cards are bare
+    // icons — every action card is self-labelled, so a pill naming the
+    // selection would only repeat the label already under the highlighted card.
 
-        int tw = renderer.text_width(sel->name, font);
-        int tx = (screen_w - tw) / 2;
-        int ty = hud_y + hud_height + title_margin;
-
-        int tpill_padding = 12;
-        renderer.rounded_rect(tx - tpill_padding, ty - 4, tw + (tpill_padding * 2), 28, 14,
-                              Color::from_rgba(0.08, 0.08, 0.12, 0.85));
-        renderer.draw_text(tx, ty, sel->name, font, theme.foreground);
-    }
-
-    // 4. Modal confirmation: dim the grid behind it, then draw the card.
+    // 3. Modal confirmation: dim the grid behind it, then draw the card.
     if (manager.confirm_dialog().is_open()) {
         renderer.rounded_rect(hud_x, hud_y, hud_width, hud_height, corner_radius,
                               Color::from_rgba(0.0, 0.0, 0.0, 0.45));
