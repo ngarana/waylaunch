@@ -1,7 +1,7 @@
 #include "waylaunch/wayland_core.h"
+#include <cerrno>
 #include <cstring>
 #include <sys/mman.h>
-#include <fcntl.h>
 #include <unistd.h>
 #include <algorithm>
 #include <vector>
@@ -11,6 +11,21 @@
 #include <cstdlib>
 
 namespace { bool wl_dbg() { static bool v = std::getenv("WAYLAUNCH_DEBUG") != nullptr; return v; } }
+
+namespace {
+int create_unlinked_shm_file() {
+    char name[] = "/tmp/waylaunch-shm-XXXXXX";
+    int fd = mkstemp(name);
+    if (fd < 0) return -1;
+    if (unlink(name) < 0) {
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        return -1;
+    }
+    return fd;
+}
+}
 
 extern "C" {
 #include "wlr-layer-shell-client-protocol.h"
@@ -339,19 +354,35 @@ Buffer* WaylandCore::acquire_buffer() {
     buf->stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, w);
     buf->size = buf->stride * h;
 
-    char name[] = "/wl_shm-XXXXXX";
-    buf->fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    // mkstemp supplies the randomness that the old literal shm name lacked.
+    // The file is unlinked immediately, but remains alive until the Wayland
+    // buffer and its mmap are destroyed.
+    buf->fd = create_unlinked_shm_file();
     if (buf->fd < 0) return nullptr;
-    shm_unlink(name);
-    ftruncate(buf->fd, buf->size);
+    if (ftruncate(buf->fd, buf->size) < 0) {
+        buf->destroy();
+        return nullptr;
+    }
 
     buf->data = static_cast<uint8_t*>(mmap(nullptr, buf->size, PROT_READ | PROT_WRITE, MAP_SHARED, buf->fd, 0));
-    if (buf->data == MAP_FAILED) { close(buf->fd); buf->fd = -1; return nullptr; }
+    if (buf->data == MAP_FAILED) {
+        buf->data = nullptr;
+        buf->destroy();
+        return nullptr;
+    }
 
     buf->pool = wl_shm_create_pool(shm_, buf->fd, buf->size);
+    if (!buf->pool) {
+        buf->destroy();
+        return nullptr;
+    }
     buf->wl_buf = wl_shm_pool_create_buffer(buf->pool, 0, w, h, buf->stride, WL_SHM_FORMAT_ARGB8888);
     wl_shm_pool_destroy(buf->pool);
     buf->pool = nullptr;
+    if (!buf->wl_buf) {
+        buf->destroy();
+        return nullptr;
+    }
 
     wl_buffer_add_listener(buf->wl_buf, &wl_buffer_listener, this);
 
@@ -500,15 +531,19 @@ void WaylandCore::handle_sc_buffer(uint32_t format, uint32_t w, uint32_t h, uint
     cap_size_ = static_cast<int>(stride * h);
     if (cap_size_ <= 0) { backdrop_failed_ = true; return; }
 
-    std::string nm = "/waylaunch-cap-" + std::to_string(getpid());
-    cap_fd_ = shm_open(nm.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
+    cap_fd_ = create_unlinked_shm_file();
     if (cap_fd_ < 0) { backdrop_failed_ = true; return; }
-    shm_unlink(nm.c_str());
-    if (ftruncate(cap_fd_, cap_size_) < 0) { backdrop_failed_ = true; return; }
+    if (ftruncate(cap_fd_, cap_size_) < 0) {
+        close(cap_fd_);
+        cap_fd_ = -1;
+        backdrop_failed_ = true;
+        return;
+    }
     cap_data_ = static_cast<uint8_t*>(mmap(nullptr, cap_size_, PROT_READ | PROT_WRITE, MAP_SHARED, cap_fd_, 0));
     if (cap_data_ == MAP_FAILED) { cap_data_ = nullptr; backdrop_failed_ = true; return; }
 
     wl_shm_pool* pool = wl_shm_create_pool(shm_, cap_fd_, cap_size_);
+    if (!pool) { backdrop_failed_ = true; return; }
     cap_wl_buffer_ = wl_shm_pool_create_buffer(pool, 0, w, h, stride, format);
     wl_shm_pool_destroy(pool);
     if (!cap_wl_buffer_) { backdrop_failed_ = true; return; }

@@ -289,6 +289,11 @@ if(BUILD_TESTING)
     add_executable(content_bench tests/content_bench.cpp)
     target_link_libraries(content_bench PRIVATE waylaunch_content)
     target_compile_options(content_bench PRIVATE -Wall -Wextra -O2)
+
+    add_executable(subprocess_test tests/subprocess_test.cpp src/search/subprocess.cpp)
+    target_include_directories(subprocess_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_options(subprocess_test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME subprocess_test COMMAND subprocess_test)
 endif()
 
 # Install

@@ -184,9 +184,9 @@ actual current risk.
 | B3 | **High** | `launcher_ui.cpp:launch_selected` | Launch via `system("xdg-open ...")` with unescaped paths. | **Fixed.** `launch_selected()` uses `spawn_detached()` = `fork()` → `setsid()` → `fork()` → `execvp()` with a proper `argv` vector. No `system()` in `src/`. |
 | B4 | Medium | `search_manager.cpp:cancel` | `cancel()` `join()`s the in-flight worker, stalling the UI thread. | **Fixed.** Worker blocks on `std::condition_variable`; stale results dropped by generation counter. |
 | B5 | Medium | `renderer.cpp:load_icon_surface` | The old pixbuf→Cairo conversion could swap red/blue and mishandle premultiplied alpha. | **Fixed.** PNGs are loaded directly by Cairo and SVGs are rendered directly by librsvg; there is no manual pixbuf conversion. |
-| B6 | Medium | `wayland_core.cpp:acquire_buffer` | `shm_open` uses the **literal** name `"/wl_shm-XXXXXX"` (not `mkstemp`-templated). Concurrent instances → `EEXIST`. `ftruncate`/`pipe`/`write` return values ignored. | **Open.** Verify and fix (use `memfd_create` or randomize name; check syscall returns). |
+| B6 | Medium | `wayland_core.cpp:acquire_buffer` | The old literal SHM name could collide across instances or survive a crash; allocation syscalls were unchecked. | **Fixed.** Uses an unlinked `mkstemp` file and checks `ftruncate`, `mmap`, SHM-pool, and buffer creation for failure. |
 | B7 | Low | `launcher_ui.cpp:render_frame` (Calc) | `Calculator` constructed and expression re-evaluated **every frame**. | **Fixed.** Evaluated in `rebuild_app_items()` on query change only. |
-| B8 | Low | `subprocess.cpp:run` | `pipe()` results unchecked; single `write()` before `close` can block on large payloads. | **Open.** Fine for current inputs; check returns and consider a writer thread for large payloads. |
+| B8 | Low | `subprocess.cpp:run` | The old implementation ignored pipe/write results and could block before draining child output. | **Fixed.** Pipe/action setup is checked; stdin is written nonblocking through `poll()` while stdout/stderr are drained. |
 
 ---
 
@@ -330,8 +330,8 @@ Each phase is independently shippable and leaves `main` runnable.
 - [x] B3: `posix_spawn`-based launcher with argv vector.
 - [x] B7: calculator evaluated on query change, not every frame.
 - [x] B5: removed the pixbuf→surface conversion; Cairo/librsvg own pixel output.
-- [ ] B6: verify `shm_open` naming and check syscall return values.
-- [ ] B8: check `pipe()`/`write()` returns in `subprocess.cpp`.
+- [x] B6: collision-safe unlinked SHM files and checked allocation results.
+- [x] B8: checked pipe/write setup and nonblocking stdin/output multiplexing.
 
 ### Phase 3 — Structural refactor (3–5 days)
 
@@ -359,8 +359,8 @@ Each phase is independently shippable and leaves `main` runnable.
 
 ### Quick wins (any time, < 1 hr each)
 
-`rounded_rect`→`round_rect_path` (D2) · cache row-render block (D5) · check
-syscall returns (B6/B8) · add icon resolver tests · update README architecture tree.
+`rounded_rect`→`round_rect_path` (D2) · cache row-render block (D5) · add icon
+resolver tests · update README architecture tree.
 
 ---
 

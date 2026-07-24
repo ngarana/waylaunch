@@ -1,4 +1,8 @@
 #include "waylaunch/subprocess.h"
+#include <array>
+#include <algorithm>
+#include <cerrno>
+#include <fcntl.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -13,22 +17,56 @@ extern char** environ;
 namespace waylaunch {
 
 ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::string& stdin_data) {
-    int stdin_pipe[2], stdout_pipe[2], stderr_pipe[2];
-    pipe(stdin_pipe);
-    pipe(stdout_pipe);
-    pipe(stderr_pipe);
+    if (argv.empty()) return {-1, "", "Failed to spawn: empty argv"};
+
+    int stdin_pipe[2] = {-1, -1};
+    int stdout_pipe[2] = {-1, -1};
+    int stderr_pipe[2] = {-1, -1};
+    auto close_pipe = [](int pipefd[2]) {
+        if (pipefd[0] >= 0) close(pipefd[0]);
+        if (pipefd[1] >= 0) close(pipefd[1]);
+        pipefd[0] = pipefd[1] = -1;
+    };
+    auto close_all = [&]() {
+        close_pipe(stdin_pipe);
+        close_pipe(stdout_pipe);
+        close_pipe(stderr_pipe);
+    };
+    auto pipe_failure = [&](int error) {
+        close_all();
+        return ProcessResult{-1, "", "Failed to create pipe: " + std::string(strerror(error))};
+    };
+
+    if (pipe(stdin_pipe) < 0) return pipe_failure(errno);
+    if (pipe(stdout_pipe) < 0) return pipe_failure(errno);
+    if (pipe(stderr_pipe) < 0) return pipe_failure(errno);
 
     posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    posix_spawn_file_actions_addclose(&actions, stdin_pipe[0]);
-    posix_spawn_file_actions_addclose(&actions, stdout_pipe[0]);
-    posix_spawn_file_actions_addclose(&actions, stderr_pipe[0]);
-    posix_spawn_file_actions_adddup2(&actions, stdin_pipe[1], STDIN_FILENO);
-    posix_spawn_file_actions_adddup2(&actions, stdout_pipe[1], STDOUT_FILENO);
-    posix_spawn_file_actions_adddup2(&actions, stderr_pipe[1], STDERR_FILENO);
-    posix_spawn_file_actions_addclose(&actions, stdin_pipe[1]);
-    posix_spawn_file_actions_addclose(&actions, stdout_pipe[1]);
-    posix_spawn_file_actions_addclose(&actions, stderr_pipe[1]);
+    int action_error = posix_spawn_file_actions_init(&actions);
+    if (action_error != 0) {
+        close_all();
+        return {-1, "", "Failed to prepare spawn: " + std::string(strerror(action_error))};
+    }
+    auto add_action = [&](int result) {
+        if (result == 0) return true;
+        action_error = result;
+        return false;
+    };
+    const bool actions_ready =
+        add_action(posix_spawn_file_actions_addclose(&actions, stdin_pipe[0])) &&
+        add_action(posix_spawn_file_actions_addclose(&actions, stdout_pipe[0])) &&
+        add_action(posix_spawn_file_actions_addclose(&actions, stderr_pipe[0])) &&
+        add_action(posix_spawn_file_actions_adddup2(&actions, stdin_pipe[1], STDIN_FILENO)) &&
+        add_action(posix_spawn_file_actions_adddup2(&actions, stdout_pipe[1], STDOUT_FILENO)) &&
+        add_action(posix_spawn_file_actions_adddup2(&actions, stderr_pipe[1], STDERR_FILENO)) &&
+        add_action(posix_spawn_file_actions_addclose(&actions, stdin_pipe[1])) &&
+        add_action(posix_spawn_file_actions_addclose(&actions, stdout_pipe[1])) &&
+        add_action(posix_spawn_file_actions_addclose(&actions, stderr_pipe[1]));
+    if (!actions_ready) {
+        posix_spawn_file_actions_destroy(&actions);
+        close_all();
+        return {-1, "", "Failed to prepare spawn: " + std::string(strerror(action_error))};
+    }
 
     std::vector<char*> c_argv;
     for (auto& s : argv) c_argv.push_back(const_cast<char*>(s.c_str()));
@@ -39,50 +77,126 @@ ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::s
     posix_spawn_file_actions_destroy(&actions);
 
     if (ret != 0) {
-        close(stdin_pipe[0]); close(stdin_pipe[1]);
-        close(stdout_pipe[0]); close(stdout_pipe[1]);
-        close(stderr_pipe[0]); close(stderr_pipe[1]);
+        close_all();
         return {-1, "", "Failed to spawn: " + std::string(strerror(ret))};
     }
 
     close(stdin_pipe[1]);
+    stdin_pipe[1] = -1;
     close(stdout_pipe[1]);
+    stdout_pipe[1] = -1;
     close(stderr_pipe[1]);
-
-    if (!stdin_data.empty()) {
-        write(stdin_pipe[0], stdin_data.c_str(), stdin_data.size());
+    stderr_pipe[1] = -1;
+    if (stdin_data.empty()) {
+        close(stdin_pipe[0]);
+        stdin_pipe[0] = -1;
     }
-    close(stdin_pipe[0]);
 
     std::string stdout_buf, stderr_buf;
     std::array<char, 4096> read_buf;
-    std::vector<pollfd> pfds = {
+    std::size_t stdin_offset = 0;
+    std::array<pollfd, 3> pfds = {{
+        {stdin_data.empty() ? -1 : stdin_pipe[0],
+         static_cast<short>(stdin_data.empty() ? 0 : POLLOUT), 0},
         {stdout_pipe[0], POLLIN, 0},
         {stderr_pipe[0], POLLIN, 0}
+    }};
+
+    auto set_nonblocking = [](int fd) {
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags < 0) return false;
+        return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+    };
+    std::string stdin_error;
+    if (pfds[0].fd >= 0 && !set_nonblocking(pfds[0].fd)) {
+        stdin_error = "stdin fcntl: " + std::string(strerror(errno));
+        close(pfds[0].fd);
+        pfds[0].fd = -1;
+    }
+    // Nonblocking output reads let us drain both streams without ever waiting
+    // on one pipe while the other is full.
+    if (!set_nonblocking(pfds[1].fd)) pfds[1].events = POLLIN;
+    if (!set_nonblocking(pfds[2].fd)) pfds[2].events = POLLIN;
+
+    // A child may close stdin before all input is written. Ignore SIGPIPE for
+    // this synchronous write window so the error can be returned instead of
+    // terminating the launcher.
+    struct sigaction ignore_sigpipe{};
+    struct sigaction old_sigpipe{};
+    sigemptyset(&ignore_sigpipe.sa_mask);
+    ignore_sigpipe.sa_handler = SIG_IGN;
+    const bool sigpipe_changed = sigaction(SIGPIPE, &ignore_sigpipe, &old_sigpipe) == 0;
+
+    auto close_stdin = [&]() {
+        if (pfds[0].fd >= 0) close(pfds[0].fd);
+        pfds[0].fd = -1;
+        pfds[0].events = 0;
+    };
+    auto read_output = [&](pollfd& pfd, std::string& output) {
+        if (pfd.fd < 0 || !(pfd.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))) return;
+        ssize_t n;
+        do {
+            n = read(pfd.fd, read_buf.data(), read_buf.size());
+        } while (n < 0 && errno == EINTR);
+        if (n > 0) output.append(read_buf.data(), static_cast<std::size_t>(n));
+        else if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+            close(pfd.fd);
+            pfd.fd = -1;
+        }
     };
 
     while (true) {
-        int poll_ret = poll(pfds.data(), pfds.size(), -1);
-        if (poll_ret <= 0) break;
-        if (pfds[0].revents & (POLLIN | POLLHUP)) {
-            ssize_t n = read(stdout_pipe[0], read_buf.data(), read_buf.size());
-            if (n > 0) stdout_buf.append(read_buf.data(), n);
-            else if (n == 0) pfds[0].fd = -1;
+        if (pfds[0].fd < 0 && pfds[1].fd < 0 && pfds[2].fd < 0) break;
+        int poll_ret;
+        do {
+            poll_ret = poll(pfds.data(), pfds.size(), -1);
+        } while (poll_ret < 0 && errno == EINTR);
+        if (poll_ret < 0) {
+            stdin_error = "poll: " + std::string(strerror(errno));
+            close_stdin();
+            if (pfds[1].fd >= 0) { close(pfds[1].fd); pfds[1].fd = -1; }
+            if (pfds[2].fd >= 0) { close(pfds[2].fd); pfds[2].fd = -1; }
+            kill(pid, SIGTERM);
+            break;
         }
-        if (pfds[1].revents & (POLLIN | POLLHUP)) {
-            ssize_t n = read(stderr_pipe[0], read_buf.data(), read_buf.size());
-            if (n > 0) stderr_buf.append(read_buf.data(), n);
-            else if (n == 0) pfds[1].fd = -1;
+
+        if (pfds[0].fd >= 0 && pfds[0].revents) {
+            if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+                stdin_error = "stdin pipe closed before all input was written";
+                close_stdin();
+            } else if (pfds[0].revents & POLLOUT) {
+                const std::size_t remaining = stdin_data.size() - stdin_offset;
+                const std::size_t chunk = std::min<std::size_t>(remaining, 64 * 1024);
+                ssize_t n;
+                do {
+                    n = write(pfds[0].fd, stdin_data.data() + stdin_offset, chunk);
+                } while (n < 0 && errno == EINTR);
+                if (n > 0) {
+                    stdin_offset += static_cast<std::size_t>(n);
+                    if (stdin_offset == stdin_data.size()) close_stdin();
+                } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                    stdin_error = "stdin write: " + std::string(strerror(errno));
+                    close_stdin();
+                }
+            }
         }
-        if (pfds[0].fd == -1 && pfds[1].fd == -1) break;
+        read_output(pfds[1], stdout_buf);
+        read_output(pfds[2], stderr_buf);
     }
 
-    close(stdout_pipe[0]);
-    close(stderr_pipe[0]);
+    if (sigpipe_changed) sigaction(SIGPIPE, &old_sigpipe, nullptr);
 
     int status;
-    waitpid(pid, &status, 0);
-    int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    pid_t waited;
+    do {
+        waited = waitpid(pid, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    int exit_code = waited == pid && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    if (!stdin_error.empty()) {
+        if (!stderr_buf.empty() && stderr_buf.back() != '\n') stderr_buf.push_back('\n');
+        stderr_buf += stdin_error;
+        stderr_buf.push_back('\n');
+    }
     return {exit_code, std::move(stdout_buf), std::move(stderr_buf)};
 }
 
