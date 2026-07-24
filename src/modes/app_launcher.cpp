@@ -8,6 +8,13 @@
 
 namespace waylaunch {
 
+namespace {
+std::string to_lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+    return s;
+}
+} // namespace
+
 AppLauncher::AppLauncher() = default;
 AppLauncher::~AppLauncher() = default;
 
@@ -133,6 +140,10 @@ void AppLauncher::parse_desktop_file(const std::string& path) {
         entry.exec = entry.exec.substr(0, pos);
     }
 
+    // Precompute the lowercased search haystack once (see DesktopEntry::search_key).
+    entry.search_key = to_lower(entry.name + ' ' + entry.generic_name + ' ' +
+                                entry.comment + ' ' + entry.categories);
+
     entries_.push_back(std::move(entry));
 }
 
@@ -142,26 +153,10 @@ std::vector<DesktopEntry> AppLauncher::search(const std::string& query) const {
     }
 
     std::vector<DesktopEntry> results;
-    std::string query_lower = query;
-    std::transform(query_lower.begin(), query_lower.end(), query_lower.begin(), ::tolower);
+    const std::string query_lower = to_lower(query);
 
     for (const auto& entry : entries_) {
-        std::string name_lower = entry.name;
-        std::transform(name_lower.begin(), name_lower.end(), name_lower.begin(), ::tolower);
-
-        std::string generic_lower = entry.generic_name;
-        std::transform(generic_lower.begin(), generic_lower.end(), generic_lower.begin(), ::tolower);
-
-        std::string comment_lower = entry.comment;
-        std::transform(comment_lower.begin(), comment_lower.end(), comment_lower.begin(), ::tolower);
-
-        std::string categories_lower = entry.categories;
-        std::transform(categories_lower.begin(), categories_lower.end(), categories_lower.begin(), ::tolower);
-
-        if (name_lower.find(query_lower) != std::string::npos ||
-            generic_lower.find(query_lower) != std::string::npos ||
-            comment_lower.find(query_lower) != std::string::npos ||
-            categories_lower.find(query_lower) != std::string::npos) {
+        if (entry.search_key.find(query_lower) != std::string::npos) {
             results.push_back(entry);
         }
     }

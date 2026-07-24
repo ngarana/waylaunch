@@ -113,11 +113,11 @@ fixes the original data race.
 
 | # | Where | Duplication | Status |
 |---|-------|-------------|--------|
-| D1 | `renderer.cpp` Pango boilerplate | `draw_text`, `draw_text_segments`, `text_width`, `draw_input_box` cursor, `draw_icon` monogram all repeat create-layout → font-desc → set text → measure/show → free. One `with_layout(font, text, fn)` helper removes all of it. | **Open** |
-| D2 | `renderer.cpp` `rounded_rect` vs `round_rect_path` | Same arc geometry written twice; `rounded_rect` should call `round_rect_path` then `fill`. | **Open** |
+| D1 | `renderer.cpp` Pango boilerplate | `draw_text`, `draw_markup`, `text_width`, `text_height`, `draw_icon` monogram all repeated create-layout → font-desc → set text → measure/show → free. | **Fixed.** A `with_layout(cr, font, text, fn)` helper owns the lifecycle; all five call sites use it. Golden test confirms pixel-identical output. |
+| D2 | `renderer.cpp` `rounded_rect` vs `round_rect_path` | Same arc geometry written twice. | **Fixed.** `rounded_rect` calls `round_rect_path` then `cairo_fill`. |
 | D3 | `wayland_core.cpp` SHM allocation | The layer-shell path now has one allocation path in `acquire_buffer`; the old XDG configure allocation duplicate was removed. | **Fixed** |
-| D4 | `app_launcher.cpp` `search()` | Lowercasing done 4× per entry per call; `FuzzyMatcher` exists but Apps mode rolls its own substring match. | **Open** |
-| D5 | `launcher_ui.cpp` `render_frame` | The "icon + name + description row" block is written twice (hero row and list rows) with slightly different offsets. | **Open** |
+| D4 | `app_launcher.cpp` `search()` | Lowercasing done 4× per entry on every keystroke. | **Fixed.** A lowercased `DesktopEntry::search_key` is built once at scan time; `search()` is one `find()` per entry. (No `FuzzyMatcher` existed — that was doc drift.) |
+| D5 | `launcher_ui.cpp` `render_frame` | The "icon + name + description row" block was written twice (hero row and list rows). | **Fixed.** A single `draw_row(item, y, selected, icon_size)` lambda renders both; hero-ness is just a larger icon argument. |
 
 ### 3.2 KISS / YAGNI — accidental complexity
 
@@ -336,13 +336,24 @@ Each phase is independently shippable and leaves `main` runnable.
 - [x] B6: collision-safe unlinked SHM files and checked allocation results.
 - [x] B8: checked pipe/write setup and nonblocking stdin/output multiplexing.
 
-### Phase 3 — Structural refactor (3–5 days)
+### Phase 3 — Structural refactor (in progress)
 
-- [ ] Introduce `ResultProvider` (§5.2); port Apps/Files/Content/Calculator to it.
-- [ ] Extract `Layout` (pure geometry) out of `render_frame`; add `with_layout` (D1).
-- [ ] Make `WaylandCore` members private; trim the public surface.
-- [ ] Fix D2 (`rounded_rect` → `round_rect_path`), D3 (SHM alloc extraction),
-      D4 (shared matcher), D5 (row rendering dedup).
+- [x] **D1–D5 DRY cleanups.** `with_layout` helper (D1); `rounded_rect`→
+      `round_rect_path` (D2); single SHM alloc path (D3); precomputed
+      `search_key` matcher (D4); single `draw_row` lambda (D5). All build-clean
+      and golden-test verified.
+- [x] **`WaylandCore` cross-module encapsulation.** Other modules no longer reach
+      into raw members — `seat()`, `modifier_active()`,
+      `foreign_toplevel_manager()` accessors added and `launcher_ui` migrated. The
+      remaining "C-ABI glue" members stay in the header (documented) because the
+      free-function `wl_listener` trampolines that fill them can't become class
+      members without pulling `<wayland-client.h>` into the forward-declared header.
+- [~] Extract `Layout` (pure geometry): largely done already — `SpotlightLayout`
+      + `relayout()` precompute `rows_`/`headers_`/`panel_total_h_`; `render_frame`
+      consumes the slots. Only panel origin math remains inline.
+- [ ] **Introduce `ResultProvider` (§5.2); port Apps/Files/Content/Calculator to
+      it.** The one large item left — restructures the search pipeline. Deferred
+      to its own focused change (see §7 note).
 
 ### Phase 4 — Wire config → behavior (2–3 days)
 

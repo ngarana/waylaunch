@@ -335,6 +335,12 @@ int32_t WaylandCore::surface_width() const { return pending_width_ > 0 ? pending
 int32_t WaylandCore::surface_height() const { return pending_height_ > 0 ? pending_height_ : output_height(); }
 wl_display* WaylandCore::display() const { return display_; }
 wl_surface* WaylandCore::surface() const { return surface_; }
+wl_seat* WaylandCore::seat() const { return seat_; }
+
+bool WaylandCore::modifier_active(const char* xkb_mod_name) const {
+    return kbd_.state &&
+           xkb_state_mod_name_is_active(kbd_.state, xkb_mod_name, XKB_STATE_MODS_EFFECTIVE);
+}
 
 Buffer* WaylandCore::acquire_buffer() {
     for (auto& buf : buffers_) {

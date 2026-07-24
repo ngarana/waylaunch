@@ -392,11 +392,11 @@ bool LauncherUI::init(Config& config) {
     // The backend + manager listener were set up before init() (above), so the
     // backend already holds the initial windows. Build the rest of the switcher,
     // which reads them via the manager's initial rebuild.
-    if (wayland_->foreign_toplevel_manager_)
-        switcher_backend_->bind_manager(wayland_->foreign_toplevel_manager_);  // fallback (no-op if already bound)
+    if (wayland_->foreign_toplevel_manager())
+        switcher_backend_->bind_manager(wayland_->foreign_toplevel_manager());  // fallback (no-op if already bound)
     switcher_manager_ = std::make_unique<AppSwitcherManager>(switcher_backend_.get());
     switcher_manager_->set_group_by_app(config.get().app_switcher.group_by_app);
-    switcher_input_ = std::make_unique<SwitcherInputController>(switcher_manager_.get(), wayland_->seat_);
+    switcher_input_ = std::make_unique<SwitcherInputController>(switcher_manager_.get(), wayland_->seat());
     switcher_renderer_ = std::make_unique<SwitcherRenderer>();
 
     switcher_manager_->set_change_callback([this]() {
@@ -1155,10 +1155,8 @@ void LauncherUI::on_key(uint32_t keysym, uint32_t utf32, bool pressed) {
         if (switcher_input_->handle_key(keysym, pressed)) return;
     }
 
-    bool alt = wayland_->kbd_.state && xkb_state_mod_name_is_active(
-        wayland_->kbd_.state, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE);
-    bool super = wayland_->kbd_.state && xkb_state_mod_name_is_active(
-        wayland_->kbd_.state, XKB_MOD_NAME_LOGO, XKB_STATE_MODS_EFFECTIVE);
+    bool alt = wayland_->modifier_active(XKB_MOD_NAME_ALT);
+    bool super = wayland_->modifier_active(XKB_MOD_NAME_LOGO);
 
     if ((alt || super) && keysym == XKB_KEY_Tab && pressed && switcher_input_) {
         switcher_input_->trigger();
@@ -1167,8 +1165,7 @@ void LauncherUI::on_key(uint32_t keysym, uint32_t utf32, bool pressed) {
 
     if (!pressed) return;
 
-    bool ctrl = wayland_->kbd_.state && xkb_state_mod_name_is_active(
-        wayland_->kbd_.state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE);
+    bool ctrl = wayland_->modifier_active(XKB_MOD_NAME_CTRL);
 
     if (ctrl) {
         if (keysym == XKB_KEY_j || keysym == XKB_KEY_Down) { select_item(selected_index_ + 1); return; }

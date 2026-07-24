@@ -119,8 +119,13 @@ public:
 
     wl_display* display() const;
     wl_surface* surface() const;
+    wl_seat* seat() const;        // for clients that need the seat (e.g. switcher activate)
     bool is_running() const;
     bool is_configured() const;   // true once the (layer/xdg) surface has been configured
+
+    // Is a modifier (by its xkb name, e.g. XKB_MOD_NAME_ALT) currently held? Keeps
+    // the xkb_state detail inside WaylandCore instead of exposing kbd_ to callers.
+    bool modifier_active(const char* xkb_mod_name) const;
 
     // Client-side backdrop capture for glassmorphism: grabs the primary output
     // into an SHM buffer BEFORE the overlay is mapped, so we can blur it ourselves.
@@ -143,7 +148,13 @@ public:
     void handle_output_name(const std::string& name);
     void handle_buffer_release(wl_buffer* buf);
 
-    // Public for C trampolines
+    // C-ABI glue: these are written by the free-function wl_listener trampolines
+    // in wayland_core.cpp (which take a void* and cast to WaylandCore). They are
+    // implementation state, NOT the public API — other modules go through the
+    // accessors above (seat(), modifier_active(), foreign_toplevel_manager(), the
+    // set_*_handler setters). They stay in the header only because the C callbacks
+    // that fill them can't be class members without pulling <wayland-client.h>
+    // (wl_fixed_t et al.) into this otherwise forward-declared header.
     wl_keyboard* keyboard_ = nullptr;
     wl_pointer* pointer_ = nullptr;
     double pointer_x_ = 0, pointer_y_ = 0;
@@ -168,6 +179,7 @@ public:
     using ForeignToplevelListener = std::function<void(zwlr_foreign_toplevel_manager_v1*)>;
     ForeignToplevelListener foreign_toplevel_listener_;
     void set_foreign_toplevel_listener(ForeignToplevelListener h) { foreign_toplevel_listener_ = std::move(h); }
+    zwlr_foreign_toplevel_manager_v1* foreign_toplevel_manager() const { return foreign_toplevel_manager_; }
 #endif
 
 #ifdef HAS_SCREENCOPY

@@ -15,6 +15,10 @@ struct DesktopEntry {
     std::string desktop_path;   // source .desktop file (for "reveal in files")
     bool no_display = false;
     bool hidden = false;
+    // Lowercased "name generic comment categories", built once at scan time so
+    // search() is a single find() per entry instead of re-lowercasing 4 fields
+    // on every keystroke.
+    std::string search_key;
 };
 
 class AppLauncher {
