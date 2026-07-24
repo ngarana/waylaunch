@@ -218,9 +218,9 @@ shutdown  = "shut down your computer now"
 
 ### 4.7 Compositor integration
 
-- Detect `wlr-layer-shell` via `WaylandCore`. If absent, fall back to a `xdg_toplevel`
-  centered, always-on-top window — identical behaviour contract to the existing
-  switcher fallback.
+- Require `wlr-layer-shell` via `WaylandCore`; the power HUD uses the same
+  exclusive overlay surface as the launcher and does not fall back to an
+  `xdg_toplevel` window.
 - On confirm, the overlay **destroys its Wayland surface first, then launches the
   command** to avoid the overlay staying visible during the action.
 - A graceful 250ms destroy/hide animation is **not required** for v1; `hide()`

@@ -29,9 +29,7 @@ A minimal, fast, keyboard-first Wayland-native launcher. One keystroke opens a u
 - `cairo` — 2D graphics
 - `pango` + `pangocairo` — Text rendering
 - `fontconfig` — Font discovery
-- `gtk+-3.0` — Icon theme lookup (planned for removal)
-- `gdk-pixbuf-2.0` — Image loading (planned for removal)
-- `librsvg-2.0` — SVG icon rendering
+- `librsvg-2.0` — SVG icon rendering (PNG loading uses Cairo)
 - `sqlite` (FTS5) — content-search index
 - `zstd` (`libzstd`) — compresses extracted document text in the index
 - `file`/`libmagic` — MIME detection for the content indexer (optional; falls back to extensions)
@@ -57,7 +55,7 @@ A minimal, fast, keyboard-first Wayland-native launcher. One keystroke opens a u
 ```bash
 # Install dependencies (Arch Linux)
 sudo pacman -S wayland wayland-protocols libxkbcommon cairo pango fontconfig \
-               gtk3 gdk-pixbuf2 librsvg sqlite zstd file tomlplusplus
+               librsvg sqlite zstd file tomlplusplus
 
 # Install optional file search + content extractors
 sudo pacman -S fd unzip poppler pandoc odt2txt
@@ -344,8 +342,7 @@ src/
 
 ## Protocol Support
 
-- **wlr-layer-shell** — Overlay panel with keyboard grab (wlroots compositors)
-- **xdg-shell** — Fallback windowed mode (all compositors)
+- **wlr-layer-shell** — Exclusive overlay panel with keyboard grab (required)
 - **wlr-screencopy** — Desktop capture for client-side glassmorphism
 
 ## License

@@ -13,8 +13,7 @@ pkg_check_modules(XKBCOMMON REQUIRED xkbcommon)
 pkg_check_modules(CAIRO REQUIRED cairo)
 pkg_check_modules(PANGO REQUIRED pangocairo)
 pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
-pkg_check_modules(GDK_PIXBUF REQUIRED gdk-pixbuf-2.0)
-pkg_check_modules(GTK REQUIRED gtk+-3.0)
+pkg_check_modules(LIBRSVG REQUIRED librsvg-2.0)
 
 # Content-search index (waylaunchd + read-only launcher queries).
 pkg_check_modules(SQLITE3 REQUIRED sqlite3)
@@ -29,7 +28,9 @@ find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
 set(PROTOCOL_BUILD_DIR ${CMAKE_BINARY_DIR}/protocols)
 file(MAKE_DIRECTORY ${PROTOCOL_BUILD_DIR})
 
-# XDG Shell protocol
+# layer-shell's protocol XML imports xdg-shell types for popup-related
+# requests. Generate those interfaces for the linker, but do not create an
+# xdg_surface/xdg_toplevel in the application.
 pkg_check_modules(WAYLAND_PROTOCOLS wayland-protocols)
 find_file(XDG_SHELL_XML xdg-shell.xml
     PATHS ${WAYLAND_PROTOCOLS_DATADIR}/wayland-protocols/stable/xdg-shell
@@ -37,7 +38,6 @@ find_file(XDG_SHELL_XML xdg-shell.xml
 if(NOT XDG_SHELL_XML)
     set(XDG_SHELL_XML "${WAYLAND_PROTOCOLS_PREFIX}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml")
 endif()
-
 add_custom_command(
     OUTPUT ${PROTOCOL_BUILD_DIR}/xdg-shell-protocol.c ${PROTOCOL_BUILD_DIR}/xdg-shell-client-protocol.h
     COMMAND ${WAYLAND_SCANNER} private-code ${XDG_SHELL_XML} ${PROTOCOL_BUILD_DIR}/xdg-shell-protocol.c
@@ -45,20 +45,20 @@ add_custom_command(
     DEPENDS ${XDG_SHELL_XML}
 )
 
-# wlr-layer-shell protocol (unstable)
+# wlr-layer-shell is the only surface protocol used by the launcher. A normal
+# xdg_toplevel is never instantiated: the overlay requires exclusive keyboard
+# interactivity and must not silently degrade into a regular window.
 set(LAYER_SHELL_XML ${CMAKE_SOURCE_DIR}/protocols/wlr-layer-shell-unstable-v1.xml)
-if(EXISTS ${LAYER_SHELL_XML})
-    add_custom_command(
-        OUTPUT ${PROTOCOL_BUILD_DIR}/wlr-layer-shell-protocol.c ${PROTOCOL_BUILD_DIR}/wlr-layer-shell-client-protocol.h
-        COMMAND ${WAYLAND_SCANNER} private-code ${LAYER_SHELL_XML} ${PROTOCOL_BUILD_DIR}/wlr-layer-shell-protocol.c
-        COMMAND ${WAYLAND_SCANNER} client-header ${LAYER_SHELL_XML} ${PROTOCOL_BUILD_DIR}/wlr-layer-shell-client-protocol.h
-        DEPENDS ${LAYER_SHELL_XML}
-    )
-    set(HAS_LAYER_SHELL TRUE)
-else()
-    message(WARNING "wlr-layer-shell protocol XML not found, layer-shell support disabled")
-    set(HAS_LAYER_SHELL FALSE)
+if(NOT EXISTS ${LAYER_SHELL_XML})
+    message(FATAL_ERROR "wlr-layer-shell protocol XML is required")
 endif()
+add_custom_command(
+    OUTPUT ${PROTOCOL_BUILD_DIR}/wlr-layer-shell-protocol.c ${PROTOCOL_BUILD_DIR}/wlr-layer-shell-client-protocol.h
+    COMMAND ${WAYLAND_SCANNER} private-code ${LAYER_SHELL_XML} ${PROTOCOL_BUILD_DIR}/wlr-layer-shell-protocol.c
+    COMMAND ${WAYLAND_SCANNER} client-header ${LAYER_SHELL_XML} ${PROTOCOL_BUILD_DIR}/wlr-layer-shell-client-protocol.h
+    DEPENDS ${LAYER_SHELL_XML}
+)
+set(HAS_LAYER_SHELL TRUE)
 
 # wlr-screencopy protocol (for client-side backdrop blur / glassmorphism)
 set(SCREENCOPY_XML ${CMAKE_SOURCE_DIR}/protocols/wlr-screencopy-unstable-v1.xml)
@@ -91,10 +91,8 @@ endif()
 # Collect generated protocol sources
 set(PROTOCOL_SOURCES
     ${PROTOCOL_BUILD_DIR}/xdg-shell-protocol.c
+    ${PROTOCOL_BUILD_DIR}/wlr-layer-shell-protocol.c
 )
-if(HAS_LAYER_SHELL)
-    list(APPEND PROTOCOL_SOURCES ${PROTOCOL_BUILD_DIR}/wlr-layer-shell-protocol.c)
-endif()
 if(HAS_SCREENCOPY)
     list(APPEND PROTOCOL_SOURCES ${PROTOCOL_BUILD_DIR}/wlr-screencopy-protocol.c)
 endif()
@@ -170,8 +168,7 @@ target_include_directories(waylaunch PRIVATE
     ${CAIRO_INCLUDE_DIRS}
     ${PANGO_INCLUDE_DIRS}
     ${FONTCONFIG_INCLUDE_DIRS}
-    ${GDK_PIXBUF_INCLUDE_DIRS}
-    ${GTK_INCLUDE_DIRS}
+    ${LIBRSVG_INCLUDE_DIRS}
 )
 
 target_link_libraries(waylaunch PRIVATE
@@ -181,8 +178,7 @@ target_link_libraries(waylaunch PRIVATE
     ${CAIRO_LIBRARIES}
     ${PANGO_LIBRARIES}
     ${FONTCONFIG_LIBRARIES}
-    ${GDK_PIXBUF_LIBRARIES}
-    ${GTK_LIBRARIES}
+    ${LIBRSVG_LIBRARIES}
     rt   # for shm_open
     m    # math
 )
@@ -193,15 +189,12 @@ target_compile_options(waylaunch PRIVATE
     ${CAIRO_CFLAGS}
     ${PANGO_CFLAGS}
     ${FONTCONFIG_CFLAGS}
-    ${GDK_PIXBUF_CFLAGS}
-    ${GTK_CFLAGS}
+    ${LIBRSVG_CFLAGS}
     -Wall -Wextra -Wpedantic
 )
 
 # Add compile definitions for protocol support
-if(HAS_LAYER_SHELL)
-    target_compile_definitions(waylaunch PRIVATE HAS_LAYER_SHELL)
-endif()
+target_compile_definitions(waylaunch PRIVATE HAS_LAYER_SHELL)
 if(HAS_SCREENCOPY)
     target_compile_definitions(waylaunch PRIVATE HAS_SCREENCOPY)
 endif()
@@ -250,8 +243,7 @@ if(BUILD_TESTING)
         ${CAIRO_INCLUDE_DIRS}
         ${PANGO_INCLUDE_DIRS}
         ${FONTCONFIG_INCLUDE_DIRS}
-        ${GDK_PIXBUF_INCLUDE_DIRS}
-        ${GTK_INCLUDE_DIRS}
+        ${LIBRSVG_INCLUDE_DIRS}
     )
     target_link_libraries(app_switcher_test PRIVATE
         ${WAYLAND_LIBRARIES}
@@ -259,8 +251,7 @@ if(BUILD_TESTING)
         ${CAIRO_LIBRARIES}
         ${PANGO_LIBRARIES}
         ${FONTCONFIG_LIBRARIES}
-        ${GDK_PIXBUF_LIBRARIES}
-        ${GTK_LIBRARIES}
+        ${LIBRSVG_LIBRARIES}
     )
     if(HAS_FOREIGN_TOPLEVEL)
         target_compile_definitions(app_switcher_test PRIVATE HAS_FOREIGN_TOPLEVEL)

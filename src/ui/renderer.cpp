@@ -1,14 +1,19 @@
 #include "waylaunch/renderer.h"
 #include <cairo/cairo.h>
 #include <pango/pangocairo.h>
+#include <librsvg/rsvg.h>
 #include <cstring>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
+#include <unordered_set>
 #include <unordered_map>
 #include <memory>
-#include <gdk-pixbuf/gdk-pixbuf.h>
-#include <gtk/gtk.h>
 
 namespace waylaunch {
 
@@ -313,16 +318,258 @@ int Renderer::text_height(const RenderFontConfig& font) {
 }
 
 namespace {
-// tiny RAII for gdk pixbuf
-struct PixbufDeleter { void operator()(GdkPixbuf* p) { if (p) g_object_unref(p); } };
-using PixbufPtr = std::unique_ptr<GdkPixbuf, PixbufDeleter>;
-
 // cache of loaded cairo surfaces keyed by "name@size"
 struct IconCache {
     std::unordered_map<std::string, cairo_surface_t*> map;
     ~IconCache() { for (auto& kv : map) cairo_surface_destroy(kv.second); }
 };
 IconCache& icon_cache() { static IconCache c; return c; }
+
+namespace fs = std::filesystem;
+
+std::string trim(std::string value) {
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return {};
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+std::vector<std::string> split_csv(const std::string& value) {
+    std::vector<std::string> result;
+    std::stringstream stream(value);
+    std::string item;
+    while (std::getline(stream, item, ',')) {
+        item = trim(item);
+        if (!item.empty()) result.push_back(item);
+    }
+    return result;
+}
+
+struct ThemeDirectory {
+    std::string name;
+    std::string type;
+    int size = 0;
+    int min_size = 0;
+    int max_size = 0;
+    int threshold = 2;
+};
+
+struct IconTheme {
+    std::vector<std::string> directories;
+    std::vector<std::string> inherits;
+    std::unordered_map<std::string, ThemeDirectory> metadata;
+};
+
+bool read_theme_index(const fs::path& path, IconTheme& theme) {
+    std::ifstream file(path);
+    if (!file) return false;
+
+    std::string section;
+    std::string line;
+    while (std::getline(file, line)) {
+        line = trim(line);
+        if (line.empty() || line[0] == '#' || line[0] == ';') continue;
+        if (line.front() == '[' && line.back() == ']') {
+            section = line.substr(1, line.size() - 2);
+            continue;
+        }
+        const auto equals = line.find('=');
+        if (equals == std::string::npos) continue;
+        const std::string key = trim(line.substr(0, equals));
+        const std::string value = trim(line.substr(equals + 1));
+        if (section == "Icon Theme") {
+            if (key == "Directories") theme.directories = split_csv(value);
+            else if (key == "Inherits") theme.inherits = split_csv(value);
+            continue;
+        }
+        if (section.rfind("Icon Theme ", 0) == 0) continue;
+        if (section.empty()) continue;
+        auto& directory = theme.metadata[section];
+        directory.name = section;
+        try {
+            if (key == "Type") directory.type = value;
+            else if (key == "Size") directory.size = std::stoi(value);
+            else if (key == "MinSize") directory.min_size = std::stoi(value);
+            else if (key == "MaxSize") directory.max_size = std::stoi(value);
+            else if (key == "Threshold") directory.threshold = std::stoi(value);
+        } catch (const std::exception&) {
+            // A malformed optional index entry should not make icons disappear.
+        }
+    }
+    return true;
+}
+
+std::string configured_icon_theme() {
+    if (const char* theme = std::getenv("WAYLAUNCH_ICON_THEME"); theme && *theme)
+        return theme;
+    // GTK_ICON_THEME is a setting, not a GTK runtime dependency. Honour it so
+    // waylaunch follows an explicitly selected desktop theme.
+    if (const char* theme = std::getenv("GTK_ICON_THEME"); theme && *theme)
+        return theme;
+
+    const char* config_home = std::getenv("XDG_CONFIG_HOME");
+    const char* home = std::getenv("HOME");
+    fs::path settings = config_home && *config_home
+        ? fs::path(config_home) / "gtk-3.0/settings.ini"
+        : (home && *home ? fs::path(home) / ".config/gtk-3.0/settings.ini" : fs::path{});
+    std::ifstream file(settings);
+    std::string section;
+    std::string line;
+    while (file && std::getline(file, line)) {
+        line = trim(line);
+        if (line.size() >= 2 && line.front() == '[' && line.back() == ']') {
+            section = line.substr(1, line.size() - 2);
+        } else if (section == "Settings") {
+            const auto equals = line.find('=');
+            if (equals != std::string::npos && trim(line.substr(0, equals)) == "gtk-icon-theme-name")
+                return trim(line.substr(equals + 1));
+        }
+    }
+    return {};
+}
+
+std::vector<fs::path> icon_roots() {
+    std::vector<fs::path> roots;
+    if (const char* data_home = std::getenv("XDG_DATA_HOME"); data_home && *data_home) {
+        roots.emplace_back(data_home);
+    } else if (const char* home = std::getenv("HOME"); home && *home) {
+        roots.emplace_back(fs::path(home) / ".local/share");
+    }
+
+    const char* data_dirs = std::getenv("XDG_DATA_DIRS");
+    std::string dirs = data_dirs && *data_dirs ? data_dirs : "/usr/local/share:/usr/share";
+    std::stringstream stream(dirs);
+    std::string dir;
+    while (std::getline(stream, dir, ':')) if (!dir.empty()) roots.emplace_back(dir);
+    return roots;
+}
+
+fs::path image_with_extension(const fs::path& directory, const std::string& name) {
+    std::error_code error;
+    for (const char* extension : {".svg", ".png"}) {
+        fs::path candidate = directory / (name + extension);
+        if (fs::is_regular_file(candidate, error)) return candidate;
+        error.clear();
+    }
+    return {};
+}
+
+fs::path find_icon_in_theme(const fs::path& theme_root, const std::string& name, int size,
+                            std::unordered_set<std::string>& visited) {
+    const std::string theme_key = theme_root.lexically_normal().string();
+    if (!visited.insert(theme_key).second) return {};
+
+    IconTheme theme;
+    const bool has_index = read_theme_index(theme_root / "index.theme", theme);
+    std::vector<ThemeDirectory> directories;
+    if (has_index) {
+        for (const auto& name_entry : theme.directories) {
+            auto it = theme.metadata.find(name_entry);
+            ThemeDirectory directory;
+            directory.name = name_entry;
+            if (it != theme.metadata.end()) directory = it->second;
+            directories.push_back(std::move(directory));
+        }
+    }
+    if (directories.empty()) {
+        // A few themes omit index.theme. These are the conventional locations
+        // used by hicolor and simple application themes.
+        directories = {{"scalable", "Scalable", 0, 0, 0, 0},
+                       {"48x48", "Fixed", 48, 0, 0, 0},
+                       {"32x32", "Fixed", 32, 0, 0, 0},
+                       {"24x24", "Fixed", 24, 0, 0, 0},
+                       {"16x16", "Fixed", 16, 0, 0, 0},
+                       {"", "", 0, 0, 0, 0}};
+    }
+    std::stable_sort(directories.begin(), directories.end(), [size](const auto& left, const auto& right) {
+        auto distance = [size](const ThemeDirectory& directory) {
+            if (directory.type == "Scalable") {
+                if (directory.min_size > 0 && size < directory.min_size) return directory.min_size - size;
+                if (directory.max_size > 0 && size > directory.max_size) return size - directory.max_size;
+                return 0;
+            }
+            return std::abs(directory.size - size);
+        };
+        return distance(left) < distance(right);
+    });
+    for (const auto& directory : directories) {
+        if (auto candidate = image_with_extension(theme_root / directory.name, name); !candidate.empty())
+            return candidate;
+    }
+
+    for (const auto& inherited : theme.inherits) {
+        if (auto candidate = find_icon_in_theme(theme_root.parent_path() / inherited, name, size, visited);
+            !candidate.empty()) return candidate;
+    }
+    return {};
+}
+
+fs::path resolve_icon_path(const std::string& name, int size) {
+    std::error_code error;
+    fs::path direct(name);
+    if (fs::is_regular_file(direct, error)) return direct;
+
+    std::vector<std::string> themes;
+    if (const std::string current = configured_icon_theme(); !current.empty()) themes.push_back(current);
+    themes.push_back("hicolor");
+    std::unordered_set<std::string> seen_themes;
+    for (const auto& root : icon_roots()) {
+        for (const auto& theme : themes) {
+            if (!seen_themes.insert(root.string() + "\n" + theme).second) continue;
+            if (auto candidate = find_icon_in_theme(root / "icons" / theme, name, size, seen_themes);
+                !candidate.empty()) return candidate;
+        }
+    }
+
+    if (const char* home = std::getenv("HOME"); home && *home) {
+        for (const auto& theme : themes) {
+            if (auto candidate = find_icon_in_theme(fs::path(home) / ".icons" / theme, name, size, seen_themes);
+                !candidate.empty()) return candidate;
+        }
+    }
+    fs::path pixmaps = "/usr/share/pixmaps";
+    if (auto candidate = image_with_extension(pixmaps, name); !candidate.empty()) return candidate;
+    return {};
+}
+
+cairo_surface_t* load_svg_surface(const fs::path& path, int size) {
+    GError* error = nullptr;
+    RsvgHandle* handle = rsvg_handle_new_from_file(path.c_str(), &error);
+    if (!handle) {
+        if (error) g_error_free(error);
+        return nullptr;
+    }
+    cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+    cairo_t* cr = cairo_create(surface);
+    cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+    cairo_paint(cr);
+    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+    const RsvgRectangle viewport{0.0, 0.0, static_cast<double>(size), static_cast<double>(size)};
+    const bool rendered = cairo_status(cr) == CAIRO_STATUS_SUCCESS &&
+                          rsvg_handle_render_document(handle, cr, &viewport, &error);
+    cairo_destroy(cr);
+    g_object_unref(handle);
+    if (error) g_error_free(error);
+    if (!rendered || cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+        cairo_surface_destroy(surface);
+        return nullptr;
+    }
+    return surface;
+}
+
+cairo_surface_t* load_image_surface(const fs::path& path, int size) {
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (extension == ".svg") return load_svg_surface(path, size);
+    if (extension != ".png") return nullptr;
+    cairo_surface_t* surface = cairo_image_surface_create_from_png(path.c_str());
+    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+        cairo_surface_destroy(surface);
+        return nullptr;
+    }
+    return surface;
+}
 
 std::string monogram_of(const std::string& label) {
     for (char c : label) {
@@ -343,57 +590,8 @@ cairo_surface_t* Renderer::load_icon_surface(const std::string& icon_name, int s
 
     cairo_surface_t* result = nullptr;
 
-    auto pixbuf_to_surface = [](GdkPixbuf* pb) -> cairo_surface_t* {
-        int w = gdk_pixbuf_get_width(pb);
-        int h = gdk_pixbuf_get_height(pb);
-        cairo_surface_t* s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
-        if (!s || cairo_surface_status(s) != CAIRO_STATUS_SUCCESS) return nullptr;
-        unsigned char* dst = cairo_image_surface_get_data(s);
-        int dstride = cairo_image_surface_get_stride(s);
-        const unsigned char* src = gdk_pixbuf_get_pixels(pb);
-        int sstride = gdk_pixbuf_get_rowstride(pb);
-        int nch = gdk_pixbuf_get_n_channels(pb);
-        bool has_alpha = gdk_pixbuf_get_has_alpha(pb);
-        cairo_surface_flush(s);
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                const unsigned char* p = src + y * sstride + x * nch;
-                unsigned char* d = dst + y * dstride + x * 4;
-                unsigned char a = has_alpha ? p[3] : 255;
-                d[0] = (p[2] * a) / 255;
-                d[1] = (p[1] * a) / 255;
-                d[2] = (p[0] * a) / 255;
-                d[3] = a;
-            }
-        }
-        cairo_surface_mark_dirty(s);
-        return s;
-    };
-
-    // 1) Direct file path (png/svg)
-    if (!icon_name.empty() && (icon_name[0] == '/' || icon_name.find('.') != std::string::npos)) {
-        GError* err = nullptr;
-        PixbufPtr pb(gdk_pixbuf_new_from_file_at_size(icon_name.c_str(), size, size, &err));
-        if (err) { g_error_free(err); err = nullptr; }
-        if (pb) result = pixbuf_to_surface(pb.get());
-    }
-
-    // 2) Freedesktop icon theme lookup via GTK (no screen needed)
-    if (!result) {
-        GtkIconTheme* theme = gtk_icon_theme_new();
-        if (theme) {
-            const char* name = std::getenv("GTK_ICON_THEME");
-            if (name) gtk_icon_theme_set_custom_theme(theme, name);
-            GdkPixbuf* raw = gtk_icon_theme_load_icon_for_scale(
-                theme, icon_name.c_str(), size, 1,
-                static_cast<GtkIconLookupFlags>(GTK_ICON_LOOKUP_USE_BUILTIN), nullptr);
-            if (raw) {
-                PixbufPtr pb(raw);
-                result = pixbuf_to_surface(pb.get());
-            }
-            g_object_unref(theme);
-        }
-    }
+    const fs::path path = resolve_icon_path(icon_name, size);
+    if (!path.empty()) result = load_image_surface(path, size);
 
     icon_cache().map[key] = result;
     return result;

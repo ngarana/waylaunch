@@ -18,14 +18,8 @@ struct wl_output;
 struct wl_surface;
 struct wl_buffer;
 struct wl_shm_pool;
-struct xdg_wm_base;
-struct xdg_surface;
-struct xdg_toplevel;
-
-#ifdef HAS_LAYER_SHELL
 struct zwlr_layer_shell_v1;
 struct zwlr_layer_surface_v1;
-#endif
 
 #ifdef HAS_FOREIGN_TOPLEVEL
 struct zwlr_foreign_toplevel_manager_v1;
@@ -147,9 +141,6 @@ public:
     void handle_output_mode(uint32_t flags, int32_t width, int32_t height, int32_t refresh);
     void handle_output_scale(int32_t factor);
     void handle_output_name(const std::string& name);
-    void handle_xdg_surface_configure(uint32_t serial);
-    void handle_xdg_toplevel_configure(int32_t width, int32_t height);
-    void handle_xdg_toplevel_close();
     void handle_buffer_release(wl_buffer* buf);
 
     // Public for C trampolines
@@ -160,7 +151,6 @@ public:
     wl_compositor* compositor_ = nullptr;
     wl_shm* shm_ = nullptr;
     wl_seat* seat_ = nullptr;
-    xdg_wm_base* xdg_wm_base_ = nullptr;
     std::vector<OutputInfo> outputs_;
     std::vector<std::unique_ptr<Buffer>> buffers_;
     KeyHandler key_handler_;
@@ -170,10 +160,8 @@ public:
     CloseHandler close_handler_;
     RedrawHandler redraw_handler_;
 
-#ifdef HAS_LAYER_SHELL
     zwlr_layer_shell_v1* layer_shell_ = nullptr;
     zwlr_layer_surface_v1* layer_surface_ = nullptr;
-#endif
 
 #ifdef HAS_FOREIGN_TOPLEVEL
     zwlr_foreign_toplevel_manager_v1* foreign_toplevel_manager_ = nullptr;
@@ -208,8 +196,6 @@ private:
     wl_display* display_ = nullptr;
     wl_registry* registry_ = nullptr;
     wl_surface* surface_ = nullptr;
-    xdg_surface* xdg_surface_ = nullptr;
-    xdg_toplevel* toplevel_ = nullptr;
 
     bool running_ = false;
     bool want_backdrop_ = true;

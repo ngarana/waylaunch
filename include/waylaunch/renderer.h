@@ -66,9 +66,9 @@ public:
     // Draw a macOS-style search (magnifier) glyph at (cx, cy).
     void draw_search_glyph(int cx, int cy, int size, const Color& color);
 
-    // Draw a rounded icon: tries to load the freedesktop icon by name (or an
-    // absolute/relative image path) via gdk-pixbuf, falls back to a monogram
-    // drawn from `label` on an accent-tinted rounded square.
+    // Draw a rounded icon: resolves a freedesktop icon name (or an
+    // absolute/relative PNG/SVG path), falling back to a monogram drawn from
+    // `label` on an accent-tinted rounded square.
     void draw_icon(int x, int y, int size, const std::string& icon_name,
                    const std::string& label, const Color& accent);
 

@@ -13,10 +13,7 @@
 namespace { bool wl_dbg() { static bool v = std::getenv("WAYLAUNCH_DEBUG") != nullptr; return v; } }
 
 extern "C" {
-#include "xdg-shell-client-protocol.h"
-#ifdef HAS_LAYER_SHELL
 #include "wlr-layer-shell-client-protocol.h"
-#endif
 #ifdef HAS_SCREENCOPY
 #include "wlr-screencopy-client-protocol.h"
 #endif
@@ -69,29 +66,6 @@ KeyboardState::~KeyboardState() {
 static void registry_global_cb(void* data, wl_registry* reg, uint32_t name, const char* interface, uint32_t version);
 static void registry_global_remove_cb(void* data, wl_registry* reg, uint32_t name);
 static const wl_registry_listener registry_listener = { .global = registry_global_cb, .global_remove = registry_global_remove_cb };
-
-static void xdg_surface_configure_cb(void* data, xdg_surface*, uint32_t serial) {
-    static_cast<WaylandCore*>(data)->handle_xdg_surface_configure(serial);
-}
-static const xdg_surface_listener xdg_surface_listener = { .configure = xdg_surface_configure_cb };
-
-static void xdg_toplevel_configure_cb(void* data, xdg_toplevel*, int32_t w, int32_t h, wl_array*) {
-    static_cast<WaylandCore*>(data)->handle_xdg_toplevel_configure(w, h);
-}
-static void xdg_toplevel_close_cb(void* data, xdg_toplevel*) {
-    static_cast<WaylandCore*>(data)->handle_xdg_toplevel_close();
-}
-static void xdg_toplevel_configure_bounds_cb(void*, xdg_toplevel*, int32_t, int32_t) {}
-static void xdg_toplevel_wm_capabilities_cb(void*, xdg_toplevel*, wl_array*) {}
-static const xdg_toplevel_listener xdg_toplevel_listener = {
-    .configure = xdg_toplevel_configure_cb,
-    .close = xdg_toplevel_close_cb,
-    .configure_bounds = xdg_toplevel_configure_bounds_cb,
-    .wm_capabilities = xdg_toplevel_wm_capabilities_cb,
-};
-
-static void xdg_wm_base_ping_cb(void*, xdg_wm_base* base, uint32_t serial) { xdg_wm_base_pong(base, serial); }
-static const xdg_wm_base_listener xdg_wm_base_listener = { .ping = xdg_wm_base_ping_cb };
 
 // Buffer release
 static void wl_buffer_release_cb(void* data, wl_buffer* buf) {
@@ -213,9 +187,6 @@ static void registry_global_cb(void* data, wl_registry* reg, uint32_t name, cons
         self->compositor_ = static_cast<wl_compositor*>(wl_registry_bind(reg, name, &wl_compositor_interface, 4));
     } else if (std::strcmp(interface, wl_shm_interface.name) == 0) {
         self->shm_ = static_cast<wl_shm*>(wl_registry_bind(reg, name, &wl_shm_interface, 1));
-    } else if (std::strcmp(interface, xdg_wm_base_interface.name) == 0) {
-        self->xdg_wm_base_ = static_cast<xdg_wm_base*>(wl_registry_bind(reg, name, &xdg_wm_base_interface, 1));
-        xdg_wm_base_add_listener(self->xdg_wm_base_, &xdg_wm_base_listener, self);
     } else if (std::strcmp(interface, wl_seat_interface.name) == 0) {
         self->seat_ = static_cast<wl_seat*>(wl_registry_bind(reg, name, &wl_seat_interface, 1));
         wl_seat_add_listener(self->seat_, &seat_listener, self);
@@ -224,11 +195,9 @@ static void registry_global_cb(void* data, wl_registry* reg, uint32_t name, cons
         self->outputs_.push_back({output, 0, 0, 1, ""});
         wl_output_add_listener(output, &output_listener, self);
     }
-#ifdef HAS_LAYER_SHELL
     else if (std::strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
         self->layer_shell_ = static_cast<zwlr_layer_shell_v1*>(wl_registry_bind(reg, name, &zwlr_layer_shell_v1_interface, 1));
     }
-#endif
 #ifdef HAS_SCREENCOPY
     else if (std::strcmp(interface, zwlr_screencopy_manager_v1_interface.name) == 0) {
         self->screencopy_manager_ = static_cast<zwlr_screencopy_manager_v1*>(wl_registry_bind(reg, name, &zwlr_screencopy_manager_v1_interface, 1));
@@ -255,16 +224,12 @@ WaylandCore::~WaylandCore() {
 #ifdef HAS_SCREENCOPY
     if (screencopy_manager_) zwlr_screencopy_manager_v1_destroy(screencopy_manager_);
 #endif
-#ifdef HAS_LAYER_SHELL
     if (layer_surface_) zwlr_layer_surface_v1_destroy(layer_surface_);
-#endif
-    if (toplevel_) xdg_toplevel_destroy(toplevel_);
-    if (xdg_surface_) xdg_surface_destroy(xdg_surface_);
+    if (layer_shell_) zwlr_layer_shell_v1_destroy(layer_shell_);
     if (surface_) wl_surface_destroy(surface_);
     if (pointer_) wl_pointer_destroy(pointer_);
     if (keyboard_) wl_keyboard_destroy(keyboard_);
     if (seat_) wl_seat_destroy(seat_);
-    if (xdg_wm_base_) xdg_wm_base_destroy(xdg_wm_base_);
     if (shm_) wl_shm_destroy(shm_);
     if (compositor_) wl_compositor_destroy(compositor_);
     if (registry_) wl_registry_destroy(registry_);
@@ -289,75 +254,47 @@ bool WaylandCore::init() {
     // failure just means no glass (opaque panel).
     if (want_backdrop_) capture_backdrop();
 
-#ifdef HAS_LAYER_SHELL
-    if (layer_shell_) {
-        // Full-width strip anchored to the top of the active output, rendered on
-        // the OVERLAY layer with no decorations. Passing a null output
-        // lets the compositor place it on the currently focused monitor.
-        layer_surface_ = zwlr_layer_shell_v1_get_layer_surface(
-            layer_shell_, surface_, nullptr,
-            ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "waylaunch");
-
-        if (layer_surface_) {
-            // Full-screen overlay: the panel is drawn centred near the top and the
-            // rest of the surface stays transparent. Covering the whole output lets
-            // the result list grow tall without clipping and lets a click anywhere
-            // outside the panel dismiss the launcher.
-            zwlr_layer_surface_v1_set_keyboard_interactivity(
-                layer_surface_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
-            zwlr_layer_surface_v1_set_anchor(layer_surface_,
-                ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
-                ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
-                ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
-                ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-            zwlr_layer_surface_v1_set_size(layer_surface_, 0, 0);
-            // -1: render above other exclusive zones (bars).
-            zwlr_layer_surface_v1_set_exclusive_zone(layer_surface_, -1);
-
-            static const zwlr_layer_surface_v1_listener ls_listener = {
-                .configure = [](void* data, zwlr_layer_surface_v1*, uint32_t serial, int32_t w, int32_t h) {
-                    auto* self = static_cast<WaylandCore*>(data);
-                    if (w > 0) self->pending_width_ = w;
-                    if (h > 0) self->pending_height_ = h;
-                    self->configured_ = true;
-                    zwlr_layer_surface_v1_ack_configure(self->layer_surface_, serial);
-                    if (self->redraw_handler_) self->redraw_handler_();
-                },
-                .closed = [](void* data, zwlr_layer_surface_v1*) {
-                    auto* self = static_cast<WaylandCore*>(data);
-                    if (self->close_handler_) self->close_handler_();
-                    self->running_ = false;
-                },
-            };
-            zwlr_layer_surface_v1_add_listener(layer_surface_, &ls_listener, this);
-
-            // Seed a sane size for the first buffer; the configure event will
-            // report the real full-output dimensions before anything is drawn.
-            pending_width_ = output_width();
-            pending_height_ = output_height();
-
-            wl_surface_commit(surface_);
-            return true;
-        }
+    if (!layer_shell_) {
+        std::fprintf(stderr, "waylaunch: compositor does not provide wlr-layer-shell\n");
+        return false;
     }
-#endif
 
-    // Fallback to XDG shell
-    if (!xdg_wm_base_) return false;
+    // Full-output transparent overlay. The panel is drawn near the top and the
+    // rest of the surface remains transparent so clicks outside it can dismiss
+    // the launcher while the layer owns the keyboard exclusively.
+    layer_surface_ = zwlr_layer_shell_v1_get_layer_surface(
+        layer_shell_, surface_, nullptr, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "waylaunch");
+    if (!layer_surface_) return false;
+    zwlr_layer_surface_v1_set_keyboard_interactivity(
+        layer_surface_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
+    zwlr_layer_surface_v1_set_anchor(layer_surface_,
+        ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
+        ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
+        ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
+        ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+    zwlr_layer_surface_v1_set_size(layer_surface_, 0, 0);
+    // -1: render above other exclusive zones (bars).
+    zwlr_layer_surface_v1_set_exclusive_zone(layer_surface_, -1);
 
-    xdg_surface_ = xdg_wm_base_get_xdg_surface(xdg_wm_base_, surface_);
-    if (!xdg_surface_) return false;
-    xdg_surface_add_listener(xdg_surface_, &xdg_surface_listener, this);
+    static const zwlr_layer_surface_v1_listener ls_listener = {
+        .configure = [](void* data, zwlr_layer_surface_v1*, uint32_t serial, int32_t w, int32_t h) {
+            auto* self = static_cast<WaylandCore*>(data);
+            if (w > 0) self->pending_width_ = w;
+            if (h > 0) self->pending_height_ = h;
+            self->configured_ = true;
+            zwlr_layer_surface_v1_ack_configure(self->layer_surface_, serial);
+            if (self->redraw_handler_) self->redraw_handler_();
+        },
+        .closed = [](void* data, zwlr_layer_surface_v1*) {
+            auto* self = static_cast<WaylandCore*>(data);
+            if (self->close_handler_) self->close_handler_();
+            self->running_ = false;
+        },
+    };
+    zwlr_layer_surface_v1_add_listener(layer_surface_, &ls_listener, this);
 
-    toplevel_ = xdg_surface_get_toplevel(xdg_surface_);
-    if (!toplevel_) return false;
-    xdg_toplevel_add_listener(toplevel_, &xdg_toplevel_listener, this);
-    xdg_toplevel_set_title(toplevel_, "waylaunch");
-    xdg_toplevel_set_app_id(toplevel_, "waylaunch");
-
-    pending_width_ = 800;
-    pending_height_ = 500;
-    xdg_toplevel_set_min_size(toplevel_, 400, 200);
+    pending_width_ = output_width();
+    pending_height_ = output_height();
 
     wl_surface_commit(surface_);
     return true;
@@ -444,7 +381,6 @@ void WaylandCore::unmap_surface() {
 }
 
 void WaylandCore::remap_surface() {
-#ifdef HAS_LAYER_SHELL
     if (!surface_ || !layer_surface_) return;
     // Re-mapping after an unmap = the initial-commit handshake all over again:
     // the unmap discarded anchor/size/interactivity, so re-apply them (same
@@ -461,7 +397,6 @@ void WaylandCore::remap_surface() {
     zwlr_layer_surface_v1_set_size(layer_surface_, 0, 0);
     zwlr_layer_surface_v1_set_exclusive_zone(layer_surface_, -1);
     wl_surface_commit(surface_);
-#endif
 }
 
 void WaylandCore::handle_buffer_release(wl_buffer* wl_buf) {
@@ -533,49 +468,6 @@ void WaylandCore::handle_output_scale(int32_t f) {
 }
 void WaylandCore::handle_output_name(const std::string& n) {
     if (!outputs_.empty()) outputs_.back().name = n;
-}
-
-void WaylandCore::handle_xdg_surface_configure(uint32_t serial) {
-    xdg_surface_ack_configure(xdg_surface_, serial);
-    configured_ = true;
-    // Allocate or reallocate buffers for the new size
-    int w = pending_width_ > 0 ? pending_width_ : 800;
-    int h = pending_height_ > 0 ? pending_height_ : 500;
-    for (auto& buf : buffers_) {
-        if (buf->width != w || buf->height != h) {
-            buf->destroy();
-            buf->width = w;
-            buf->height = h;
-            buf->stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, w);
-            buf->size = buf->stride * h;
-
-            char name[] = "/wl_shm-XXXXXX";
-            buf->fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
-            if (buf->fd < 0) continue;
-            shm_unlink(name);
-            ftruncate(buf->fd, buf->size);
-            buf->data = static_cast<uint8_t*>(mmap(nullptr, buf->size, PROT_READ | PROT_WRITE, MAP_SHARED, buf->fd, 0));
-            if (buf->data == MAP_FAILED) { close(buf->fd); buf->fd = -1; continue; }
-            buf->pool = wl_shm_create_pool(shm_, buf->fd, buf->size);
-            buf->wl_buf = wl_shm_pool_create_buffer(buf->pool, 0, w, h, buf->stride, WL_SHM_FORMAT_ARGB8888);
-            wl_shm_pool_destroy(buf->pool);
-            buf->pool = nullptr;
-            wl_buffer_add_listener(buf->wl_buf, &wl_buffer_listener, this);
-        }
-    }
-    if (redraw_handler_) redraw_handler_();
-}
-
-void WaylandCore::handle_xdg_toplevel_configure(int32_t w, int32_t h) {
-    if (w > 0 && h > 0) {
-        pending_width_ = w;
-        pending_height_ = h;
-    }
-}
-
-void WaylandCore::handle_xdg_toplevel_close() {
-    if (close_handler_) close_handler_();
-    running_ = false;
 }
 
 // --- Backdrop capture (glassmorphism) ---
