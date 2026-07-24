@@ -4,10 +4,13 @@
 #include "waylaunch/config.h"
 #include "waylaunch/clipboard.h"
 #include "waylaunch/app_launcher.h"
+#include "waylaunch/search_util.h"
 #include "waylaunch/providers/result_provider.h"
 #include "waylaunch/providers/calculator_provider.h"
 #include "waylaunch/providers/command_provider.h"
 #include "waylaunch/providers/app_provider.h"
+#include "waylaunch/providers/file_provider.h"
+#include "waylaunch/providers/content_provider.h"
 #include "waylaunch/subprocess.h"
 #include "waylaunch/content/store.h"
 #include "waylaunch/content/config.h"
@@ -26,7 +29,6 @@
 #include <cstring>
 #include <filesystem>
 #include <system_error>
-#include <sstream>
 #include <ctime>
 #include <cerrno>
 #include <cstdio>
@@ -81,18 +83,6 @@ std::string to_lower(std::string s) {
     return s;
 }
 
-std::string home_dir() {
-    const char* h = std::getenv("HOME");
-    return h ? std::string(h) : std::string(".");
-}
-
-// Replace a leading $HOME with "~" for compact display.
-std::string abbreviate_home(const std::string& path) {
-    std::string h = home_dir();
-    if (!h.empty() && path.rfind(h, 0) == 0) return "~" + path.substr(h.size());
-    return path;
-}
-
 // Expand a leading "~" (or "~/") to $HOME.
 std::string expand_tilde(const std::string& path) {
     if (path == "~") return home_dir();
@@ -120,22 +110,6 @@ std::string percent_encode_path(const std::string& path) {
     return out;
 }
 
-// Map a file extension to a freedesktop icon name (falls back to a monogram
-// if the theme has no such icon).
-std::string icon_for_file(const std::string& path) {
-    std::string ext = to_lower(std::filesystem::path(path).extension().string());
-    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" ||
-        ext == ".svg" || ext == ".webp" || ext == ".bmp") return "image-x-generic";
-    if (ext == ".pdf") return "application-pdf";
-    if (ext == ".mp3" || ext == ".flac" || ext == ".wav" || ext == ".ogg" || ext == ".m4a") return "audio-x-generic";
-    if (ext == ".mp4" || ext == ".mkv" || ext == ".webm" || ext == ".mov") return "video-x-generic";
-    if (ext == ".zip" || ext == ".tar" || ext == ".gz" || ext == ".xz" || ext == ".7z" || ext == ".rar") return "package-x-generic";
-    if (ext == ".cpp" || ext == ".hpp" || ext == ".h" || ext == ".c" || ext == ".py" ||
-        ext == ".js" || ext == ".ts" || ext == ".rs" || ext == ".go" || ext == ".java" ||
-        ext == ".sh") return "text-x-script";
-    return "text-x-generic";
-}
-
 std::string format_size(off_t bytes) {
     const char* u[] = {"B", "KB", "MB", "GB", "TB"};
     double v = static_cast<double>(bytes);
@@ -154,12 +128,6 @@ std::string format_time(time_t t) {
     strftime(buf, sizeof(buf), "%b %d, %Y  %H:%M", &tmv);
     return buf;
 }
-
-// Content snippets carry the matched runs wrapped in these sentinel bytes (the
-// hl markers passed to Store::search). They're control chars the extractor's
-// sanitizer strips from body text, so they never collide with real content.
-constexpr char kHlOpen = '\x02';
-constexpr char kHlClose = '\x03';
 
 // Escape text for Pango markup (so a stray '&'/'<' in a filename or excerpt
 // can't corrupt the markup we build around highlighted runs).
@@ -240,20 +208,6 @@ std::string history_key(const ListItem& item) {
             break;
     }
     return {};
-}
-
-int path_depth(const std::string& p) {
-    return static_cast<int>(std::count(p.begin(), p.end(), '/'));
-}
-
-// More recently modified files rank higher (small bonus).
-float recency_bonus(time_t mtime) {
-    double days = (std::time(nullptr) - mtime) / 86400.0;
-    if (days < 1)   return 60.0f;
-    if (days < 7)   return 40.0f;
-    if (days < 30)  return 20.0f;
-    if (days < 365) return 8.0f;
-    return 0.0f;
 }
 
 // Ask the compositor for a frosted-glass backdrop behind our layer surface.
@@ -698,6 +652,14 @@ void LauncherUI::register_providers() {
         providers_.push_back(std::make_unique<CommandProvider>(&config_->get().commands, &history_));
     if (sc.enable_applications)
         providers_.push_back(std::make_unique<AppProvider>(apps_.get(), &history_));
+    // Async providers (run on the file-search worker). Roots/excludes/store were
+    // resolved earlier in init().
+    if (file_enabled_)
+        providers_.push_back(std::make_unique<FileProvider>(
+            file_roots_, file_excludes_, file_min_query_, max_file_results_, &history_));
+    if (content_store_)
+        providers_.push_back(std::make_unique<ContentProvider>(
+            content_store_.get(), content_min_query_, content_max_results_, &history_));
 }
 
 void LauncherUI::rebuild_app_items() {
@@ -859,7 +821,6 @@ void LauncherUI::file_worker_loop() {
     for (;;) {
         std::string q;
         uint64_t gen;
-        std::vector<std::string> roots;
         {
             std::unique_lock<std::mutex> lk(file_mtx_);
             file_cv_.wait(lk, [this] { return file_has_pending_ || file_stop_; });
@@ -867,89 +828,19 @@ void LauncherUI::file_worker_loop() {
             q = file_pending_query_;
             gen = file_gen_;
             file_has_pending_ = false;
-            roots = file_roots_;
         }
 
-        // Snapshot the (init-time constant) tuning so ranking below agrees with
-        // the invocation.
-        int min_query = std::max(1, file_min_query_);
-        size_t keep = std::max(1, max_file_results_);
-
-        std::vector<ListItem> out;
-        if (file_enabled_ && static_cast<int>(q.size()) >= min_query &&
-            Subprocess::command_exists("fd")) {
-            // Match the query against the file *name*; scan a bounded number of
-            // hits, then rank them and keep the best few. Noise directories are excluded .
-            std::vector<std::string> argv = {
-                "fd", "--color", "never", "--fixed-strings", "--max-results", "200",
-                "--type", "f", "--type", "d"};
-            for (const auto& ex : file_excludes_) {
-                argv.push_back("--exclude");
-                argv.push_back(ex);
-            }
-            argv.push_back(q);
-            for (const auto& r : roots) argv.push_back(r);
-            auto res = Subprocess::run(argv);
-
-            std::string ql = to_lower(q);
-            std::istringstream ss(res.stdout);
-            std::string line;
-            while (std::getline(ss, line)) {
-                if (line.empty()) continue;
-                struct stat st;
-                bool have_stat = (stat(line.c_str(), &st) == 0);
-                bool is_dir = have_stat ? S_ISDIR(st.st_mode) : false;
-
-                ListItem it;
-                it.kind = is_dir ? ItemKind::Folder : ItemKind::File;
-                std::filesystem::path p(line);
-                it.name = p.filename().string();
-                if (it.name.empty()) it.name = line;
-                it.path = line;
-                it.description = abbreviate_home(line);
-                it.icon_name = is_dir ? "folder" : icon_for_file(line);
-
-                // Rank: prefix > substring on the name, shallower paths and more
-                // recently modified files score higher.
-                std::string nl = to_lower(it.name);
-                size_t pos = nl.find(ql);
-                float s;
-                if (pos == 0)                        s = 1000.0f - std::min<size_t>(nl.size(), 300);
-                else if (pos != std::string::npos)   s = 600.0f - std::min<size_t>(pos, 300);
-                else                                 s = 200.0f;   // matched deeper in the path
-                s -= path_depth(line) * 6.0f;
-                if (is_dir) s += 15.0f;
-                if (have_stat) s += recency_bonus(st.st_mtime);
-                s += history_.frecency(line);
-                it.score = s;
-
-                out.push_back(std::move(it));
-            }
-
-            std::stable_sort(out.begin(), out.end(),
-                             [](const ListItem& a, const ListItem& b) { return a.score > b.score; });
-            if (out.size() > keep) out.resize(keep);
-        }
-
-        // Content search: query the read-only index for body matches. Ranked by
-        // BM25 (already ordered best-first by the store), shown in its own
-        // CONTENTS section below apps/files.
-        std::vector<ListItem> content_out;
-        if (content_store_ && static_cast<int>(q.size()) >= content_min_query_) {
-            auto hits = content_store_->search(q, content_max_results_,
-                                               std::string(1, kHlOpen), std::string(1, kHlClose));
-            for (auto& h : hits) {
-                ListItem it;
-                it.kind = ItemKind::Content;
-                std::filesystem::path p(h.path);
-                it.name = h.name.empty() ? p.filename().string() : h.name;
-                it.path = h.path;
-                it.reveal_path = h.path;
-                it.description = abbreviate_home(h.path);
-                it.snippet = h.snippet;
-                it.icon_name = icon_for_file(h.path);
-                it.score = static_cast<float>(h.score) + 0.25f * history_.frecency(h.path);
-                content_out.push_back(std::move(it));
+        // Run the async ResultProviders (files via fd, content via the index).
+        // Each applies its own availability/min-query gate and ranking. Files and
+        // folders compete with apps for the Top Hit; content has its own CONTENTS
+        // section, so split by kind into the two buckets the UI marshals back.
+        ProviderQuery pq{q, to_lower(q), std::max(1, max_file_results_)};
+        std::vector<ListItem> out, content_out;
+        for (auto& p : providers_) {
+            if (!p->is_async() || !p->is_available()) continue;
+            for (auto& it : p->query(pq)) {
+                if (it.kind == ItemKind::Content) content_out.push_back(std::move(it));
+                else                              out.push_back(std::move(it));
             }
         }
 
@@ -1008,26 +899,11 @@ void LauncherUI::launch_selected() {
         if (!key.empty()) history_.record(query_, key, item.name);
     }
 
-    // Ported providers activate their own items; unported kinds fall through to
-    // the switch below (migration §5.2).
+    // Every result kind is owned by a provider (History returned earlier), so
+    // activation is a pure dispatch: the provider that recognises the item runs
+    // its action. No switch on kind.
     for (auto& p : providers_) {
-        if (p->activate(item)) { quit(); return; }
-    }
-
-    // Files/folders/content open with the default handler. Applications, commands
-    // and the calculator were handled by their providers above; History returned
-    // earlier — so nothing else reaches here.
-    switch (item.kind) {
-        case ItemKind::File:
-        case ItemKind::Folder:
-        case ItemKind::Content:
-            if (!item.path.empty()) {
-                Clipboard::copy_file_path(item.path);
-                Subprocess::spawn_detached({"xdg-open", item.path});
-            }
-            break;
-        default:
-            break;
+        if (p->activate(item)) break;
     }
     quit();
 }

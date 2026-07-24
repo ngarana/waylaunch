@@ -141,19 +141,21 @@ fixes the original data race.
     math, drawing, hit-testing, and process launching. `render_frame()` is ~165
     lines interleaving layout arithmetic with draw calls and magic numbers.
     Extraction of `Layout` (pure geometry) is tracked in §7 Phase 3.
-  - `WaylandCore` still exposes **almost every member public** ("for C trampolines").
-    Encapsulation is effectively off. Making members private and passing through
-    handler methods is tracked in §7 Phase 3.
-- **O — Open/Closed:** Adding a mode still means editing multiple hardcoded
-  locations. There is no `ResultProvider` abstraction. Introduction is tracked in
-  §7 Phase 3.
-- **L — Liskov:** fine where polymorphism exists (`Subprocess` callbacks).
-- **I — Interface Segregation:** `Subprocess` is well-segregated. `WaylandCore`'s
-  public surface is the opposite.
-- **D — Dependency Inversion:** `LauncherUI` still `new`s its concretes
-  (`WaylandCore`, `Renderer`, per-call `AppLauncher`, `Calculator`, `Clipboard`).
-  No seams for testing. Injection via `ResultProvider` / `Surface` / `Launcher`
-  interfaces is tracked in §7 Phase 3.
+  - `WaylandCore` **cross-module coupling is fixed** — callers use `seat()`,
+    `modifier_active()`, `foreign_toplevel_manager()` accessors, not raw members.
+    The `wl_listener` trampoline state stays in the header (documented C-ABI glue)
+    to keep `<wayland-client.h>` out of the forward-declared public header.
+- **O — Open/Closed:** **`ResultProvider` exists** (§5.2). All five modes are
+  provider classes; adding one is a new class + a line in `register_providers()`.
+  The activation `switch` is gone.
+- **L — Liskov:** fine where polymorphism exists (`Subprocess` callbacks,
+  `ResultProvider`).
+- **I — Interface Segregation:** `Subprocess` and `ResultProvider` are
+  well-segregated; `WaylandCore`'s public surface is now the accessor API.
+- **D — Dependency Inversion:** providers are injected into `LauncherUI` as
+  `ResultProvider` interfaces with their deps passed in (config, history, app
+  cache, store), giving test seams. `LauncherUI` still `new`s `WaylandCore` /
+  `Renderer` directly — a `Surface` seam is possible future work.
 
 ### 3.4 Extensibility & maintainability
 
@@ -351,23 +353,22 @@ Each phase is independently shippable and leaves `main` runnable.
 - [~] Extract `Layout` (pure geometry): largely done already — `SpotlightLayout`
       + `relayout()` precompute `rows_`/`headers_`/`panel_total_h_`; `render_frame`
       consumes the slots. Only panel origin math remains inline.
-- [~] **Introduce `ResultProvider` (§5.2); port Apps/Files/Content/Calculator.**
-      In progress:
-      - [x] `ResultProvider` interface + `ProviderQuery`; `ListItem`/`ItemKind`
-            extracted to `list_item.h`; `spawn_detached` promoted to
-            `Subprocess::spawn_detached`.
-      - [x] **Sync providers ported** — `CalculatorProvider`, `CommandProvider`,
-            `AppProvider` own their query + activation. `register_providers()`
-            builds the list from `[search]` flags; `rebuild_app_items()` just runs
-            the sync providers; `launch_selected()` dispatches to
-            `provider->activate()` (unported kinds fall through).
-      - [ ] **Async providers** — `FileProvider` (fd) and `ContentProvider`
-            (index) still run inline in `file_worker_loop`. Porting them means
-            extracting the shared path helpers (`icon_for_file`, `abbreviate_home`,
-            `path_depth`, `recency_bonus`) and unifying `file_items_`/
-            `content_items_` marshaling into one async result list keyed by
-            `ItemKind` — the riskier half (touches the worker threading), so it's
-            the next focused increment.
+- [x] **`ResultProvider` (§5.2) — all five modes ported.**
+      - `ResultProvider` interface + `ProviderQuery`; `ListItem`/`ItemKind`
+        extracted to `list_item.h`; shared path/format helpers to `search_util`;
+        `spawn_detached` promoted to `Subprocess::spawn_detached`.
+      - **Sync providers** (`CalculatorProvider`, `CommandProvider`,
+        `AppProvider`) run in `rebuild_app_items()`; **async providers**
+        (`FileProvider` via fd, `ContentProvider` via the index) run on the search
+        worker, which splits their output by `ItemKind` into the file/content
+        buckets the UI marshals back — the threading/marshaling is unchanged.
+      - `register_providers()` builds the list from `[search]` flags + resolved
+        roots/store; `launch_selected()` is now pure `provider->activate()`
+        dispatch — the kind `switch` is gone. Adding a mode = a new provider class
+        + one registration line.
+      - Follow-up (optional): lift `providers_` into a dedicated
+        `SpotlightController` (§5.1) and add provider unit tests (§6) now that the
+        seams exist.
 
 ### Phase 4 — Wire config → behavior (2–3 days)
 

@@ -145,6 +145,9 @@ set(SOURCES
     src/providers/calculator_provider.cpp
     src/providers/command_provider.cpp
     src/providers/app_provider.cpp
+    src/providers/file_provider.cpp
+    src/providers/content_provider.cpp
+    src/util/search_util.cpp
     src/config/config.cpp
     src/switcher/wlr_toplevel_backend.cpp
     src/switcher/app_switcher_manager.cpp
