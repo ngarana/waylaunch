@@ -175,6 +175,7 @@ private:
     bool switcher_shown_ = false;   // switcher currently mapped (visible this cycle)
     int  switcher_advance_fd_ = -1; // SIGUSR1 (re-invocation) → show/advance forward
     int  switcher_reverse_fd_ = -1; // SIGUSR2 (re-invocation) → show/step reverse
+    bool switcher_go_dormant_ = false; // hidden this frame → unmap AFTER activate() lands
 
     // Power overlay (waylaunch --power): one-shot switcher-style HUD. All power
     // logic lives in src/power/; this class only creates, routes, and renders.

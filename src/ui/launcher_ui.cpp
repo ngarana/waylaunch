@@ -345,7 +345,12 @@ bool LauncherUI::init(Config& config) {
                 switcher_shown_ = true;
             } else if (switcher_shown_) {
                 switcher_shown_ = false;
-                wayland_->unmap_surface();   // go dormant; do NOT quit
+                // Don't unmap here: confirm_selection() has just queued an
+                // activate() request, and unmapping our exclusive-keyboard layer
+                // makes the compositor refocus the *previous* window, overriding
+                // the switch. Defer the unmap to the run loop, which flushes and
+                // lets the compositor apply activate() first. (§ resident switch bug)
+                switcher_go_dormant_ = true;
             }
         }
     });
@@ -583,6 +588,17 @@ void LauncherUI::run() {
         }
 
         if (needs_redraw_) render_frame();
+
+        // Resident switcher going dormant after a confirm: the activate() request
+        // is already queued. Round-trip so the compositor focuses the target
+        // window BEFORE we unmap our keyboard-grabbing overlay (an unmap otherwise
+        // refocuses the previously-focused window and eats the switch). Only then
+        // unmap and wait for the next Alt+Tab.
+        if (switcher_go_dormant_) {
+            switcher_go_dormant_ = false;
+            wl_display_roundtrip(dpy);
+            wayland_->unmap_surface();
+        }
     }
 
     // Flush any final requests (e.g. the switcher's window-activate) before the

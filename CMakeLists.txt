@@ -307,6 +307,17 @@ if(BUILD_TESTING)
     target_compile_options(history_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
     add_test(NAME history_test COMMAND history_test)
 
+    add_executable(provider_test tests/provider_test.cpp
+        src/providers/calculator_provider.cpp
+        src/providers/command_provider.cpp
+        src/modes/calculator.cpp
+        src/modes/clipboard.cpp
+        src/search/subprocess.cpp
+        src/ui/history.cpp)
+    target_include_directories(provider_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_options(provider_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    add_test(NAME provider_test COMMAND provider_test)
+
     add_executable(config_test tests/config_test.cpp src/config/config.cpp)
     target_link_libraries(config_test PRIVATE tomlplusplus::tomlplusplus)
     target_include_directories(config_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
