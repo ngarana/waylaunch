@@ -154,6 +154,28 @@ std::string color_hex(const Color& c) {
     return buf;
 }
 
+// Collapse every run of whitespace (spaces, tabs, and the embedded newlines a
+// file-content excerpt carries) into a single space, and trim the ends. A list
+// subtitle is one line: without this, Pango treats each '\n' in a snippet as a
+// hard paragraph break, so a code excerpt renders as several physical lines that
+// overflow the fixed row height and collide with the row below. The highlight
+// sentinels (\x02/\x03) are not whitespace, so they survive untouched.
+std::string collapse_ws(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    bool pending_space = false, seen = false;
+    for (unsigned char c : s) {
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v') {
+            pending_space = seen;   // don't emit a leading space
+            continue;
+        }
+        if (pending_space) { out.push_back(' '); pending_space = false; }
+        out.push_back(static_cast<char>(c));
+        seen = true;
+    }
+    return out;
+}
+
 // Turn a sentinel-marked snippet into Pango markup: plain text is escaped, and
 // each matched run becomes an accent-coloured bold span.
 std::string snippet_markup(const std::string& snip, const std::string& accent_hex) {
@@ -1280,7 +1302,7 @@ void LauncherUI::render_frame() {
             renderer_->draw_text(tx, ry + 7, name, t.result_font, Color::from_rgba(1, 1, 1, 1));
             int suby = ry + 7 + static_cast<int>(t.result_font.size) + 3;
             if (has_snip) {
-                renderer_->draw_markup(tx, suby, snippet_markup(it.snippet, accent_hex),
+                renderer_->draw_markup(tx, suby, snippet_markup(collapse_ws(it.snippet), accent_hex),
                                        t.result_detail_font, t.text_muted, avail, 1);
             } else {
                 std::string sub = it.description;
@@ -1334,6 +1356,41 @@ void LauncherUI::render_frame() {
     needs_redraw_ = false;
 }
 
+bool LauncherUI::resolve_recent_preview(const std::string& query, ListItem& out) {
+    if (query.empty()) return false;
+
+    // 1) Application match — instant (apps are scanned in-memory). Require a real
+    //    name match (prefix/substring scores ≥ 550; a weak comment/category hit at
+    //    ~50 is not worth overriding the recent card with the wrong app).
+    ProviderQuery pq{query, to_lower(query), 1};
+    for (auto& p : providers_) {
+        if (p->id() != "applications") continue;
+        auto items = p->query(pq);
+        if (!items.empty() && items.front().score >= 550.0f) {
+            out = std::move(items.front());
+            return true;
+        }
+        break;
+    }
+
+    // 2) The recent query is itself an existing path (a search that was a literal
+    //    file/dir). Arbitrary filename searches need `fd` (async) and are left to
+    //    fall back to the generic recent card.
+    std::string path = expand_tilde(query);
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0) {
+        out = ListItem{};
+        out.kind = S_ISDIR(st.st_mode) ? ItemKind::Folder : ItemKind::File;
+        out.name = std::filesystem::path(path).filename().string();
+        if (out.name.empty()) out.name = path;
+        out.path = path;
+        out.description = abbreviate_home(path);
+        out.icon_name = S_ISDIR(st.st_mode) ? "folder" : icon_for_file(path);
+        return true;
+    }
+    return false;
+}
+
 void LauncherUI::render_preview(int px, int py, int pw, int ph, const Theme& t) {
     int div_x = px + layout_.list_w;
     // vertical divider
@@ -1341,7 +1398,15 @@ void LauncherUI::render_preview(int px, int py, int pw, int ph, const Theme& t) 
                          Color::from_rgba(t.border.r, t.border.g, t.border.b, 0.35));
 
     if (items_.empty() || selected_index_ >= static_cast<int>(items_.size())) return;
-    const ListItem& it = items_[selected_index_];
+    const ListItem& sel = items_[selected_index_];
+
+    // A recent search has no rich preview of its own; if its query resolves to an
+    // app or an existing file, preview that target instead (activation still just
+    // re-runs the search, so the footer stays "Search again").
+    ListItem resolved;
+    bool recent = (sel.kind == ItemKind::History);
+    bool did_resolve = recent && resolve_recent_preview(sel.path, resolved);
+    const ListItem& it = did_resolve ? resolved : sel;
 
     int col_x = div_x + 1;
     int col_w = pw - layout_.list_w - 1;
@@ -1382,6 +1447,16 @@ void LauncherUI::render_preview(int px, int py, int pw, int ph, const Theme& t) 
         cy += bh + 16;
     }
 
+    // Signal that a resolved target came from a recent search (so the APP/FILE
+    // badge above and the "Search again" footer below don't read as contradictory).
+    if (did_resolve) {
+        RenderFontConfig cf = t.result_detail_font;
+        cf.size = std::max(10.0, t.result_detail_font.size - 1);
+        draw_centered("Recent search", cf,
+                      Color::from_rgba(t.text_muted.r, t.text_muted.g, t.text_muted.b, 0.8));
+        cy += static_cast<int>(cf.size) + 12;
+    }
+
     // Divider then key/value details.
     renderer_->fill_rect(inner_x, cy, inner_w, 1, Color::from_rgba(t.border.r, t.border.g, t.border.b, 0.3));
     cy += 14;
@@ -1399,6 +1474,9 @@ void LauncherUI::render_preview(int px, int py, int pw, int ph, const Theme& t) 
         cy = vy + static_cast<int>(t.result_detail_font.size) + 12;
     };
 
+    // Each kind fills in its key/value details and a footer hint; the footer is
+    // drawn once at the end so a recent-search resolution can override it.
+    std::string footer;
     if (it.kind == ItemKind::File || it.kind == ItemKind::Folder) {
         draw_kv("Where", abbreviate_home(std::filesystem::path(it.path).parent_path().string()));
         struct stat st;
@@ -1406,21 +1484,19 @@ void LauncherUI::render_preview(int px, int py, int pw, int ph, const Theme& t) 
             if (it.kind == ItemKind::File) draw_kv("Size", format_size(st.st_size));
             draw_kv("Modified", format_time(st.st_mtime));
         }
-        renderer_->draw_text(inner_x, ph + py - 34, "⏎ Open   ·   right-click: reveal",
-                             t.result_detail_font, t.text_muted);
+        footer = "⏎ Open   ·   right-click: reveal";
     } else if (it.kind == ItemKind::Application) {
         if (!it.description.empty()) draw_kv("About", it.description);
         draw_kv("Command", it.path);
-        renderer_->draw_text(inner_x, ph + py - 34, "⏎ Launch   ·   right-click: reveal",
-                             t.result_detail_font, t.text_muted);
+        footer = "⏎ Launch   ·   right-click: reveal";
     } else if (it.kind == ItemKind::Calculator) {
         draw_kv("Expression", it.description);
         draw_kv("Result", it.path);
-        renderer_->draw_text(inner_x, ph + py - 34, "⏎ Copy result", t.result_detail_font, t.text_muted);
+        footer = "⏎ Copy result";
     } else if (it.kind == ItemKind::Command) {
         draw_kv("Category", it.description);
         draw_kv("Command", it.action_command);
-        renderer_->draw_text(inner_x, ph + py - 34, "⏎ Run command", t.result_detail_font, t.text_muted);
+        footer = "⏎ Run command";
     } else if (it.kind == ItemKind::Content) {
         draw_kv("Where", abbreviate_home(std::filesystem::path(it.path).parent_path().string()));
         struct stat st;
@@ -1437,13 +1513,17 @@ void LauncherUI::render_preview(int px, int py, int pw, int ph, const Theme& t) 
                                            inner_w, 6);
             cy += h + 8;
         }
-        renderer_->draw_text(inner_x, ph + py - 34, "⏎ Open   ·   right-click: reveal",
-                             t.result_detail_font, t.text_muted);
+        footer = "⏎ Open   ·   right-click: reveal";
     } else if (it.kind == ItemKind::History) {
         draw_kv("Query", it.path);
         draw_kv("Usage", it.description);
-        renderer_->draw_text(inner_x, ph + py - 34, "⏎ Search again", t.result_detail_font, t.text_muted);
+        footer = "⏎ Search again";
     }
+
+    // A recent search re-runs the query on Return, whatever target we previewed.
+    if (recent) footer = "⏎ Search again";
+    if (!footer.empty())
+        renderer_->draw_text(inner_x, ph + py - 34, footer, t.result_detail_font, t.text_muted);
 }
 
 } // namespace waylaunch

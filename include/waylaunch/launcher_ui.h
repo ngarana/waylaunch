@@ -97,6 +97,11 @@ private:
     void relayout();                  // recompute header/row slots + panel height
     void render_frame();
     void render_preview(int px, int py, int pw, int ph, const Theme& t);
+    // A recent-search result (ItemKind::History) has no rich preview of its own.
+    // If its query resolves to an application or an existing file/folder, fill
+    // `out` with that target so the preview shows it instead of a bare
+    // "Query / Usage" card. Synchronous (apps in-memory; a literal path stat()'d).
+    bool resolve_recent_preview(const std::string& query, ListItem& out);
     int  hit_test(double x, double y) const;
     int  panel_height() const;
 
