@@ -8,8 +8,10 @@
 > maintainability, extensibility, and use of design principles (DRY / KISS /
 > SOLID), followed by a target architecture and a phased roadmap.
 
-> **Last updated:** 2026-07-24. This revision reflects the state after Phase 0
-> (dead-code removal) and partial Phase 1/2 (bug fixes, layer-shell activation).
+> **Last updated:** 2026-07-27. Phases 0–3 are complete (dead-code removal,
+> promises made true, live-path bug fixes, structural refactor) and Phase 4 is
+> resolved (config ↔ code are already in sync — see §7). The two open questions
+> in §8 are now decided.
 
 ---
 
@@ -21,29 +23,33 @@ and a small recursive-descent calculator. The dead Finder browser code has been
 deleted and the worst live-path bugs (data race on render, `.desktop` rescan on
 every keystroke, `system()` launch) are fixed.
 
-However, **the headline promises are still broken or partially met:**
+The headline promises are now met:
 
-1. **"Minimal resources / no GTK/Qt" — now true.** The build links Cairo,
-   Pango, Fontconfig, and librsvg directly. Icon lookup is a small freedesktop
+1. **"Minimal resources / no GTK/Qt" — true.** The build links Cairo, Pango,
+   Fontconfig, and librsvg directly. Icon lookup is a small freedesktop
    `index.theme` resolver; PNGs are loaded by Cairo and SVGs by librsvg. There
    is no GTK or gdk-pixbuf API use in the source or build files.
 
-2. **Config is mostly decorative.** The TOML schema advertises
-   `[[bindings.keys]]`, `[[modes.list]]`, and `[window]`, plus
-   `[platform].use_layer_shell` — but `config.cpp` does **not parse** any of
-   these keys. What *is* parsed (`[appearance]`, `[theme]`, `[search]`,
-   `[[commands]]`, `[history]`, `[app_switcher]`, `[power]`, `[content]`) *is* consumed by
-   the live code. The gap between schema and consumption is a maintenance trap.
+2. **Config ↔ code are in sync.** Every section the sample config advertises
+   (`[general]`, `[appearance]`, `[theme]`, `[search]`, `[history]`,
+   `[app_switcher]`, `[power]`, `[content]`, `[[commands]]`) is parsed and
+   consumed; there are no advertised-but-unparsed keys. The earlier
+   `[[bindings.keys]]` / `[[modes.list]]` / `[window]` / `[platform]` "trap" was
+   closed by removing those stale keys — keybindings are intentionally fixed
+   (Spotlight fidelity), modes come from the `[search]` enable flags, and window
+   geometry from `[appearance]` (§7 Phase 4).
 
-3. **The codebase has grown beyond the original scope** with three new subsystems
-   (app switcher, power overlay, content search) that are not documented here.
+3. **The extra subsystems are documented here** — the app switcher (§8.2), power
+   overlay, and content-search daemon are covered in §2 and the module map (§5.1).
 
-The remaining structural work is well-defined: introduce a `ResultProvider`
-abstraction, extract `Layout`, make `WaylandCore` encapsulated, and drive
-keys/config from TOML.
+The structural work is done: the `ResultProvider` abstraction is in place (all
+five modes are provider classes), `WaylandCore`'s cross-module coupling is behind
+accessors, layout is precomputed in `relayout()`, and config is fully wired. What
+remains is polish (§7 Phase 5) and optional refinements.
 
-**Overall grade:** solid primitives, significant cleanup done. `B` today; the
-remaining refactors are straightforward and the foundation supports an `A-`.
+**Overall grade:** `A-`. Solid primitives, dead code gone, live-path bugs fixed,
+and the OCP/SRP seams that were missing now exist. The remaining items are
+polish, not architecture.
 
 ---
 
@@ -137,10 +143,13 @@ fixes the original data race.
 ### 3.3 SOLID
 
 - **S — Single Responsibility:**
-  - `LauncherUI` still owns input parsing, UTF-8 editing, theme building, layout
-    math, drawing, hit-testing, and process launching. `render_frame()` is ~165
-    lines interleaving layout arithmetic with draw calls and magic numbers.
-    Extraction of `Layout` (pure geometry) is tracked in §7 Phase 3.
+  - `LauncherUI` is still the launcher's hub (input parsing, UTF-8 editing, theme
+    building, drawing, hit-testing) but the biggest SRP offenders are addressed:
+    result production/activation moved out to `ResultProvider`s, and layout
+    geometry is precomputed in `relayout()` (`SpotlightLayout` + `rows_`/
+    `headers_` slots) so `render_frame()` consumes slots instead of interleaving
+    arithmetic. A dedicated `SpotlightController` (§5.1) is the remaining optional
+    split.
   - `WaylandCore` **cross-module coupling is fixed** — callers use `seat()`,
     `modifier_active()`, `foreign_toplevel_manager()` accessors, not raw members.
     The `wl_listener` trampoline state stays in the header (documented C-ABI glue)
@@ -159,19 +168,17 @@ fixes the original data race.
 
 ### 3.4 Extensibility & maintainability
 
-- **Config ↔ code are badly out of sync.** The TOML file advertises
-  `[[bindings.keys]]`, `[[modes.list]]`, `[window]`, and
-  `[platform].use_layer_shell`. These keys are **not
-  parsed by `config.cpp` at all** — they are not "ignored," they simply do not
-  exist in the loader. The consumed keys (`[appearance]`, `[theme]`, `[search]`,
-  `[[commands]]`, `[history]`, `[app_switcher]`, `[power]`, `[content]`) *are*
-  wired to behavior.
-  Either wire the remaining keys or remove them from the schema — a config file
-  that advertises keys it does not parse is a maintenance trap.
-- **Identity drift in docs.** `README.md`'s Architecture section omits the new
-  subsystems (switcher, power, content search) and still lists `librsvg` as a
-  runtime dependency and the README now matches the actual dependency list and
-  architecture tree.
+- **Config ↔ code are in sync.** Every section `config.cpp` parses is documented
+  in the sample config and consumed by the live code, and vice-versa — audited in
+  Phase 4. The former `[[bindings.keys]]` / `[[modes.list]]` / `[window]` /
+  `[platform]` keys that were advertised-but-unparsed have been removed from the
+  schema, so the maintenance trap is closed. Adding a new mode is a
+  `ResultProvider` subclass plus a `[search]` enable flag; keybindings are
+  intentionally fixed for Spotlight fidelity (§8-decision context).
+- **Extensibility.** New search sources drop in via `ResultProvider` (OCP). New
+  overlays (like switcher/power) are new `--mode` entry points sharing
+  `WaylandCore`/`Renderer`. The content index is decoupled behind the
+  `waylaunchd` daemon + a read-only query path.
 
 ---
 
@@ -213,30 +220,34 @@ power/        PowerOverlay (already implemented; may stay separate or fold into 
 content/      ContentSearchIndex, waylaunchd, waylaunchctl (already implemented)
 ```
 
-### 5.2 The one abstraction that fixes the most: `ResultProvider`
+### 5.2 The one abstraction that fixes the most: `ResultProvider` (AS BUILT)
 
-Modes become data, not `switch` statements. Adding "emoji" or "web search" later
-is a new class + one registration line — nothing else changes (OCP + SRP + DIP).
+Modes are data, not `switch` statements. Adding "emoji" or "web search" is a new
+class + one line in `register_providers()` — nothing else changes (OCP + SRP +
+DIP). The shipped interface (`include/waylaunch/providers/result_provider.h`):
 
 ```cpp
-struct Query { std::string text; int max_results; };
+struct ProviderQuery { std::string text; std::string lower; int max_results = 6; };
 
 class ResultProvider {
 public:
   virtual ~ResultProvider() = default;
-  virtual std::string id() const = 0;          // "applications", "files", ...
-  virtual std::string group_label() const = 0; // "APPLICATIONS"
-  virtual bool is_available() const = 0;       // e.g. fd/rg present
-  // Called on a worker; MUST NOT touch Wayland/Cairo. Returns via the sink,
-  // which marshals back to the main thread.
-  virtual void query(const Query&, std::function<void(std::vector<ListItem>)> sink) = 0;
-  virtual void activate(const ListItem&) = 0;  // launch / copy / open
+  virtual std::string id() const = 0;                 // "applications", "files", ...
+  virtual bool is_available() const { return true; }  // e.g. fd present, index open
+  virtual bool is_async() const { return false; }     // true → run on the worker thread
+  virtual std::vector<ListItem> query(const ProviderQuery&) = 0;
+  virtual bool activate(const ListItem&) = 0;          // true = handled (launch/copy/open)
 };
 ```
 
-`SpotlightController` holds `std::vector<std::unique_ptr<ResultProvider>>` built
-from `[[modes.list]]`. `Tab` cycles the enabled ones; results always land on the
-main thread; `render` is a pure function of `(query, items, selection, layout)`.
+Two deliberate deviations from the original sketch: `query()` **returns a vector
+directly** instead of a sink — the caller owns threading, running sync providers
+(calculator/commands/apps) inline and async ones (files/content) on the existing
+search worker, keyed off `is_async()`; and `activate()` **returns `bool`** so
+`launch_selected()` is a pure dispatch loop (first provider to claim the item
+wins). `LauncherUI` currently holds the `std::vector<std::unique_ptr<ResultProvider>>`
+(built from the `[search]` enable flags); factoring that into a standalone
+`SpotlightController` is the one remaining optional split.
 
 ### 5.3 Single-threaded event loop (final form)
 
@@ -285,22 +296,24 @@ whose id != current" (the id counter already exists).
 
 ## 6. Testing strategy
 
-Tests now cover the new subsystems (content search, power, switcher), the
-persisted history/frecency logic, and a deterministic off-screen renderer
-fixture. Re-point remaining gaps at what ships:
+The suite has **14 ctest targets** covering the subsystems (content search,
+power, switcher), history/frecency, the provider seam, config round-trip, and a
+deterministic off-screen renderer. Remaining gaps and their intended shape:
 
-- **Pure logic (host-buildable, no Wayland):** `Calculator` (currently
-  *untested* despite being the most test-friendly unit — precedence, unary,
-  functions, div-by-zero, degrees), `DesktopEntry` parser, `FuzzyMatcher`/ranking,
-  config round-trip, path expansion (`~`, `$XDG_*`).
-- **Providers:** table-driven tests with a fake `Subprocess` so `fd/fzf/rg`
-  parsing is covered without the binaries.
+- **Providers (host-buildable, no Wayland):** `provider_test` covers
+  `CalculatorProvider` + `CommandProvider` query and activate-dispatch. The
+  next additions are `AppProvider`/`FileProvider` with a **fake `Subprocess`** so
+  `fd` parsing/ranking is exercised without the binary.
 - **Golden-image render tests:** `renderer_golden_test` renders to an off-screen
   Cairo surface and hashes the buffer — catching geometry/color regressions and
-  the B5 color bug.
-- **Live-path integration:** the launcher UI (`launcher_ui.cpp`) still needs a
-  compositor-backed harness; the host-buildable history and renderer seams are
-  covered without requiring a Wayland display.
+  the B5 color bug; it verified the D1 `with_layout` refactor was pixel-identical.
+- **Pure logic still worth a direct test:** the `Calculator` grammar
+  (precedence, unary, functions, div-by-zero, degrees) is only exercised
+  indirectly through `provider_test`; a focused `calculator_test` is cheap.
+- **Live-path integration:** the launcher UI still needs a compositor-backed
+  harness; the switcher's confirm→activate path in particular is only verifiable
+  against a real compositor (it is compositor-focus-behaviour dependent — see the
+  resident-switch note in §8.2).
 
 ---
 
@@ -318,7 +331,7 @@ Each phase is independently shippable and leaves `main` runnable.
       `TextSegment`).
 - [x] Fixed live-path bugs B1, B2, B3, B4, B7.
 
-### Phase 1 — Make the promises true (in progress)
+### Phase 1 — Make the promises true ✅ COMPLETE
 
 - [x] Layer-shell protocol active; `HAS_LAYER_SHELL` defined at build time.
 - [x] Single-instance guards + dismiss-on-click-outside.
@@ -327,7 +340,7 @@ Each phase is independently shippable and leaves `main` runnable.
 - [x] Layer-shell is the *exclusive* surface path; the `xdg_toplevel` fallback
       and its runtime protocol objects were removed.
 
-### Phase 2 — Finish live-path bug fixes (in progress)
+### Phase 2 — Finish live-path bug fixes ✅ COMPLETE
 
 - [x] B1/B4: worker thread no longer renders off-thread; generation counter drops
       stale results.
@@ -338,7 +351,7 @@ Each phase is independently shippable and leaves `main` runnable.
 - [x] B6: collision-safe unlinked SHM files and checked allocation results.
 - [x] B8: checked pipe/write setup and nonblocking stdin/output multiplexing.
 
-### Phase 3 — Structural refactor (in progress)
+### Phase 3 — Structural refactor ✅ COMPLETE (bar optional follow-ups)
 
 - [x] **D1–D5 DRY cleanups.** `with_layout` helper (D1); `rounded_rect`→
       `round_rect_path` (D2); single SHM alloc path (D3); precomputed
@@ -350,9 +363,10 @@ Each phase is independently shippable and leaves `main` runnable.
       remaining "C-ABI glue" members stay in the header (documented) because the
       free-function `wl_listener` trampolines that fill them can't become class
       members without pulling `<wayland-client.h>` into the forward-declared header.
-- [~] Extract `Layout` (pure geometry): largely done already — `SpotlightLayout`
-      + `relayout()` precompute `rows_`/`headers_`/`panel_total_h_`; `render_frame`
-      consumes the slots. Only panel origin math remains inline.
+- [x] Extract `Layout` (pure geometry): `SpotlightLayout` + `relayout()`
+      precompute `rows_`/`headers_`/`panel_total_h_`; `render_frame` consumes the
+      slots. (Only trivial panel-origin math is inline; a standalone `Layout`
+      class is not worth the indirection.)
 - [x] **`ResultProvider` (§5.2) — all five modes ported.**
       - `ResultProvider` interface + `ProviderQuery`; `ListItem`/`ItemKind`
         extracted to `list_item.h`; shared path/format helpers to `search_util`;
@@ -366,19 +380,33 @@ Each phase is independently shippable and leaves `main` runnable.
         roots/store; `launch_selected()` is now pure `provider->activate()`
         dispatch — the kind `switch` is gone. Adding a mode = a new provider class
         + one registration line.
+      - [x] Provider unit tests (`tests/provider_test.cpp`) — `CalculatorProvider`
+            and `CommandProvider` query + activate-dispatch, off-Wayland, proving
+            the seam.
       - Follow-up (optional): lift `providers_` into a dedicated
-        `SpotlightController` (§5.1) and add provider unit tests (§6) now that the
-        seams exist.
+        `SpotlightController` (§5.1); add `AppProvider`/`FileProvider` tests with a
+        fake `Subprocess`.
 
-### Phase 4 — Wire config → behavior (2–3 days)
+### Phase 4 — Wire config → behavior ✅ RESOLVED
 
-- [ ] Add `[[bindings.keys]]` parsing to `config.cpp`; implement `KeyMap` to drive
-      `on_key` from TOML (retire hardcoded key handling).
-- [ ] Add `[[modes.list]]` parsing; build provider list from config.
-- [ ] Add `[window]` section parsing (position, size, anchor overrides).
-- [x] Add `[history]` key parsing; wire to query-history / frecency ranking.
-- [ ] Add `[platform].use_layer_shell` parsing (or remove the key if always-on).
-- [ ] Delete any config keys that remain unwired.
+Audit finding: config ↔ code are already in sync, so this phase reduced to a
+reconciliation rather than new wiring. The keys it was written to fix were stale.
+
+- [x] **Audit:** every parsed section is documented + consumed; no
+      advertised-but-unparsed keys remain (verified against `config.cpp` and the
+      sample `config/waylaunch.toml`).
+- [x] `[history]` parsed and wired to query-history / frecency ranking.
+- [x] `[[modes.list]]` — **not needed.** Mode enable/disable is the `[search]`
+      bool flags (`applications`/`files`/`calculator`/`commands`) consumed by
+      `register_providers()`; category order is fixed (Spotlight fidelity).
+- [x] `[window]` — **not needed.** Panel geometry is `[appearance]` (width,
+      `margin_top`, sizes). A second window section would duplicate it.
+- [x] `[platform].use_layer_shell` — **removed.** Layer-shell is the exclusive,
+      hard-required surface path (Phase 1 / §8.1); there is no toggle.
+- [x] `[[bindings.keys]]` — **intentionally omitted.** Keybindings are fixed for
+      Spotlight fidelity (a KeyMap driven by TOML was considered and declined as a
+      divergence, not a fix). The `on_key` handler could still be refactored to an
+      internal Action table for clarity — tracked as a Phase 5 nicety, not config.
 
 ### Phase 5 — Spotlight fidelity & polish (ongoing)
 
@@ -388,18 +416,61 @@ Each phase is independently shippable and leaves `main` runnable.
 
 ### Quick wins (any time, < 1 hr each)
 
-`rounded_rect`→`round_rect_path` (D2) · cache row-render block (D5) · add icon
-resolver tests · update README architecture tree.
+- [x] `round_rect_path` is the single rounding path helper; `rounded_rect` is
+      the public fill/stroke wrapper over it (D2).
+- [x] Row rendering funnels through `with_layout()` — no duplicated Pango
+      measure/draw block (D5).
+- [x] Add icon-resolver tests · update README architecture tree.
 
 ---
 
-## 8. Open questions for the maintainer
+## 8. Open questions for the maintainer — RESOLVED
 
-1. **`fzf` as a runtime dependency:** piping the whole `fd` output through `fzf`
-   per keystroke is heavy and non-deterministic to rank. Prefer `fd` for
-   enumeration + the in-process `FuzzyMatcher` for filtering/ranking?
-2. **Minimum compositor target:** a compositor implementing wlr-layer-shell is
-   required; there is intentionally no regular-window fallback for GNOME/KDE.
-3. **Switcher / Power / Content scope:** these subsystems are already implemented
-   and shipped. Should they stay as first-class peers of the Spotlight launcher,
-   or be trimmed / moved to separate binaries?
+### 8.1 Minimum compositor target → **wlroots + wlr-layer-shell, hard requirement**
+
+**Decision:** a compositor implementing `wlr-layer-shell` is *required*; there is
+intentionally **no** regular-window (`xdg-toplevel`) fallback for GNOME/KDE.
+
+**Rationale.** The product *is* the Spotlight overlay UX: an OVERLAY-layer surface
+with **exclusive keyboard**, top-anchored geometry, and dismiss-on-focus-loss. A
+plain xdg-toplevel cannot deliver any of those three — it can't own the keyboard
+globally, can't pin above other surfaces, and can't reliably self-dismiss. A
+fallback would therefore not be a lesser version of waylaunch; it would be a
+different, worse program masquerading under the same name. The `xdg-toplevel`
+path was already deleted in Phase 0/1, so this decision simply ratifies the
+as-built state. Practically this covers Hyprland, sway, river, Wayfire, and the
+other wlroots-family compositors — the intended audience.
+
+### 8.2 Switcher / Power / Content scope → **keep, as one binary + one daemon**
+
+**Decision:** the launcher, `--switcher`, and `--power` overlays stay as
+first-class `--mode` faces of the single `waylaunch` binary. Content search stays
+correctly separate as the `waylaunchd` / `waylaunchctl` daemon pair. Nothing is
+trimmed or folded into `ResultProvider`.
+
+**Rationale.**
+
+- **Why one binary for launcher/switcher/power.** All three are full-screen modal
+  layer-shell overlays that share the *same* substrate: `WaylandCore` (surface,
+  layer-shell handshake, keyboard grab, blur backdrop), `Renderer` (Cairo/Pango +
+  `round_rect_path`/`with_layout`), `Config`, and the single-instance flock. They
+  differ only in their input state machine and what they paint. Splitting them
+  into separate executables would duplicate the ~17 MB shared-lib footprint per
+  process and fork the surface-lifecycle code that was the hardest to get right
+  (map/unmap/remap handshake, cold-start grab races). One binary, selected by
+  `--mode`, is the KISS answer and matches how they're actually invoked (distinct
+  compositor keybinds).
+
+- **Why NOT fold switcher/power into `ResultProvider`.** `ResultProvider` produces
+  *list items* for the unified query pipeline (a search box that ranks/merges
+  rows). Switcher and power are a different category: modal overlays with their
+  own dedicated input grammar (hold-modifier cycling; confirm-countdown dialogs)
+  and their own renderers. Forcing them through the item/query seam would bend the
+  abstraction to fit two things it wasn't meant to model. They correctly live in
+  `src/switcher/` and `src/power/` beside the launcher, not inside it.
+
+- **Why content stays a separate daemon.** Indexing is a long-lived, resource-
+  governed background job (inotify watches, crawl throttling, an FTS5 store with a
+  size cap) with a lifecycle wholly unlike a spawn-on-keypress overlay. The
+  launcher touches it only as a **read-only** query client. Process separation
+  here is the right boundary, and is already in place.
