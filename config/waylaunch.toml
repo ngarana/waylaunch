@@ -83,16 +83,16 @@ placeholder    = "Search"
 
 # Turn individual result providers on/off.
 applications   = true        # .desktop apps (matched by name/comment)
-files          = true        # async file/folder search (needs the `fd` binary)
+files          = true        # async file/folder search (native walk, no deps)
 calculator     = true        # a math expression becomes the Top Hit
 commands       = true        # the [[commands]] entries below
 
-# --- File search (uses `fd`; falls back to nothing if `fd` is absent) -------
+# --- File search (native bounded filesystem walk) -----------------------------
 # Roots to search. "~" expands to $HOME. If empty, non-desktop [[search.paths]]
 # are used, and failing that, $HOME.
 file_roots       = ["~"]
-# Directories never descended into (fd --exclude patterns). If you leave this
-# empty, waylaunch applies a sensible built-in noise list.
+# Directories never descended into (exact basename or glob, e.g. *.tmp). If
+# you leave this empty, waylaunch applies a sensible built-in noise list.
 file_excludes    = [
     ".git", "node_modules", ".cache", "target", ".venv",
     "__pycache__", ".cargo", ".rustup", "go/pkg", ".local/share/Trash",

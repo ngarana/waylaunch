@@ -179,7 +179,7 @@ Enable custom commands.
 Directories to search for files.
 .TP
 \fBfile_excludes\fR (array)
-fd exclude patterns.
+exclude patterns (exact basename or glob, e.g. *.tmp).
 .TP
 \fBfile_min_query\fR (int, default: \fB2\fR)
 Min chars before file search fires.
@@ -225,7 +225,7 @@ Installed example config with all defaults documented.
 Runtime: wayland-client, wayland-cursor, libxkbcommon, cairo,
 pangocairo, fontconfig, librsvg-2.0
 .PP
-Optional: fd (for file search)
+Optional: unzip, poppler/pdftotext, pandoc, odt2txt (content extraction)
 .PP
 Build: C++20 compiler, CMake 3.20+, pkg-config, wayland-scanner,
 wayland-protocols, tomlplusplus, nlohmann-json
