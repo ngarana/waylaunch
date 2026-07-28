@@ -25,7 +25,7 @@ public:
     virtual ~ResultProvider() = default;
 
     virtual std::string id() const = 0;                // "calculator", "applications", ...
-    virtual bool is_available() const { return true; } // e.g. `fd` present, index open
+    virtual bool is_available() const { return true; } // e.g. index open
     virtual bool is_async() const { return false; }    // true → run on the worker thread
 
     virtual std::vector<ListItem> query(const ProviderQuery&) = 0;

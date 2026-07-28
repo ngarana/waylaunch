@@ -8,9 +8,9 @@ namespace waylaunch {
 
 class HistoryStore;
 
-// Filename/foldername search via `fd`, ranked by name match, path depth,
-// recency and frecency. Async (runs on the search worker). Register only when
-// [search].files is enabled.
+// Filename/foldername search via a native bounded filesystem walk, ranked by
+// name match, path depth, recency and frecency. Async (runs on the search
+// worker). Register only when [search].files is enabled.
 class FileProvider : public ResultProvider {
 public:
     FileProvider(std::vector<std::string> roots, std::vector<std::string> excludes,
