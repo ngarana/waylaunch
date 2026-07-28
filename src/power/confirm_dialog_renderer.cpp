@@ -1,5 +1,6 @@
 #include "waylaunch/power/confirm_dialog_renderer.h"
 #include "waylaunch/power/power_glyphs.h"
+#include "waylaunch/power/power_layout.h"
 #include <cairo/cairo.h>
 #include <cmath>
 
@@ -34,13 +35,12 @@ void ConfirmDialogRenderer::render(Renderer& renderer,
     if (!dialog.is_open()) return;
     const PowerAction& action = dialog.action();
 
-    constexpr int card_w = 420;
-    constexpr int card_h = 316;
-    constexpr int corner_radius = 28;   // "mostly round" — softer than the HUD
-    constexpr int pad = 28;
-
-    int x = (screen_w - card_w) / 2;
-    int y = (screen_h - card_h) / 2;
+    // Geometry from the shared layout (single source of truth with hit-testing).
+    auto lay = power_layout::dialog(screen_w, screen_h);
+    const int x = lay.card.x, y = lay.card.y;
+    const int card_w = lay.card.w, card_h = lay.card.h;
+    const int corner_radius = lay.corner_radius;   // "mostly round" — softer than the HUD
+    const int pad = lay.pad;
 
     // Glassmorphic card: the blurred desktop clipped to the card, a light tint
     // for contrast, a hairline border, and a top rim highlight — the same glass
@@ -109,41 +109,38 @@ void ConfirmDialogRenderer::render(Renderer& renderer,
     }
 
     // --- Fully-round pill buttons; the focused one is filled, the other quiet.
-    //     ←/→/Tab move focus, Return/Space press the focused button. The counter
-    //     lives in the confirm label ("Shut Down · 42"), language-neutral. ---
-    constexpr int btn_h = 44;
-    constexpr int btn_gap = 12;
-    int btn_w = (inner_w - btn_gap) / 2;
-    int by = y + card_h - pad - btn_h;
-
+    //     Rects come from the shared layout so a click lands exactly where the
+    //     pill is drawn. ←/→/Tab (or hover) move focus, Return/Space (or click)
+    //     press it. The counter lives in the confirm label ("Shut Down · 42"),
+    //     language-neutral. ---
     RenderFontConfig btn_font = theme.result_font;
     btn_font.size = 14.0 * font_scale;
     btn_font.bold = true;
     int btn_text_h = renderer.text_height(btn_font);
 
-    auto draw_button = [&](int bx, const std::string& label, const Color& fill,
-                           const Color& text, bool focused) {
+    auto draw_button = [&](const power_layout::Rect& b, const std::string& label,
+                           const Color& fill, const Color& text, bool focused) {
         if (focused) {   // 2px halo ring behind the pill
-            renderer.rounded_rect(bx - 3, by - 3, btn_w + 6, btn_h + 6, (btn_h + 6) / 2,
+            renderer.rounded_rect(b.x - 3, b.y - 3, b.w + 6, b.h + 6, (b.h + 6) / 2,
                                   Color::from_rgba(1.0, 1.0, 1.0, 0.30));
         }
-        renderer.rounded_rect(bx, by, btn_w, btn_h, btn_h / 2, fill);
+        renderer.rounded_rect(b.x, b.y, b.w, b.h, b.h / 2, fill);
         int tw = renderer.text_width(label, btn_font);
-        renderer.draw_text(bx + (btn_w - tw) / 2, by + (btn_h - btn_text_h) / 2,
+        renderer.draw_text(b.x + (b.w - tw) / 2, b.y + (b.h - btn_text_h) / 2,
                            label, btn_font, text);
     };
 
     bool confirm_focused =
         dialog.focused_button() == ConfirmDialog::Button::Confirm;
 
-    draw_button(inner_x, "Cancel",
+    draw_button(lay.cancel, "Cancel",
                 Color::from_rgba(1.0, 1.0, 1.0, confirm_focused ? 0.10 : 0.22),
                 theme.foreground, !confirm_focused);
 
     std::string confirm_label = action.name;
     if (dialog.has_countdown())
         confirm_label += " · " + std::to_string(dialog.remaining_seconds());
-    draw_button(inner_x + btn_w + btn_gap, confirm_label,
+    draw_button(lay.confirm, confirm_label,
                 Color::from_rgba(tone.r, tone.g, tone.b, confirm_focused ? 0.92 : 0.45),
                 confirm_focused ? Color::from_rgba(0.08, 0.08, 0.10, 0.96)
                                 : theme.foreground,

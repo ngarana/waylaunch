@@ -1,4 +1,5 @@
 #include "waylaunch/power/power_input_controller.h"
+#include "waylaunch/power/power_layout.h"
 #include <xkbcommon/xkbcommon-keysyms.h>
 
 namespace waylaunch {
@@ -63,6 +64,52 @@ void PowerInputController::cancel() {
 void PowerInputController::tick(ConfirmDialog::Clock::time_point now) {
     if (!manager_ || !state_machine_.is_confirm_open()) return;
     if (manager_->confirm_dialog().expired(now)) confirm();
+}
+
+void PowerInputController::handle_pointer_motion(double x, double y,
+                                                 int screen_w, int screen_h) {
+    if (!manager_ || !state_machine_.is_active()) return;
+
+    // Dialog: hover picks the button under the cursor (leaves it put otherwise).
+    if (state_machine_.is_confirm_open()) {
+        auto d = power_layout::dialog(screen_w, screen_h);
+        if (d.confirm.contains(x, y))
+            manager_->set_dialog_focus(ConfirmDialog::Button::Confirm);
+        else if (d.cancel.contains(x, y))
+            manager_->set_dialog_focus(ConfirmDialog::Button::Cancel);
+        return;
+    }
+
+    // Grid: hover highlights the card under the cursor (same as arrowing to it).
+    auto h = power_layout::hud(screen_w, screen_h,
+                               static_cast<int>(manager_->actions().size()));
+    for (size_t i = 0; i < h.cards.size(); ++i) {
+        if (h.cards[i].contains(x, y)) { manager_->jump_to(i); return; }
+    }
+}
+
+void PowerInputController::handle_pointer_click(double x, double y,
+                                                int screen_w, int screen_h) {
+    if (!manager_ || !state_machine_.is_active()) return;
+
+    // Dialog: click a button to press it; click anywhere off the card dismisses
+    // (declining is one gesture, matching the launcher's click-outside).
+    if (state_machine_.is_confirm_open()) {
+        auto d = power_layout::dialog(screen_w, screen_h);
+        if (d.confirm.contains(x, y))      confirm();
+        else if (d.cancel.contains(x, y))  cancel();
+        else if (!d.card.contains(x, y))   cancel();
+        return;
+    }
+
+    // Grid: click a card to select-and-activate it in one gesture; click off
+    // the panel dismisses the overlay.
+    auto h = power_layout::hud(screen_w, screen_h,
+                               static_cast<int>(manager_->actions().size()));
+    for (size_t i = 0; i < h.cards.size(); ++i) {
+        if (h.cards[i].contains(x, y)) { manager_->jump_to(i); activate(); return; }
+    }
+    if (!h.panel.contains(x, y)) cancel();
 }
 
 bool PowerInputController::handle_key(uint32_t keysym, bool pressed) {

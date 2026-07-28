@@ -36,6 +36,7 @@ public:
     void confirm();   // dialog Return: dialog's action → pending, hide
     void cancel();    // dialog Esc → back to grid; grid Esc → hide
     void toggle_dialog_focus();   // ←/→/Tab inside the dialog
+    void set_dialog_focus(ConfirmDialog::Button b);   // pointer hover (absolute)
 
     ConfirmDialog& confirm_dialog() { return dialog_; }
     const ConfirmDialog& confirm_dialog() const { return dialog_; }

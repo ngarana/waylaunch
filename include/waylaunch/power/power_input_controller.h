@@ -18,6 +18,13 @@ public:
     // Returns true if the event was consumed by the power overlay.
     bool handle_key(uint32_t keysym, bool pressed);
 
+    // Pointer support — hit-tests via power_layout so hover/click land exactly
+    // on the drawn cards/buttons. Motion hover-highlights the card (or focuses
+    // a dialog button); a left click activates it. screen_w/h are the surface
+    // (= full output) dimensions the renderer draws into.
+    void handle_pointer_motion(double x, double y, int screen_w, int screen_h);
+    void handle_pointer_click(double x, double y, int screen_w, int screen_h);
+
     // The countdown clock is an input source too: called periodically while the
     // dialog is open; auto-confirms once the counter expires. Time injectable
     // for deterministic tests.

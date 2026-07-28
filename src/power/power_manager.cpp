@@ -32,7 +32,9 @@ void PowerManager::navigate_prev() {
 }
 
 void PowerManager::jump_to(size_t index) {
-    if (index < actions_.size()) {
+    // Idempotent: pointer motion fires this many times per second over the same
+    // card, so re-selecting the current index must not spin the redraw loop.
+    if (index < actions_.size() && index != selected_index_) {
         selected_index_ = index;
         notify_change();
     }
@@ -66,6 +68,12 @@ void PowerManager::confirm() {
 void PowerManager::toggle_dialog_focus() {
     if (!dialog_.is_open()) return;
     dialog_.toggle_focus();
+    notify_change();
+}
+
+void PowerManager::set_dialog_focus(ConfirmDialog::Button b) {
+    if (!dialog_.is_open() || dialog_.focused_button() == b) return;
+    dialog_.set_focus(b);
     notify_change();
 }
 

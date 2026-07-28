@@ -33,6 +33,7 @@ public:
     void toggle_focus() {
         focus_ = (focus_ == Button::Confirm) ? Button::Cancel : Button::Confirm;
     }
+    void set_focus(Button b) { focus_ = b; }   // absolute (pointer hover)
 
     // --- Countdown (0 total = disabled: never expires, nothing to render) ---
     bool has_countdown() const { return countdown_total_ > 0; }
