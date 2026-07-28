@@ -7,6 +7,7 @@
 #include <vector>
 #include <xkbcommon/xkbcommon.h>
 #include <cairo/cairo.h>
+#include <wayland-cursor.h>
 #include <cstdio>
 #include <cstdlib>
 
@@ -119,12 +120,15 @@ static void pointer_enter_cb(void* data, wl_pointer*, uint32_t serial, wl_surfac
     auto* self = static_cast<WaylandCore*>(data);
     self->pointer_x_ = wl_fixed_to_double(x);
     self->pointer_y_ = wl_fixed_to_double(y);
+    self->ensure_cursor(serial);   // paint a visible pointer over our surface
+    if (self->mouse_move_handler_) self->mouse_move_handler_(self->pointer_x_, self->pointer_y_);
 }
 static void pointer_leave_cb(void*, wl_pointer*, uint32_t, wl_surface*) {}
 static void pointer_motion_cb(void* data, wl_pointer*, uint32_t, wl_fixed_t x, wl_fixed_t y) {
     auto* self = static_cast<WaylandCore*>(data);
     self->pointer_x_ = wl_fixed_to_double(x);
     self->pointer_y_ = wl_fixed_to_double(y);
+    if (self->mouse_move_handler_) self->mouse_move_handler_(self->pointer_x_, self->pointer_y_);
 }
 static void pointer_button_cb(void* data, wl_pointer*, uint32_t, uint32_t, uint32_t button, uint32_t state) {
     auto* self = static_cast<WaylandCore*>(data);
@@ -242,6 +246,8 @@ WaylandCore::~WaylandCore() {
     if (layer_surface_) zwlr_layer_surface_v1_destroy(layer_surface_);
     if (layer_shell_) zwlr_layer_shell_v1_destroy(layer_shell_);
     if (surface_) wl_surface_destroy(surface_);
+    if (cursor_surface_) wl_surface_destroy(cursor_surface_);
+    if (cursor_theme_) wl_cursor_theme_destroy(cursor_theme_);
     if (pointer_) wl_pointer_destroy(pointer_);
     if (keyboard_) wl_keyboard_destroy(keyboard_);
     if (seat_) wl_seat_destroy(seat_);
@@ -445,9 +451,49 @@ void WaylandCore::handle_buffer_release(wl_buffer* wl_buf) {
     }
 }
 
+// Paint the pointer over our own surface. A wlr-layer-shell surface with
+// exclusive keyboard/pointer focus doesn't inherit the compositor's cursor, so
+// without this the pointer is invisible while the overlay is up. Loads the
+// user's XCURSOR theme/size once, then re-attaches the image on every enter
+// (the `serial` must be the current enter's).
+void WaylandCore::ensure_cursor(uint32_t serial) {
+    if (!pointer_ || !compositor_ || !shm_) return;
+
+    if (!cursor_theme_) {
+        const char* size_env = std::getenv("XCURSOR_SIZE");
+        int size = size_env ? std::atoi(size_env) : 24;
+        if (size <= 0) size = 24;
+        const char* theme_env = std::getenv("XCURSOR_THEME");   // nullptr = default theme
+        cursor_theme_ = wl_cursor_theme_load(theme_env, size, shm_);
+        if (cursor_theme_) {
+            cursor_ = wl_cursor_theme_get_cursor(cursor_theme_, "default");
+            if (!cursor_) cursor_ = wl_cursor_theme_get_cursor(cursor_theme_, "left_ptr");
+        }
+        if (!cursor_surface_)
+            cursor_surface_ = wl_compositor_create_surface(compositor_);
+        if (wl_dbg()) fprintf(stderr, "[wl] cursor theme=%p cursor=%p surface=%p\n",
+                              (void*)cursor_theme_, (void*)cursor_, (void*)cursor_surface_);
+    }
+
+    if (!cursor_ || !cursor_surface_ || cursor_->image_count == 0) {
+        // No theme available: hide the cursor rather than leave it undefined.
+        wl_pointer_set_cursor(pointer_, serial, nullptr, 0, 0);
+        return;
+    }
+
+    wl_cursor_image* img = cursor_->images[0];
+    wl_buffer* buf = wl_cursor_image_get_buffer(img);
+    wl_pointer_set_cursor(pointer_, serial, cursor_surface_,
+                          img->hotspot_x, img->hotspot_y);
+    wl_surface_attach(cursor_surface_, buf, 0, 0);
+    wl_surface_damage(cursor_surface_, 0, 0, img->width, img->height);
+    wl_surface_commit(cursor_surface_);
+}
+
 void WaylandCore::set_key_handler(KeyHandler h) { key_handler_ = std::move(h); }
 void WaylandCore::set_modifiers_handler(ModifiersHandler h) { modifiers_handler_ = std::move(h); }
 void WaylandCore::set_mouse_handler(MouseHandler h) { mouse_handler_ = std::move(h); }
+void WaylandCore::set_mouse_move_handler(MouseMoveHandler h) { mouse_move_handler_ = std::move(h); }
 void WaylandCore::set_axis_handler(AxisHandler h) { axis_handler_ = std::move(h); }
 void WaylandCore::set_close_handler(CloseHandler h) { close_handler_ = std::move(h); }
 void WaylandCore::set_redraw_handler(RedrawHandler h) { redraw_handler_ = std::move(h); }

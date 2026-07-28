@@ -9,6 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(PkgConfig REQUIRED)
 
 pkg_check_modules(WAYLAND REQUIRED wayland-client)
+pkg_check_modules(WAYLAND_CURSOR REQUIRED wayland-cursor)   # visible pointer over the overlay
 pkg_check_modules(XKBCOMMON REQUIRED xkbcommon)
 pkg_check_modules(CAIRO REQUIRED cairo)
 pkg_check_modules(PANGO REQUIRED pangocairo)
@@ -161,6 +162,7 @@ set(SOURCES
     src/power/power_renderer.cpp
     src/power/confirm_dialog_renderer.cpp
     src/power/power_glyphs.cpp
+    src/power/power_layout.cpp
     ${PROTOCOL_SOURCES}
 )
 
@@ -171,6 +173,7 @@ target_include_directories(waylaunch PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${PROTOCOL_BUILD_DIR}
     ${WAYLAND_INCLUDE_DIRS}
+    ${WAYLAND_CURSOR_INCLUDE_DIRS}
     ${XKBCOMMON_INCLUDE_DIRS}
     ${CAIRO_INCLUDE_DIRS}
     ${PANGO_INCLUDE_DIRS}
@@ -181,6 +184,7 @@ target_include_directories(waylaunch PRIVATE
 target_link_libraries(waylaunch PRIVATE
     waylaunch_content   # read-only content-index queries
     ${WAYLAND_LIBRARIES}
+    ${WAYLAND_CURSOR_LIBRARIES}
     ${XKBCOMMON_LIBRARIES}
     ${CAIRO_LIBRARIES}
     ${PANGO_LIBRARIES}
@@ -274,14 +278,17 @@ if(BUILD_TESTING)
     # tests. waylaunch_content supplies Subprocess + toml++ include dirs.
     add_executable(power_state_machine_test tests/power_state_machine_test.cpp
         src/power/power_state_machine.cpp)
+    add_executable(power_layout_test tests/power_layout_test.cpp
+        src/power/power_layout.cpp)
     add_executable(confirm_dialog_test tests/confirm_dialog_test.cpp)
     add_executable(power_action_backend_test tests/power_action_backend_test.cpp
         src/power/power_action_backend.cpp)
     add_executable(power_manager_test tests/power_manager_test.cpp
         src/power/power_manager.cpp
         src/power/power_input_controller.cpp
-        src/power/power_state_machine.cpp)
-    foreach(t power_state_machine_test confirm_dialog_test
+        src/power/power_state_machine.cpp
+        src/power/power_layout.cpp)
+    foreach(t power_state_machine_test power_layout_test confirm_dialog_test
               power_action_backend_test power_manager_test)
         target_link_libraries(${t} PRIVATE waylaunch_content)
         target_include_directories(${t} PRIVATE ${XKBCOMMON_INCLUDE_DIRS})
@@ -317,6 +324,16 @@ if(BUILD_TESTING)
     target_include_directories(provider_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
     target_compile_options(provider_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
     add_test(NAME provider_test COMMAND provider_test)
+
+    add_executable(file_provider_test tests/file_provider_test.cpp
+        src/providers/file_provider.cpp
+        src/modes/clipboard.cpp
+        src/search/subprocess.cpp
+        src/util/search_util.cpp
+        src/ui/history.cpp)
+    target_include_directories(file_provider_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_options(file_provider_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    add_test(NAME file_provider_test COMMAND file_provider_test)
 
     add_executable(config_test tests/config_test.cpp src/config/config.cpp)
     target_link_libraries(config_test PRIVATE tomlplusplus::tomlplusplus)

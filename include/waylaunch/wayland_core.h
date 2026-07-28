@@ -18,6 +18,8 @@ struct wl_output;
 struct wl_surface;
 struct wl_buffer;
 struct wl_shm_pool;
+struct wl_cursor_theme;
+struct wl_cursor;
 struct zwlr_layer_shell_v1;
 struct zwlr_layer_surface_v1;
 
@@ -75,6 +77,7 @@ struct OutputInfo {
 using KeyHandler = std::function<void(uint32_t keysym, uint32_t utf32, bool pressed)>;
 using ModifiersHandler = std::function<void(uint32_t mods)>;
 using MouseHandler = std::function<void(double x, double y, uint32_t button, bool pressed)>;
+using MouseMoveHandler = std::function<void(double x, double y)>;
 using AxisHandler = std::function<void(double x, double y, int32_t axis, double value)>;
 using CloseHandler = std::function<void()>;
 using RedrawHandler = std::function<void()>;
@@ -106,6 +109,7 @@ public:
     void set_key_handler(KeyHandler handler);
     void set_modifiers_handler(ModifiersHandler handler);
     void set_mouse_handler(MouseHandler handler);
+    void set_mouse_move_handler(MouseMoveHandler handler);   // pointer motion/enter (hover)
     void set_axis_handler(AxisHandler handler);
     void set_close_handler(CloseHandler handler);
     void set_redraw_handler(RedrawHandler handler);
@@ -159,6 +163,13 @@ public:
     wl_pointer* pointer_ = nullptr;
     double pointer_x_ = 0, pointer_y_ = 0;
     KeyboardState kbd_;
+    // Cursor image: an exclusive layer surface owns pointer focus, so the client
+    // must paint the pointer itself on enter — otherwise it's invisible over the
+    // overlay and mouse aiming is impossible. Loaded lazily on first pointer enter.
+    wl_cursor_theme* cursor_theme_ = nullptr;
+    wl_cursor* cursor_ = nullptr;
+    wl_surface* cursor_surface_ = nullptr;
+    void ensure_cursor(uint32_t serial);   // load (once) + attach the pointer image
     wl_compositor* compositor_ = nullptr;
     wl_shm* shm_ = nullptr;
     wl_seat* seat_ = nullptr;
@@ -167,6 +178,7 @@ public:
     KeyHandler key_handler_;
     ModifiersHandler modifiers_handler_;
     MouseHandler mouse_handler_;
+    MouseMoveHandler mouse_move_handler_;
     AxisHandler axis_handler_;
     CloseHandler close_handler_;
     RedrawHandler redraw_handler_;
