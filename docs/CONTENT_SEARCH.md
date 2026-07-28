@@ -329,7 +329,7 @@ this on Linux.
 ### 4.6 Query path & UI integration
 
 - New provider `ContentSearchProvider` in the launcher, running on the **existing
-  async worker thread + eventfd** infra (same mechanism as the `fd` file search).
+  async worker thread + eventfd** infra (same mechanism as the native file walk).
 - Fires only when `enable_content` and `len(query) ≥ content_min_query`
   (default 3) — content search is deeper/slower-conceptually than name matching,
   so it starts later, exactly as Spotlight surfaces filename/app hits first.

@@ -6,7 +6,7 @@ A minimal, fast, keyboard-first Wayland-native launcher. One keystroke opens a u
 
 - **Unified Search** — no modes. Type once, get apps, files, folders, calculator results, and custom commands ranked together with a single Top Hit.
 - **Frosted Glass** — client-side backdrop blur via `wlr-screencopy`. Captures the desktop, downsamples, and applies a separable box blur for a glassmorphism look. Works on any compositor.
-- **Async File Search** — dedicated worker thread runs `fd` with prefix/substring ranking, recency bonuses, and path-depth penalties. Results stream into the UI without blocking.
+- **Async File Search** — dedicated worker thread runs a native bounded filesystem walk with prefix/substring ranking, recency bonuses, and path-depth penalties. Results stream into the UI without blocking.
 - **Content Search** — index-backed full-text search *inside* your documents (Spotlight's "find in contents"), served by the `waylaunchd` daemon. An inverted index (SQLite FTS5, BM25) over text, code, PDF, **Office/ODF spreadsheets & slides** (`.docx`/`.xlsx`/`.pptx`/`.odt`/`.ods`/`.odp`), EPUB, and HTML; the launcher queries it read-only and shows a **CONTENTS** section with a highlighted snippet. Queries are O(index-lookup), not O(filesystem), and stay bounded even on ultra-common terms. Extracted text is stored zstd-compressed, extraction runs in a sandboxed subprocess, and the index self-heals on corruption or schema change. Kept fresh incrementally with inotify plus a periodic reconcile backstop for when watches are exhausted. Supports **`mdfind`-style filters** — `kind:pdf quarterly revenue`, `kind:spreadsheet`, `size:>1M`, `modified:<7d`. See [`docs/CONTENT_SEARCH.md`](docs/CONTENT_SEARCH.md).
 - **App Switcher** — an Alt+Tab overlay grouping open windows by application (MRU-ordered) via `wlr-foreign-toplevel-management`. Launch it with `waylaunch --switch`: hold the modifier and tap Tab to cycle, release to confirm — or Enter/Space to confirm, ` / arrows to move, `q` to close an app, Esc to cancel. See [App switcher](#app-switcher-alttab) for the Hyprland binding.
 - **Power Actions** — `waylaunch --power` opens a switcher-style HUD with Lock / Restart / Exit / Hibernate / Suspend / Shut Down. Destructive actions get a confirmation card; commands are configurable and run without a shell. See [Power actions](#power-actions).
@@ -35,9 +35,6 @@ A minimal, fast, keyboard-first Wayland-native launcher. One keystroke opens a u
 - `zstd` (`libzstd`) — compresses extracted document text in the index
 - `file`/`libmagic` — MIME detection for the content indexer (optional; falls back to extensions)
 
-### Optional (for file search)
-- `fd` — Fast file finder (strongly recommended)
-
 ### Optional (for content extraction)
 - `unzip` — Office/ODF/EPUB text (`.docx`/`.xlsx`/`.pptx`/`.odt`/`.ods`/`.odp`/`.epub` are ZIP containers; their XML parts are unzipped and stripped in-process — no heavy runtime needed)
 - `poppler` (`pdftotext`) — PDF text
@@ -58,8 +55,8 @@ A minimal, fast, keyboard-first Wayland-native launcher. One keystroke opens a u
 sudo pacman -S wayland wayland-protocols libxkbcommon cairo pango fontconfig \
                librsvg sqlite zstd file tomlplusplus
 
-# Install optional file search + content extractors
-sudo pacman -S fd unzip poppler pandoc odt2txt
+# Install optional content extractors
+sudo pacman -S unzip poppler pandoc odt2txt
 
 # Clone and build
 git clone https://github.com/yourusername/waylaunch.git
@@ -135,8 +132,8 @@ confirm with the window exported as `$WL_CLASS`/`$WL_TITLE`/`$WL_APP_ID`, e.g.
 `waylaunch --power` opens a switcher-style frosted HUD with six power actions —
 **Lock · Restart · Exit · Hibernate · Suspend · Shut Down** — as round icon
 buttons with hand-drawn vector glyphs (crisp at any size, independent of the
-icon theme) and the familiar selection pill. Keyboard-first, one-shot: pick an
-action, it runs, the process exits.
+icon theme) and the familiar selection pill. Keyboard-first but fully mouse-
+driven too; one-shot: pick an action, it runs, the process exits.
 
 Bind it in Hyprland (`~/.config/hypr/hyprland.conf`):
 
@@ -145,7 +142,9 @@ bind = SUPER SHIFT, Q, exec, waylaunch --power
 ```
 
 Inside the overlay: **←/→/Tab/Shift+Tab** move · **Home/End** first/last ·
-**1–6** jump · **Return/Space** select · **Esc** cancel.
+**1–6** jump · **Return/Space** select · **Esc** cancel. With the **mouse**,
+hovering a card highlights it and a click selects-and-activates it in one
+gesture; clicking off the HUD dismisses.
 
 Destructive actions (everything but Lock) *replace* the picker with a
 glassmorphic confirmation card — it stands alone rather than stacking over the
@@ -153,10 +152,12 @@ HUD, since committing to an action ends the picking. It carries a **countdown**:
 a depleting ring around the action glyph and a counter in the confirm button
 ("Shut Down · 42"); when it reaches zero the action runs on its own
 (`countdown_seconds`, 0 disables). **←/→/Tab** move focus between Cancel and
-the confirm button, **Return/Space** press the focused one. **Cancel and Esc
-dismiss the whole overlay** — they don't drop you back on the picker, so a
-change of mind is one keystroke, not two. The overlay tears down its surface
-*before* the command runs, so it never lingers over a suspend or shutdown.
+the confirm button, **Return/Space** press the focused one; with the mouse,
+hover a button to focus it and click to press it. **Cancel and Esc (or a click
+off the card) dismiss the whole overlay** — they don't drop you back on the
+picker, so a change of mind is one keystroke, not two. The overlay tears down
+its surface *before* the command runs, so it never lingers over a suspend or
+shutdown.
 
 Everything is configurable under `[power]` (see `config/waylaunch.toml`):
 `enabled_actions` filters and orders the cards (`[]` disables the overlay),

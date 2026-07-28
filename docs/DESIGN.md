@@ -233,7 +233,7 @@ class ResultProvider {
 public:
   virtual ~ResultProvider() = default;
   virtual std::string id() const = 0;                 // "applications", "files", ...
-  virtual bool is_available() const { return true; }  // e.g. fd present, index open
+  virtual bool is_available() const { return true; }  // e.g. index open
   virtual bool is_async() const { return false; }     // true → run on the worker thread
   virtual std::vector<ListItem> query(const ProviderQuery&) = 0;
   virtual bool activate(const ListItem&) = 0;          // true = handled (launch/copy/open)
@@ -301,9 +301,9 @@ power, switcher), history/frecency, the provider seam, config round-trip, and a
 deterministic off-screen renderer. Remaining gaps and their intended shape:
 
 - **Providers (host-buildable, no Wayland):** `provider_test` covers
-  `CalculatorProvider` + `CommandProvider` query and activate-dispatch. The
-  next additions are `AppProvider`/`FileProvider` with a **fake `Subprocess`** so
-  `fd` parsing/ranking is exercised without the binary.
+  `CalculatorProvider` + `CommandProvider` query and activate-dispatch, and
+  `file_provider_test` exercises `FileProvider`'s native walk, exclude
+  pruning and ranking against a temp-dir tree.
 - **Golden-image render tests:** `renderer_golden_test` renders to an off-screen
   Cairo surface and hashes the buffer — catching geometry/color regressions and
   the B5 color bug; it verified the D1 `with_layout` refactor was pixel-identical.
@@ -373,9 +373,10 @@ Each phase is independently shippable and leaves `main` runnable.
         `spawn_detached` promoted to `Subprocess::spawn_detached`.
       - **Sync providers** (`CalculatorProvider`, `CommandProvider`,
         `AppProvider`) run in `rebuild_app_items()`; **async providers**
-        (`FileProvider` via fd, `ContentProvider` via the index) run on the search
-        worker, which splits their output by `ItemKind` into the file/content
-        buckets the UI marshals back — the threading/marshaling is unchanged.
+        (`FileProvider` via the native filesystem walk, `ContentProvider` via
+        the index) run on the search worker, which splits their output by
+        `ItemKind` into the file/content buckets the UI marshals back — the
+        threading/marshaling is unchanged.
       - `register_providers()` builds the list from `[search]` flags + resolved
         roots/store; `launch_selected()` is now pure `provider->activate()`
         dispatch — the kind `switch` is gone. Adding a mode = a new provider class

@@ -40,6 +40,23 @@
 > you are done, and re-invoking the one-shot overlay is a single keybind. The
 > state graph is therefore Hidden → Active → ConfirmOpen → Dismissing, with no
 > ConfirmOpen → Active edge (supersedes §9.2).
+> **Amendment 5 (2026-07-24):** the overlay now supports **mouse selection**
+> (supersedes §11's "keyboard only for v1" parking-lot item for the power
+> overlay). Geometry is factored into a shared, unit-testable `power_layout`
+> module (`hud()` + `dialog()`) that both the renderers and pointer hit-testing
+> read — one source of truth, so a click always lands where the pill is drawn
+> (the DRY pattern §5.4 asks for, mirroring LauncherUI::relayout()). Pointer
+> handling lives in `PowerInputController::handle_pointer_{motion,click}` (input
+> dispatch stays the single authority, driving the same state machine as keys):
+> grid hover highlights a card, a left click selects-and-activates it, clicking
+> off the HUD dismisses; in the dialog, hover focuses a button, a click presses
+> it, and a click off the card dismisses. Hover needs pointer-motion events, so
+> WaylandCore gained a `MouseMoveHandler` (enter + motion) alongside the
+> existing button handler. An exclusive layer surface owns pointer focus and so
+> does not inherit the compositor's cursor — the pointer was invisible over the
+> overlay, making mouse aiming impossible — so WaylandCore now loads the user's
+> XCURSOR theme and paints the pointer itself on enter (`ensure_cursor`, via
+> `wayland-cursor`). This benefits every overlay, not just power.
 >
 > **Cross-cutting principles:** DRY · KISS · SOLID · no god modules ·
 > low cyclomatic complexity · minimum resource usage · minimum dependencies.
