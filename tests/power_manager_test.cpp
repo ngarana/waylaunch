@@ -1,5 +1,6 @@
 #include "waylaunch/power/power_manager.h"
 #include "waylaunch/power/power_input_controller.h"
+#include "waylaunch/power/power_layout.h"
 #include <xkbcommon/xkbcommon-keysyms.h>
 #include <cassert>
 #include <iostream>
@@ -283,6 +284,152 @@ void test_tick_ignored_outside_dialog() {
     std::cout << "[PASS] tick ignored outside dialog\n";
 }
 
+// --- Pointer support: hit-tests must land on the same rects the renderer draws
+//     (both come from power_layout), so tests click the geometric centers. ---
+static constexpr int SW = 1280, SH = 800;
+
+static void center_of(const power_layout::Rect& r, double& x, double& y) {
+    x = r.x + r.w / 2.0;
+    y = r.y + r.h / 2.0;
+}
+
+void test_pointer_grid_hover_and_activate() {
+    StubPowerBackend backend;
+    PowerManager m(&backend);
+    PowerInputController input(&m);
+    input.trigger();
+
+    auto h = power_layout::hud(SW, SH, static_cast<int>(m.actions().size()));
+    assert(h.cards.size() == 3);
+
+    // Hover the 3rd card → selection follows the cursor.
+    double x, y;
+    center_of(h.cards[2], x, y);
+    input.handle_pointer_motion(x, y, SW, SH);
+    assert(m.selected_index() == 2);
+
+    // Hover back to the 1st, then click it (non-destructive) → runs immediately.
+    center_of(h.cards[0], x, y);
+    input.handle_pointer_motion(x, y, SW, SH);
+    assert(m.selected_index() == 0);
+    input.handle_pointer_click(x, y, SW, SH);
+    assert(!m.is_visible());
+    assert(m.has_pending_action());
+    m.execute_pending();
+    assert(backend.executed == (std::vector<std::string>{"lock"}));
+
+    std::cout << "[PASS] pointer grid hover and activate\n";
+}
+
+void test_pointer_click_destructive_opens_dialog() {
+    StubPowerBackend backend;
+    PowerManager m(&backend);
+    PowerInputController input(&m);
+    input.trigger();
+
+    auto h = power_layout::hud(SW, SH, 3);
+    double x, y;
+    center_of(h.cards[1], x, y);            // "restart" (destructive)
+    input.handle_pointer_click(x, y, SW, SH);
+    assert(m.confirm_dialog().is_open());
+    assert(m.confirm_dialog().action().id == "restart");
+    assert(m.is_visible());
+    assert(backend.executed.empty());
+
+    std::cout << "[PASS] pointer click destructive opens dialog\n";
+}
+
+void test_pointer_dialog_buttons() {
+    StubPowerBackend backend;
+    PowerManager m(&backend);
+    PowerInputController input(&m);
+    input.trigger();
+    m.jump_to(1);
+    input.handle_key(XKB_KEY_Return, true);   // open dialog for "restart"
+    assert(m.confirm_dialog().is_open());
+
+    auto d = power_layout::dialog(SW, SH);
+    double x, y;
+
+    // Hover the Cancel button → focus moves to it (absolute, not toggle).
+    center_of(d.cancel, x, y);
+    input.handle_pointer_motion(x, y, SW, SH);
+    assert(m.confirm_dialog().focused_button() == ConfirmDialog::Button::Cancel);
+    // Hover Confirm → focus follows.
+    center_of(d.confirm, x, y);
+    input.handle_pointer_motion(x, y, SW, SH);
+    assert(m.confirm_dialog().focused_button() == ConfirmDialog::Button::Confirm);
+
+    // Click Confirm → executes and dismisses.
+    input.handle_pointer_click(x, y, SW, SH);
+    assert(!m.is_visible());
+    m.execute_pending();
+    assert(backend.executed == (std::vector<std::string>{"restart"}));
+
+    std::cout << "[PASS] pointer dialog buttons\n";
+}
+
+void test_pointer_dialog_cancel_button_dismisses() {
+    StubPowerBackend backend;
+    PowerManager m(&backend);
+    PowerInputController input(&m);
+    input.trigger();
+    m.jump_to(1);
+    input.handle_key(XKB_KEY_Return, true);
+
+    auto d = power_layout::dialog(SW, SH);
+    double x, y;
+    center_of(d.cancel, x, y);
+    input.handle_pointer_click(x, y, SW, SH);
+    assert(!m.is_visible());                  // dismissed, not back to the grid
+    assert(!m.has_pending_action());
+    assert(backend.executed.empty());
+
+    std::cout << "[PASS] pointer dialog cancel button dismisses\n";
+}
+
+void test_pointer_click_outside_dismisses() {
+    // Grid: a click off the panel dismisses the overlay.
+    {
+        StubPowerBackend backend;
+        PowerManager m(&backend);
+        PowerInputController input(&m);
+        input.trigger();
+        input.handle_pointer_click(2.0, 2.0, SW, SH);   // top-left corner
+        assert(!m.is_visible());
+        assert(backend.executed.empty());
+    }
+    // Dialog: a click off the card also dismisses (declining, one gesture).
+    {
+        StubPowerBackend backend;
+        PowerManager m(&backend);
+        PowerInputController input(&m);
+        input.trigger();
+        m.jump_to(1);
+        input.handle_key(XKB_KEY_Return, true);
+        assert(m.confirm_dialog().is_open());
+        input.handle_pointer_click(2.0, 2.0, SW, SH);
+        assert(!m.is_visible());
+        assert(backend.executed.empty());
+    }
+    std::cout << "[PASS] pointer click outside dismisses\n";
+}
+
+void test_pointer_ignored_when_inactive() {
+    StubPowerBackend backend;
+    PowerManager m(&backend);
+    PowerInputController input(&m);
+    // Never triggered: motion and clicks are inert.
+    auto h = power_layout::hud(SW, SH, 3);
+    double x, y;
+    center_of(h.cards[1], x, y);
+    input.handle_pointer_motion(x, y, SW, SH);
+    input.handle_pointer_click(x, y, SW, SH);
+    assert(!m.is_visible());
+    assert(backend.executed.empty());
+    std::cout << "[PASS] pointer ignored when inactive\n";
+}
+
 int main() {
     test_navigation_and_jump();
     test_non_destructive_runs_immediately();
@@ -294,6 +441,12 @@ int main() {
     test_dialog_confirm_focus_default();
     test_countdown_auto_confirm();
     test_tick_ignored_outside_dialog();
+    test_pointer_grid_hover_and_activate();
+    test_pointer_click_destructive_opens_dialog();
+    test_pointer_dialog_buttons();
+    test_pointer_dialog_cancel_button_dismisses();
+    test_pointer_click_outside_dismisses();
+    test_pointer_ignored_when_inactive();
     std::cout << "All power manager tests passed!\n";
     return 0;
 }
