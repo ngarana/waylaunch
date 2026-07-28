@@ -75,6 +75,7 @@ private:
     // --- Wayland event callbacks ---
     void on_key(uint32_t keysym, uint32_t utf32, bool pressed);
     void on_mouse(double x, double y, uint32_t button, bool pressed);
+    void on_mouse_move(double x, double y);
     void on_axis(double x, double y, int32_t axis, double value);
     void on_close();
     void on_redraw();

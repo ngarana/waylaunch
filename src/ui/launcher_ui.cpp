@@ -339,6 +339,7 @@ bool LauncherUI::init(Config& config) {
         if (switcher_input_) switcher_input_->handle_modifiers(mods);
     });
     wayland_->set_mouse_handler([this](double x, double y, uint32_t b, bool p) { on_mouse(x, y, b, p); });
+    wayland_->set_mouse_move_handler([this](double x, double y) { on_mouse_move(x, y); });
     wayland_->set_axis_handler([this](double x, double y, int32_t a, double v) { on_axis(x, y, a, v); });
     wayland_->set_close_handler([this]() { on_close(); });
     wayland_->set_redraw_handler([this]() { on_redraw(); });
@@ -854,7 +855,8 @@ void LauncherUI::apply_file_results() {
     rebuild_items();
 }
 
-// Worker thread: runs `fd` for the latest query and posts results back.
+// Worker thread: runs the native file walk for the latest query and posts
+// results back.
 void LauncherUI::file_worker_loop() {
     for (;;) {
         std::string q;
@@ -868,10 +870,11 @@ void LauncherUI::file_worker_loop() {
             file_has_pending_ = false;
         }
 
-        // Run the async ResultProviders (files via fd, content via the index).
-        // Each applies its own availability/min-query gate and ranking. Files and
-        // folders compete with apps for the Top Hit; content has its own CONTENTS
-        // section, so split by kind into the two buckets the UI marshals back.
+        // Run the async ResultProviders (files via the native walk, content
+        // via the index). Each applies its own availability/min-query gate
+        // and ranking. Files and folders compete with apps for the Top Hit;
+        // content has its own CONTENTS section, so split by kind into the two
+        // buckets the UI marshals back.
         ProviderQuery pq{q, to_lower(q), std::max(1, max_file_results_)};
         std::vector<ListItem> out, content_out;
         for (auto& p : providers_) {
@@ -1073,11 +1076,20 @@ void LauncherUI::on_key(uint32_t keysym, uint32_t utf32, bool pressed) {
 
 void LauncherUI::on_mouse(double x, double y, uint32_t button, bool pressed) {
     if (ui_dbg()) fprintf(stderr, "[ui] on_mouse x=%.0f y=%.0f btn=0x%x pressed=%d\n", x, y, button, pressed);
-    if (power_mode_) return;   // keyboard-only for v1 (§11)
-    if (!pressed) return;
 
     constexpr uint32_t BTN_LEFT = 0x110;
     constexpr uint32_t BTN_RIGHT = 0x111;
+
+    // Power overlay: a left click activates the card/button under the cursor;
+    // the controller hit-tests via the shared layout. Other buttons are inert.
+    if (power_mode_) {
+        if (pressed && button == BTN_LEFT && power_input_)
+            power_input_->handle_pointer_click(x, y, wayland_->surface_width(),
+                                               wayland_->surface_height());
+        return;
+    }
+
+    if (!pressed) return;
 
     // Click anywhere outside the panel dismisses the launcher.
     if (button == BTN_LEFT) {
@@ -1099,6 +1111,14 @@ void LauncherUI::on_mouse(double x, double y, uint32_t button, bool pressed) {
     if (button != BTN_LEFT) return;
     if (idx == selected_index_) launch_selected();
     else select_item(idx);
+}
+
+void LauncherUI::on_mouse_move(double x, double y) {
+    // Only the power overlay uses hover today (highlight the card/button under
+    // the cursor); the search UI selects on click, so ignore motion there.
+    if (power_mode_ && power_input_)
+        power_input_->handle_pointer_motion(x, y, wayland_->surface_width(),
+                                            wayland_->surface_height());
 }
 
 void LauncherUI::on_axis(double, double, int32_t axis, double value) {
@@ -1373,9 +1393,9 @@ bool LauncherUI::resolve_recent_preview(const std::string& query, ListItem& out)
         break;
     }
 
-    // 2) The recent query is itself an existing path (a search that was a literal
-    //    file/dir). Arbitrary filename searches need `fd` (async) and are left to
-    //    fall back to the generic recent card.
+    // 2) The recent query is itself an existing path (a search that was a
+    //    literal file/dir). Arbitrary filename searches run on the async file
+    //    worker; here we just fall back to the generic recent card.
     std::string path = expand_tilde(query);
     struct stat st;
     if (stat(path.c_str(), &st) == 0) {
