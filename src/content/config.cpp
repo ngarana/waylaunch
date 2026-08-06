@@ -149,6 +149,13 @@ ContentConfig load_content_config(const std::string& config_path) {
         // Generated caches seen dominating a real index; all are reproducible
         // build/tool output with no reason to be searchable.
         ".mypy_cache", ".pytest_cache", ".ruff_cache", ".hypothesis", ".tox",
+        // Package/tool stores. These hold content-addressed blobs rather than
+        // documents — a pnpm store alone contributed 34k files to that index.
+        ".pnpm-store", ".pre-commit-home", ".yarn", ".m2", ".ivy2", ".nuget",
+        ".gem", ".bundle", ".conda", ".stack-work", ".ccache", ".sccache",
+        ".gradle", ".terraform", ".terragrunt-cache", ".parcel-cache",
+        ".turbo", ".nx", ".angular", ".vite", ".svelte-kit", ".eggs",
+        "bower_components", "vcpkg_installed",
     };
     for (const char* d : kBuiltinExcludes) c.excludes.push_back(d);
     for (const auto& d : search_excludes) c.excludes.push_back(d);

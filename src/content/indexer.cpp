@@ -1,6 +1,7 @@
 #include "waylaunch/content/indexer.h"
 
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -55,6 +56,31 @@ bool has_prefix(const std::string& s, const std::string& prefix) {
     return s.size() == prefix.size() || s[prefix.size()] == '/';
 }
 
+// Is this the name of a content-addressed blob rather than a document?
+//
+// Object stores name files after a digest of their contents: pnpm's store
+// (126 hex chars), git objects, nix, ccache, PostgreSQL WAL segments
+// ("000000010000004000000019"), pre-commit's cache ("<md5>.resolved2"). No
+// exclude list can enumerate them all — new tools keep inventing stores — but
+// they share a giveaway: a stem that is one long run of hex digits. Such a name
+// is useless to search for, and the contents are packed/binary payloads, so
+// indexing them is pure cost. This is what filled a real index with rows like
+// "862a8eb308e285bc89683ce9378354e0…" and pushed junk into the CONTENTS list.
+//
+// The 20-digit floor keeps ordinary hex-ish names (a "deadbeef.log", an 8-digit
+// build id) indexable; a real document with a 20+ hex-digit stem is vanishingly
+// rare, and it stays findable by path//filename search regardless.
+bool looks_like_hash_name(const std::string& path) {
+    size_t slash = path.find_last_of('/');
+    std::string base = (slash == std::string::npos) ? path : path.substr(slash + 1);
+    size_t dot = base.find('.');
+    std::string stem = (dot == std::string::npos) ? base : base.substr(0, dot);
+    if (stem.size() < 20) return false;
+    for (unsigned char c : stem)
+        if (!std::isxdigit(c)) return false;
+    return true;
+}
+
 // Best-effort idle I/O priority for the calling thread (NFR3). Mirrors the
 // systemd unit's IOSchedulingClass=idle for from-source runs without systemd.
 void set_ionice_idle() {
@@ -99,6 +125,8 @@ bool Indexer::under_roots(const std::string& path) const {
 }
 
 bool Indexer::is_excluded(const std::string& path) const {
+    // Content-addressed blobs (object stores, WAL segments) — see the helper.
+    if (looks_like_hash_name(path)) return true;
     // Privacy prefixes: never read.
     for (const auto& p : cfg_.exclude_paths)
         if (has_prefix(path, p)) return true;
