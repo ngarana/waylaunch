@@ -2,6 +2,8 @@
 
 #include <toml++/toml.hpp>
 
+#include <algorithm>
+
 #include <cstdlib>
 #include <unistd.h>
 
@@ -133,13 +135,30 @@ ContentConfig load_content_config(const std::string& config_path) {
     if (c.roots.empty()) c.roots = search_roots;
     if (c.roots.empty() && !h.empty()) c.roots = {h};
 
-    // Excludes: union of [content].excludes and [search].file_excludes, plus a
-    // built-in noise list so an unconfigured user still skips junk.
-    if (c.excludes.empty()) c.excludes = search_excludes;
-    if (c.excludes.empty())
-        c.excludes = {".git", "node_modules", ".cache", "target", ".venv",
-                      "__pycache__", ".cargo", ".rustup", "go/pkg",
-                      ".local/share/Trash", ".npm", "build"};
+    // Excludes: union of [content].excludes, [search].file_excludes and a
+    // built-in noise list. These are ADDITIVE, as the shipped config documents
+    // ("merged with the built-in noise list"). This used to be a fallback chain
+    // — the built-ins applied only when the user's list was empty — so adding a
+    // single project-specific exclude silently re-admitted .venv/__pycache__/
+    // .mypy_cache and friends. On one real install that was 127k of 170k indexed
+    // files (~3/4 of a 1.5 GB index) and it is why the crawl kept hitting the
+    // size cap. There is no negation syntax: a built-in cannot be opted out of.
+    static const char* kBuiltinExcludes[] = {
+        ".git", "node_modules", ".cache", "target", ".venv", "__pycache__",
+        ".cargo", ".rustup", "go/pkg", ".local/share/Trash", ".npm", "build",
+        // Generated caches seen dominating a real index; all are reproducible
+        // build/tool output with no reason to be searchable.
+        ".mypy_cache", ".pytest_cache", ".ruff_cache", ".hypothesis", ".tox",
+    };
+    for (const char* d : kBuiltinExcludes) c.excludes.push_back(d);
+    for (const auto& d : search_excludes) c.excludes.push_back(d);
+    // Dedupe, preserving first-seen order (the user's own entries stay in front).
+    std::vector<std::string> uniq;
+    uniq.reserve(c.excludes.size());
+    for (auto& d : c.excludes)
+        if (!d.empty() && std::find(uniq.begin(), uniq.end(), d) == uniq.end())
+            uniq.push_back(d);
+    c.excludes.swap(uniq);
     return c;
 }
 
