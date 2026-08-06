@@ -102,7 +102,12 @@ struct StoreStats {
     int64_t pending = 0;
     int64_t errored = 0;
     int64_t tombstoned = 0;
-    int64_t db_bytes = 0;
+    int64_t db_bytes = 0;        // on-disk size (page_count * page_size)
+    int64_t db_free_bytes = 0;   // of which reusable free pages (freelist)
+    // Live content, i.e. what the size cap should be judged on: SQLite never
+    // returns free pages to the OS without a VACUUM, so db_bytes alone makes a
+    // churned index look permanently over-cap.
+    int64_t db_used_bytes() const { return db_bytes - db_free_bytes; }
 };
 
 struct StoreOptions {
@@ -172,6 +177,12 @@ public:
     bool clear();
     // Purge tombstones and merge FTS segments (transient→static housekeeping).
     bool maintain();
+    // Rebuild the database to return free pages to the filesystem. The schema
+    // runs auto_vacuum=0 (incremental_vacuum is unavailable), so this full
+    // VACUUM is the only way to shrink the file. It rewrites the whole DB and
+    // needs roughly its size again in temp space, so callers should only reach
+    // for it when the freelist is actually worth reclaiming.
+    bool vacuum();
 
     // ---- reader (launcher + daemon) --------------------------------------
     // Rank content matches for a user query. Two-phase: rank rowids first, then

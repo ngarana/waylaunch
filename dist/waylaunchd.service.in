@@ -1,9 +1,14 @@
 [Unit]
 Description=waylaunch content-search indexer
 Documentation=man:waylaunch(1)
-# Index while the graphical session is up; queries work even if this is down.
+# The indexer works on files, not on the display, so it is tied to the user
+# session rather than the graphical one. It used to be WantedBy/PartOf
+# graphical-session.target, but that target is only started by a session
+# manager that opts in — compositors that don't (Hyprland without uwsm) left
+# this unit "enabled" yet never started, and a PartOf stop at logout never came
+# back. Ordering after it is kept (a no-op when it is never reached) so we
+# start late during a normal graphical login.
 After=graphical-session.target
-PartOf=graphical-session.target
 
 [Service]
 Type=simple
@@ -41,4 +46,4 @@ RuntimeDirectory=waylaunch
 ReadWritePaths=%h/.local/share/waylaunch
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target

@@ -53,6 +53,12 @@ std::string build_status(const ContentConfig& cfg, Indexer& indexer, FsWatcher& 
     out += "match: " + std::string(cfg.match == MatchMode::Substring ? "substring" : "prefix") + "\n";
     out += "db: " + ContentConfig::db_path() + "\n";
     out += "db_bytes: " + std::to_string(st.db_bytes) + "\n";
+    out += "db_free_bytes: " + std::to_string(st.db_free_bytes) + "\n";
+    out += "db_used_bytes: " + std::to_string(st.db_used_bytes()) + "\n";
+    out += "size_cap_mb: " + std::to_string(cfg.max_index_mb) + "\n";
+    // Surfaced so a stalled crawl is visible in `waylaunchctl status` rather
+    // than only as a line in the journal.
+    out += "size_capped: " + yesno(s.size_capped) + "\n";
     out += "roots: " + roots + "\n";
     out += "total_files: " + std::to_string(st.total) + "\n";
     out += "indexed_files: " + std::to_string(st.indexed) + "\n";

@@ -181,9 +181,58 @@ void Indexer::index_file(const std::string& path) {
         indexed_.fetch_add(1, std::memory_order_relaxed);
 }
 
+bool Indexer::size_cap_reached(int64_t& used_out) {
+    const int64_t cap = static_cast<int64_t>(cfg_.max_index_mb) * 1024 * 1024;
+    StoreStats st = store_.stats();
+    used_out = st.db_used_bytes();
+    db_used_bytes_.store(used_out, std::memory_order_relaxed);
+    if (cap <= 0) return false;                 // unlimited
+    if (used_out <= cap) return false;
+
+    // Over cap on live content. If the file is bloated with free pages, a
+    // VACUUM may be all that is needed — but it rewrites the entire database,
+    // so only pay for it when the freelist is actually worth reclaiming.
+    constexpr int64_t kVacuumWorthwhile = 64ll * 1024 * 1024;
+    if (st.db_free_bytes >= kVacuumWorthwhile) {
+        std::fprintf(stderr, "waylaunchd: index over cap with %lld MB of free pages; "
+                     "compacting\n", static_cast<long long>(st.db_free_bytes / (1024 * 1024)));
+        store_.vacuum();
+        st = store_.stats();
+        used_out = st.db_used_bytes();
+        db_used_bytes_.store(used_out, std::memory_order_relaxed);
+        if (used_out <= cap) return false;
+    }
+    return true;
+}
+
 void Indexer::crawl_all() {
     crawling_.store(true, std::memory_order_relaxed);
     const int64_t size_cap = static_cast<int64_t>(cfg_.max_index_mb) * 1024 * 1024;
+
+    // Check the cap BEFORE walking anything. The crawl is re-run on every
+    // reconcile, and extraction is the expensive part: an index already at the
+    // cap used to re-extract a whole batch each cycle only to abort at the first
+    // commit, which is the churn (and the repeated log line) this avoids. State
+    // is latched so the message is printed on transition, not every interval.
+    {
+        int64_t used = 0;
+        if (size_cap_reached(used)) {
+            if (!size_capped_.exchange(true, std::memory_order_relaxed)) {
+                std::fprintf(stderr,
+                             "waylaunchd: index size cap reached (%lld MB used of %zu MB cap); "
+                             "no new files will be indexed. Existing entries are still "
+                             "refreshed and deletions still reclaim space. Raise "
+                             "[content] max_index_mb or narrow [content] roots/excludes.\n",
+                             static_cast<long long>(used / (1024 * 1024)), cfg_.max_index_mb);
+            }
+            crawling_.store(false, std::memory_order_relaxed);
+            return;
+        }
+        if (size_capped_.exchange(false, std::memory_order_relaxed))
+            std::fprintf(stderr, "waylaunchd: index back under cap (%lld MB); resuming crawl\n",
+                         static_cast<long long>(used / (1024 * 1024)));
+    }
+
     int since_commit = 0, since_throttle = 0;
     bool capped = false;
     store_.begin();
@@ -215,9 +264,14 @@ void Indexer::crawl_all() {
             }
             if (++since_commit >= kBatch) {
                 store_.commit();
-                if (size_cap > 0 && store_.stats().db_bytes > size_cap) {
-                    std::fprintf(stderr, "waylaunchd: index size cap (%zu MB) reached; "
-                                 "stopping crawl\n", cfg_.max_index_mb);
+                int64_t used = 0;
+                if (size_cap > 0 && size_cap_reached(used)) {
+                    if (!size_capped_.exchange(true, std::memory_order_relaxed))
+                        std::fprintf(stderr,
+                                     "waylaunchd: index size cap reached mid-crawl "
+                                     "(%lld MB used of %zu MB cap); stopping discovery\n",
+                                     static_cast<long long>(used / (1024 * 1024)),
+                                     cfg_.max_index_mb);
                     capped = true;
                     store_.begin();   // reopen a txn for the final commit below
                     break;
@@ -418,6 +472,9 @@ Indexer::Snapshot Indexer::snapshot() const {
     s.crawling = crawling_.load(std::memory_order_relaxed);
     s.paused = paused_.load(std::memory_order_relaxed);
     s.watch_degraded = watch_degraded_.load(std::memory_order_relaxed);
+    s.size_capped = size_capped_.load(std::memory_order_relaxed);
+    s.db_used_bytes = db_used_bytes_.load(std::memory_order_relaxed);
+    s.size_cap_bytes = static_cast<int64_t>(cfg_.max_index_mb) * 1024 * 1024;
     s.reconcile_interval_s = reconcile_interval();
     int64_t last = last_reconcile_s_.load(std::memory_order_relaxed);
     s.last_reconcile_ago_s = last ? (static_cast<int64_t>(::time(nullptr)) - last) : -1;

@@ -929,6 +929,14 @@ bool Store::maintain() {
     return true;
 }
 
+bool Store::vacuum() {
+    if (!db_ || read_only_) return false;
+    // VACUUM cannot run inside a transaction; checkpoint first so the WAL's
+    // pages are folded in and the rebuild sees the current database.
+    exec(db_, "PRAGMA wal_checkpoint(TRUNCATE);");
+    return exec(db_, "VACUUM;");
+}
+
 std::string Store::build_match_query(const std::string& user_query, bool prefix_last) const {
     // Turn free text into a safe FTS5 MATCH expression: quote each whitespace-
     // separated term (implicit AND). A quoted term that the tokenizer segments
@@ -1199,6 +1207,7 @@ StoreStats Store::stats() {
     s.tombstoned = scalar_int(db_, "SELECT count(*) FROM files WHERE state=2;");
     s.errored = scalar_int(db_, "SELECT count(*) FROM files WHERE state=3;");
     s.db_bytes = scalar_int(db_, "SELECT page_count*page_size FROM pragma_page_count(),pragma_page_size();");
+    s.db_free_bytes = scalar_int(db_, "SELECT freelist_count*page_size FROM pragma_freelist_count(),pragma_page_size();");
     return s;
 }
 

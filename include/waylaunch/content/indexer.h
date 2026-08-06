@@ -55,6 +55,9 @@ public:
         bool    watch_degraded = false;      // periodic reconcile is the freshness path
         int64_t last_reconcile_ago_s = -1;   // seconds since last full reconcile (-1=never)
         int64_t reconcile_interval_s = 0;    // effective backstop interval in effect
+        bool    size_capped = false;         // at max_index_mb: discovery of new files is stopped
+        int64_t db_used_bytes = 0;           // live content size the cap is judged on
+        int64_t size_cap_bytes = 0;          // effective cap (0 = unlimited)
     };
     Snapshot snapshot() const;
     const ContentConfig& config() const { return cfg_; }
@@ -64,6 +67,11 @@ private:
 
     void run_loop();
     void crawl_all();
+    // Is the index at/over max_index_mb? Judged on live content (free pages
+    // excluded); when the freelist alone would bring us back under, reclaims it
+    // with a VACUUM instead of reporting a breach. `used_out` receives the
+    // measured live size. Cap of 0 (unlimited) always returns false.
+    bool size_cap_reached(int64_t& used_out);
     void reconcile_deletions();
     void full_reconcile();          // crawl + reconcile deletions + maintain
     int  reconcile_interval() const;// effective interval (degraded vs steady), seconds
@@ -89,6 +97,8 @@ private:
     std::atomic<bool>    reindex_{false};
     std::atomic<bool>    crawling_{false};
     std::atomic<bool>    watch_degraded_{false};
+    std::atomic<bool>    size_capped_{false};      // latched; logged only on transition
+    std::atomic<int64_t> db_used_bytes_{0};        // last measured live content size
     std::atomic<int64_t> last_reconcile_s_{0};   // wall-clock (time()) of last reconcile; 0=never
     std::atomic<int64_t> indexed_{0};
     std::atomic<int64_t> errors_{0};
