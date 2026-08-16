@@ -45,6 +45,7 @@ void SwitcherInputController::trigger() {
     if (!manager_) return;
     state_machine_.process_event(SwitcherEvent::Trigger);
     manager_->show();
+    mod_was_held_ = false;
 }
 
 void SwitcherInputController::cancel() {
@@ -77,8 +78,15 @@ bool SwitcherInputController::handle_modifiers(uint32_t mods_depressed) {
 
     // Check if modifier key (Super or Alt) has been released
     bool holding_mod = (mods_depressed & MOD_SUPER) || (mods_depressed & MOD_ALT);
-    
-    if (state_machine_.is_active() && !holding_mod) {
+    if (holding_mod) mod_was_held_ = true;
+
+    // Confirm only on a genuine held→released edge. The first `modifiers`
+    // report after our surface gains keyboard focus can arrive all-zero before
+    // it reflects the physically-held trigger key (or, on a cold/SIGUSR1 show,
+    // simply predates any hold at all) — treating that lone zero sample as a
+    // release would confirm the default selection instantly, before the user
+    // gets to Tab/arrow to anything else.
+    if (state_machine_.is_active() && !holding_mod && mod_was_held_) {
         state_machine_.process_event(SwitcherEvent::Confirm);
         if (manager_) {
             manager_->confirm_selection(seat_);
