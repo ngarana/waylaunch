@@ -96,6 +96,7 @@ file_roots       = ["~"]
 file_excludes    = [
     ".git", "node_modules", ".cache", "target", ".venv",
     "__pycache__", ".cargo", ".rustup", "go/pkg", ".local/share/Trash",
+    "court/backups"
 ]
 file_min_query   = 2         # min characters typed before file search fires
 max_file_results = 6         # files kept after ranking (prefix > substring,
@@ -142,10 +143,10 @@ enabled = true
 enable        = true          # master switch (also gates the UI CONTENTS section)
 # roots       = ["~"]         # defaults to [search].file_roots, then ~
 # excludes    = [".git", "node_modules", ".cache"]   # defaults to [search].file_excludes
-exclude_paths = ["~/.ssh", "~/.gnupg", "~/.mozilla"] # privacy: never read (merged w/ defaults)
+exclude_paths = ["~/.ssh", "~/.gnupg", "~/.mozilla", "~/Coding/court/backups"] # privacy: never read (merged w/ defaults)
 max_file_mb   = 8             # don't open files larger than this
 max_text_mb   = 2             # cap extracted text per file
-max_index_mb  = 0             # hard cap on index size (0 = unlimited)
+max_index_mb  = 1000             # hard cap on index size (0 = unlimited)
 match         = "prefix"      # "prefix" (as-you-type) | "substring" (trigram)
 min_query     = 3             # chars before content search fires
 max_results   = 6             # CONTENTS rows shown
