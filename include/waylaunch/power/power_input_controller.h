@@ -12,7 +12,7 @@ namespace waylaunch {
 // a grid dispatch table; while the confirmation dialog is open, only
 // Return (confirm) and Esc (cancel) are valid — everything else is swallowed.
 class PowerInputController {
-public:
+  public:
     explicit PowerInputController(PowerManager* manager);
 
     // Returns true if the event was consumed by the power overlay.
@@ -33,11 +33,11 @@ public:
     bool is_active() const { return state_machine_.is_active(); }
     void trigger();
 
-private:
+  private:
     void setup_dispatch_table();
-    void activate();   // Return/Space on the grid
-    void confirm();    // Return inside the dialog
-    void cancel();     // Esc (dialog → grid, grid → dismiss)
+    void activate(); // Return/Space on the grid
+    void confirm();  // Return inside the dialog
+    void cancel();   // Esc (dialog → grid, grid → dismiss)
 
     using KeyActionHandler = std::function<void()>;
     std::unordered_map<uint32_t, KeyActionHandler> key_dispatch_table_;

@@ -1,21 +1,22 @@
 #include "waylaunch/providers/content_provider.h"
+#include "waylaunch/clipboard.h"
 #include "waylaunch/content/store.h"
 #include "waylaunch/history.h"
 #include "waylaunch/search_util.h"
 #include "waylaunch/subprocess.h"
-#include "waylaunch/clipboard.h"
 
 #include <filesystem>
 #include <string>
+#include <utility>
 
 namespace waylaunch {
 
 std::vector<ListItem> ContentProvider::query(const ProviderQuery& q) {
     std::vector<ListItem> out;
-    if (!store_ || static_cast<int>(q.text.size()) < min_query_) return out;
+    if (!store_ || std::cmp_less(q.text.size(), min_query_)) return out;
 
-    auto hits = store_->search(q.text, max_results_,
-                               std::string(1, kHlOpen), std::string(1, kHlClose));
+    auto hits =
+        store_->search(q.text, max_results_, std::string(1, kHlOpen), std::string(1, kHlClose));
     for (auto& h : hits) {
         ListItem it;
         it.kind = ItemKind::Content;
@@ -27,7 +28,7 @@ std::vector<ListItem> ContentProvider::query(const ProviderQuery& q) {
         it.snippet = h.snippet;
         it.icon_name = icon_for_file(h.path);
         it.score = static_cast<float>(h.score);
-        if (history_) it.score += 0.25f * history_->frecency(h.path);
+        if (history_) it.score += 0.25F * history_->frecency(h.path);
         out.push_back(std::move(it));
     }
     return out;

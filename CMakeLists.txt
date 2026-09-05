@@ -373,3 +373,55 @@ install(FILES doc/waylaunch.1 DESTINATION ${CMAKE_INSTALL_PREFIX}/share/man/man1
 
 # toml++ (system package)
 target_link_libraries(waylaunch PRIVATE tomlplusplus::tomlplusplus)
+
+# ---------------------------------------------------------------------------
+# Code quality gates (clang-format + clang-tidy). Industry-standard enforcement:
+# `format-check` fails CI on drift, `format` fixes in place, `tidy` lints.
+# ---------------------------------------------------------------------------
+find_program(CLANG_FORMAT_BIN clang-format)
+find_program(CLANG_TIDY_BIN clang-tidy)
+
+file(GLOB_RECURSE QUALITY_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/*.cpp
+    ${CMAKE_SOURCE_DIR}/src/*.h
+    ${CMAKE_SOURCE_DIR}/include/*.h
+    ${CMAKE_SOURCE_DIR}/include/*.cpp
+    ${CMAKE_SOURCE_DIR}/tests/*.cpp
+    ${CMAKE_SOURCE_DIR}/tests/*.h
+)
+# Exclude generated files under any build/ directory (e.g. tests/build).
+list(FILTER QUALITY_SOURCES EXCLUDE REGEX ".*/build/.*")
+
+# clang-tidy operates on translation units; headers are covered via
+# HeaderFilterRegex in .clang-tidy when their including .cpp is checked.
+file(GLOB_RECURSE TIDY_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/*.cpp
+    ${CMAKE_SOURCE_DIR}/tests/*.cpp
+)
+list(FILTER TIDY_SOURCES EXCLUDE REGEX ".*/build/.*")
+
+if(CLANG_FORMAT_BIN)
+    add_custom_target(format
+        COMMAND ${CLANG_FORMAT_BIN} -i ${QUALITY_SOURCES}
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Applying clang-format to all sources"
+        VERBATIM
+    )
+    add_custom_target(format-check
+        COMMAND ${CLANG_FORMAT_BIN} --dry-run --Werror ${QUALITY_SOURCES}
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Checking clang-format compliance"
+        VERBATIM
+    )
+endif()
+
+if(CLANG_TIDY_BIN)
+    # Compile commands are exported at the top (CMAKE_EXPORT_COMPILE_COMMANDS).
+    # Run from a configured build dir: `clang-tidy -p build <files>`.
+    add_custom_target(tidy
+        COMMAND ${CLANG_TIDY_BIN} -p ${CMAKE_BINARY_DIR} ${TIDY_SOURCES}
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Running clang-tidy over all sources"
+        VERBATIM
+    )
+endif()

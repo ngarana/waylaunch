@@ -13,7 +13,7 @@ uint64_t fnv1a(const std::vector<uint8_t>& bytes) {
     }
     return hash;
 }
-}
+} // namespace
 
 int main() {
     constexpr int width = 320;
@@ -26,10 +26,8 @@ int main() {
     renderer.clear(waylaunch::Color::from_rgba(0.08, 0.08, 0.12, 1.0));
     renderer.rounded_rect(18, 22, 284, 112, 16,
                           waylaunch::Color::from_rgba(0.12, 0.15, 0.22, 0.96));
-    renderer.fill_rect(36, 56, 248, 1,
-                       waylaunch::Color::from_rgba(0.54, 0.71, 0.98, 0.55));
-    renderer.draw_search_glyph(50, 76, 24,
-                               waylaunch::Color::from_rgba(0.54, 0.71, 0.98, 0.95));
+    renderer.fill_rect(36, 56, 248, 1, waylaunch::Color::from_rgba(0.54, 0.71, 0.98, 0.55));
+    renderer.draw_search_glyph(50, 76, 24, waylaunch::Color::from_rgba(0.54, 0.71, 0.98, 0.95));
     renderer.end();
 
     constexpr uint64_t expected = 13195369424614640600ULL;

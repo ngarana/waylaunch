@@ -12,7 +12,7 @@ struct PowerConfig;
 // talks to this interface only, so tests drive it with a stub and never spawn
 // real commands.
 class IPowerActionBackend {
-public:
+  public:
     virtual ~IPowerActionBackend() = default;
     virtual const std::vector<PowerAction>& actions() const = 0;
     // Run the action's command (fork+exec via Subprocess — no shell). Returns
@@ -24,7 +24,7 @@ public:
 // config — ordering/filtering via enabled_actions, per-action command and
 // confirm-text overrides.
 class PowerActionBackend : public IPowerActionBackend {
-public:
+  public:
     explicit PowerActionBackend(const PowerConfig& cfg);
 
     const std::vector<PowerAction>& actions() const override { return actions_; }
@@ -39,7 +39,7 @@ public:
     // static so the override-merging tests can exercise it directly.
     static std::vector<std::string> split_argv(const std::string& command);
 
-private:
+  private:
     std::vector<PowerAction> actions_;
 };
 

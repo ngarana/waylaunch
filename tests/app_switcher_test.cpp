@@ -1,47 +1,37 @@
-#include "waylaunch/switcher/toplevel_backend.h"
 #include "waylaunch/switcher/app_switcher_manager.h"
 #include "waylaunch/switcher/switcher_state_machine.h"
+#include "waylaunch/switcher/toplevel_backend.h"
+#include <algorithm>
 #include <cassert>
 #include <iostream>
-#include <algorithm>
 
 namespace waylaunch {
 
 class MockToplevelBackend : public IToplevelBackend {
-public:
+  public:
     bool init(wl_display*, wl_registry*) override { return true; }
 
-    void add_observer(IToplevelObserver* obs) override {
-        observers_.push_back(obs);
-    }
+    void add_observer(IToplevelObserver* obs) override { observers_.push_back(obs); }
 
-    void remove_observer(IToplevelObserver* obs) override {
-        observers_.erase(std::remove(observers_.begin(), observers_.end(), obs), observers_.end());
-    }
+    void remove_observer(IToplevelObserver* obs) override { std::erase(observers_, obs); }
 
     void activate(uintptr_t handle_id, wl_seat*) override {
         activated_handles_.push_back(handle_id);
         for (auto& w : windows_) {
             w.is_active = (w.handle_id == handle_id);
-            if (w.is_active) {
-                notify_updated(w);
-            }
+            if (w.is_active) { notify_updated(w); }
         }
     }
 
     void close(uintptr_t handle_id) override {
         closed_handles_.push_back(handle_id);
-        windows_.erase(
-            std::remove_if(windows_.begin(), windows_.end(), [handle_id](const ToplevelWindow& w) {
-                return w.handle_id == handle_id;
-            }),
-            windows_.end()
-        );
+        std::erase_if(windows_,
+                      [handle_id](const ToplevelWindow& w) { return w.handle_id == handle_id; });
         notify_closed(handle_id);
     }
 
     void set_minimized(uintptr_t handle_id, bool minimize) override {
-        minimized_calls_.push_back({handle_id, minimize});
+        minimized_calls_.push_back({.handle = handle_id, .min = minimize});
         for (auto& w : windows_) {
             if (w.handle_id == handle_id) {
                 w.is_minimized = minimize;
@@ -51,12 +41,11 @@ public:
         }
     }
 
-    const std::vector<ToplevelWindow>& windows() const override {
-        return windows_;
-    }
+    const std::vector<ToplevelWindow>& windows() const override { return windows_; }
 
     // Helper methods for test setup
-    void add_mock_window(uintptr_t handle, const std::string& app_id, const std::string& title, bool active = false) {
+    void add_mock_window(uintptr_t handle, const std::string& app_id, const std::string& title,
+                         bool active = false) {
         ToplevelWindow win;
         win.handle_id = handle;
         win.app_id = app_id;
@@ -69,7 +58,7 @@ public:
     const std::vector<uintptr_t>& activated_handles() const { return activated_handles_; }
     const std::vector<uintptr_t>& closed_handles() const { return closed_handles_; }
 
-private:
+  private:
     void notify_created(const ToplevelWindow& w) {
         for (auto* obs : observers_) obs->on_window_created(w);
     }
@@ -84,7 +73,10 @@ private:
     std::vector<ToplevelWindow> windows_;
     std::vector<uintptr_t> activated_handles_;
     std::vector<uintptr_t> closed_handles_;
-    struct MinimizedCall { uintptr_t handle; bool min; };
+    struct MinimizedCall {
+        uintptr_t handle;
+        bool min;
+    };
     std::vector<MinimizedCall> minimized_calls_;
 };
 

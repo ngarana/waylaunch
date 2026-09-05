@@ -11,7 +11,7 @@ class HistoryStore;
 // Custom [[commands]] entries, matched by name; Return runs the command via
 // /bin/sh. Register only when [search].commands is enabled.
 class CommandProvider : public ResultProvider {
-public:
+  public:
     CommandProvider(const std::vector<Command>* commands, const HistoryStore* history)
         : commands_(commands), history_(history) {}
 
@@ -19,7 +19,7 @@ public:
     std::vector<ListItem> query(const ProviderQuery&) override;
     bool activate(const ListItem&) override;
 
-private:
+  private:
     const std::vector<Command>* commands_;
     const HistoryStore* history_;
 };

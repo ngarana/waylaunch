@@ -1,16 +1,16 @@
-#include "waylaunch/power/power_manager.h"
 #include "waylaunch/power/power_input_controller.h"
 #include "waylaunch/power/power_layout.h"
-#include <xkbcommon/xkbcommon-keysyms.h>
+#include "waylaunch/power/power_manager.h"
 #include <cassert>
 #include <iostream>
+#include <xkbcommon/xkbcommon-keysyms.h>
 
 namespace waylaunch {
 
 // Stub backend (≈ the switcher tests' MockToplevelBackend): records executions
 // instead of spawning commands.
 class StubPowerBackend : public IPowerActionBackend {
-public:
+  public:
     StubPowerBackend() {
         auto add = [this](const char* id, bool destructive, const char* subtext = "") {
             PowerAction a;
@@ -35,7 +35,7 @@ public:
 
     std::vector<std::string> executed;
 
-private:
+  private:
     std::vector<PowerAction> acts_;
 };
 
@@ -54,14 +54,14 @@ void test_navigation_and_jump() {
     m.navigate_next();
     assert(m.selected_index() == 1);
     m.navigate_next();
-    m.navigate_next();               // wraps
+    m.navigate_next(); // wraps
     assert(m.selected_index() == 0);
-    m.navigate_prev();               // wraps backwards
+    m.navigate_prev(); // wraps backwards
     assert(m.selected_index() == 2);
 
     m.jump_to(1);
     assert(m.selected_index() == 1);
-    m.jump_to(99);                   // out of range: ignored
+    m.jump_to(99); // out of range: ignored
     assert(m.selected_index() == 1);
 
     std::cout << "[PASS] navigation and jump\n";
@@ -72,11 +72,11 @@ void test_non_destructive_runs_immediately() {
     PowerManager m(&backend);
     m.show();
 
-    m.jump_to(0);                    // "lock"
+    m.jump_to(0); // "lock"
     m.activate_selected();
     assert(!m.confirm_dialog().is_open());
-    assert(!m.is_visible());         // hid itself
-    assert(m.has_pending_action());  // command deferred until surface is gone
+    assert(!m.is_visible());        // hid itself
+    assert(m.has_pending_action()); // command deferred until surface is gone
     assert(backend.executed.empty());
 
     assert(m.execute_pending() == 0);
@@ -92,11 +92,11 @@ void test_destructive_gated_behind_dialog() {
     PowerManager m(&backend);
     m.show();
 
-    m.jump_to(1);                    // "restart" (destructive)
+    m.jump_to(1); // "restart" (destructive)
     m.activate_selected();
     assert(m.confirm_dialog().is_open());
     assert(m.confirm_dialog().action().id == "restart");
-    assert(m.is_visible());          // still up, waiting on the dialog
+    assert(m.is_visible()); // still up, waiting on the dialog
     assert(!m.has_pending_action());
 
     // Cancelling the dialog dismisses the whole overlay — it does NOT drop back
@@ -116,7 +116,7 @@ void test_dialog_confirm_executes() {
     PowerManager m(&backend);
     m.show();
 
-    m.confirm();                     // reject: no dialog open, no action captured
+    m.confirm(); // reject: no dialog open, no action captured
     assert(!m.has_pending_action());
 
     m.jump_to(1);
@@ -136,9 +136,9 @@ void test_confirm_destructive_off() {
     m.set_confirm_destructive(false);
     m.show();
 
-    m.jump_to(2);                    // "suspend" (destructive)
+    m.jump_to(2); // "suspend" (destructive)
     m.activate_selected();
-    assert(!m.confirm_dialog().is_open());   // global toggle skips the dialog
+    assert(!m.confirm_dialog().is_open()); // global toggle skips the dialog
     assert(!m.is_visible());
     m.execute_pending();
     assert(backend.executed == (std::vector<std::string>{"suspend"}));
@@ -151,7 +151,7 @@ void test_input_controller_dispatch() {
     PowerManager m(&backend);
     PowerInputController input(&m);
 
-    assert(!input.handle_key(XKB_KEY_Return, true));   // inactive: not consumed
+    assert(!input.handle_key(XKB_KEY_Return, true)); // inactive: not consumed
 
     input.trigger();
     assert(input.is_active());
@@ -165,7 +165,7 @@ void test_input_controller_dispatch() {
     assert(m.selected_index() == 2);
     assert(input.handle_key(XKB_KEY_2, true));
     assert(m.selected_index() == 1);
-    assert(input.handle_key(XKB_KEY_x, true));         // unmapped: swallowed
+    assert(input.handle_key(XKB_KEY_x, true)); // unmapped: swallowed
     assert(m.selected_index() == 1);
 
     // Return on destructive → modal dialog: Tab must NOT reach the grid.
@@ -193,7 +193,7 @@ void test_dialog_focus_navigation() {
     PowerInputController input(&m);
 
     input.trigger();
-    input.handle_key(XKB_KEY_2, true);               // "restart" (destructive)
+    input.handle_key(XKB_KEY_2, true); // "restart" (destructive)
     input.handle_key(XKB_KEY_Return, true);
     assert(m.confirm_dialog().is_open());
     assert(m.confirm_dialog().focused_button() == ConfirmDialog::Button::Confirm);
@@ -201,7 +201,7 @@ void test_dialog_focus_navigation() {
     // ←/→/Tab move focus between the two buttons instead of reaching the grid.
     input.handle_key(XKB_KEY_Left, true);
     assert(m.confirm_dialog().focused_button() == ConfirmDialog::Button::Cancel);
-    assert(m.selected_index() == 1);                 // grid untouched
+    assert(m.selected_index() == 1); // grid untouched
     input.handle_key(XKB_KEY_Tab, true);
     assert(m.confirm_dialog().focused_button() == ConfirmDialog::Button::Confirm);
     input.handle_key(XKB_KEY_Right, true);
@@ -226,7 +226,7 @@ void test_dialog_confirm_focus_default() {
     PowerInputController input(&m);
 
     input.trigger();
-    input.handle_key(XKB_KEY_2, true);               // "restart" (destructive)
+    input.handle_key(XKB_KEY_2, true); // "restart" (destructive)
     input.handle_key(XKB_KEY_Return, true);
     assert(m.confirm_dialog().focused_button() == ConfirmDialog::Button::Confirm);
 
@@ -247,16 +247,16 @@ void test_countdown_auto_confirm() {
     PowerInputController input(&m);
 
     input.trigger();
-    m.jump_to(1);                                    // "restart"
+    m.jump_to(1); // "restart"
     input.handle_key(XKB_KEY_Return, true);
     assert(m.confirm_dialog().is_open());
-    assert(m.confirm_dialog().has_countdown());      // config propagated
+    assert(m.confirm_dialog().has_countdown()); // config propagated
 
     Clock::time_point now = Clock::now();
-    input.tick(now + std::chrono::seconds(29));      // still counting: no-op
+    input.tick(now + std::chrono::seconds(29)); // still counting: no-op
     assert(m.confirm_dialog().is_open());
 
-    input.tick(now + std::chrono::seconds(31));      // expired: auto-confirm
+    input.tick(now + std::chrono::seconds(31)); // expired: auto-confirm
     assert(!m.confirm_dialog().is_open());
     assert(!m.is_visible());
     assert(m.has_pending_action());
@@ -273,11 +273,11 @@ void test_tick_ignored_outside_dialog() {
     m.set_countdown_seconds(1);
     PowerInputController input(&m);
 
-    input.tick(Clock::now() + std::chrono::hours(1));   // hidden: no-op
+    input.tick(Clock::now() + std::chrono::hours(1)); // hidden: no-op
     assert(!m.is_visible());
 
     input.trigger();
-    input.tick(Clock::now() + std::chrono::hours(1));   // grid, no dialog: no-op
+    input.tick(Clock::now() + std::chrono::hours(1)); // grid, no dialog: no-op
     assert(m.is_visible());
     assert(backend.executed.empty());
 
@@ -289,8 +289,8 @@ void test_tick_ignored_outside_dialog() {
 static constexpr int SW = 1280, SH = 800;
 
 static void center_of(const power_layout::Rect& r, double& x, double& y) {
-    x = r.x + r.w / 2.0;
-    y = r.y + r.h / 2.0;
+    x = r.x + (r.w / 2.0);
+    y = r.y + (r.h / 2.0);
 }
 
 void test_pointer_grid_hover_and_activate() {
@@ -303,7 +303,8 @@ void test_pointer_grid_hover_and_activate() {
     assert(h.cards.size() == 3);
 
     // Hover the 3rd card → selection follows the cursor.
-    double x, y;
+    double x;
+    double y;
     center_of(h.cards[2], x, y);
     input.handle_pointer_motion(x, y, SW, SH);
     assert(m.selected_index() == 2);
@@ -328,8 +329,9 @@ void test_pointer_click_destructive_opens_dialog() {
     input.trigger();
 
     auto h = power_layout::hud(SW, SH, 3);
-    double x, y;
-    center_of(h.cards[1], x, y);            // "restart" (destructive)
+    double x;
+    double y;
+    center_of(h.cards[1], x, y); // "restart" (destructive)
     input.handle_pointer_click(x, y, SW, SH);
     assert(m.confirm_dialog().is_open());
     assert(m.confirm_dialog().action().id == "restart");
@@ -345,11 +347,12 @@ void test_pointer_dialog_buttons() {
     PowerInputController input(&m);
     input.trigger();
     m.jump_to(1);
-    input.handle_key(XKB_KEY_Return, true);   // open dialog for "restart"
+    input.handle_key(XKB_KEY_Return, true); // open dialog for "restart"
     assert(m.confirm_dialog().is_open());
 
     auto d = power_layout::dialog(SW, SH);
-    double x, y;
+    double x;
+    double y;
 
     // Hover the Cancel button → focus moves to it (absolute, not toggle).
     center_of(d.cancel, x, y);
@@ -378,10 +381,11 @@ void test_pointer_dialog_cancel_button_dismisses() {
     input.handle_key(XKB_KEY_Return, true);
 
     auto d = power_layout::dialog(SW, SH);
-    double x, y;
+    double x;
+    double y;
     center_of(d.cancel, x, y);
     input.handle_pointer_click(x, y, SW, SH);
-    assert(!m.is_visible());                  // dismissed, not back to the grid
+    assert(!m.is_visible()); // dismissed, not back to the grid
     assert(!m.has_pending_action());
     assert(backend.executed.empty());
 
@@ -395,7 +399,7 @@ void test_pointer_click_outside_dismisses() {
         PowerManager m(&backend);
         PowerInputController input(&m);
         input.trigger();
-        input.handle_pointer_click(2.0, 2.0, SW, SH);   // top-left corner
+        input.handle_pointer_click(2.0, 2.0, SW, SH); // top-left corner
         assert(!m.is_visible());
         assert(backend.executed.empty());
     }
@@ -421,7 +425,8 @@ void test_pointer_ignored_when_inactive() {
     PowerInputController input(&m);
     // Never triggered: motion and clicks are inert.
     auto h = power_layout::hud(SW, SH, 3);
-    double x, y;
+    double x;
+    double y;
     center_of(h.cards[1], x, y);
     input.handle_pointer_motion(x, y, SW, SH);
     input.handle_pointer_click(x, y, SW, SH);

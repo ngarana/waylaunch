@@ -7,8 +7,8 @@
 #include <string>
 
 int main() {
-    const auto stem = "waylaunch-config-test-" + std::to_string(
-        std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto stem = "waylaunch-config-test-" +
+                      std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     const auto input = std::filesystem::temp_directory_path() / (stem + ".toml");
     const auto output = std::filesystem::temp_directory_path() / (stem + "-saved.toml");
 

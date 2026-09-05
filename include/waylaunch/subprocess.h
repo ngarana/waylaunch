@@ -1,13 +1,13 @@
 #pragma once
 
-#include <string>
-#include <vector>
 #include <functional>
-#include <optional>
-#include <thread>
 #include <mutex>
+#include <optional>
 #include <signal.h>
+#include <string>
 #include <sys/types.h>
+#include <thread>
+#include <vector>
 
 namespace waylaunch {
 
@@ -18,9 +18,9 @@ struct ProcessResult {
 };
 
 class Subprocess {
-public:
+  public:
     static ProcessResult run(const std::vector<std::string>& argv,
-                            const std::string& stdin_data = "");
+                             const std::string& stdin_data = "");
     static bool command_exists(const std::string& command);
     // Launch fully detached from waylaunch (double-fork + setsid) with an argv
     // vector, so arguments are never re-parsed by a shell. Fire-and-forget: the

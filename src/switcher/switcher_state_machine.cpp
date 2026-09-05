@@ -16,9 +16,7 @@ void SwitcherStateMachine::process_event(SwitcherEvent event) {
             }
             break;
 
-        case SwitcherState::Dismissing:
-            state_ = SwitcherState::Hidden;
-            break;
+        case SwitcherState::Dismissing: state_ = SwitcherState::Hidden; break;
     }
 }
 

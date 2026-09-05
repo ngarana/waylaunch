@@ -10,7 +10,7 @@ class HistoryStore;
 // Installed applications (over the cached .desktop scan), ranked by name match +
 // frecency. Register only when [search].applications is enabled.
 class AppProvider : public ResultProvider {
-public:
+  public:
     AppProvider(const AppLauncher* apps, const HistoryStore* history)
         : apps_(apps), history_(history) {}
 
@@ -19,7 +19,7 @@ public:
     std::vector<ListItem> query(const ProviderQuery&) override;
     bool activate(const ListItem&) override;
 
-private:
+  private:
     const AppLauncher* apps_;
     const HistoryStore* history_;
 };

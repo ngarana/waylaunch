@@ -2,15 +2,15 @@
 
 #include "waylaunch/switcher/app_switcher_manager.h"
 #include "waylaunch/switcher/switcher_state_machine.h"
-#include <unordered_map>
 #include <functional>
+#include <unordered_map>
 
 struct wl_seat;
 
 namespace waylaunch {
 
 class SwitcherInputController {
-public:
+  public:
     SwitcherInputController(AppSwitcherManager* manager, wl_seat* seat);
 
     // Returns true if event was consumed by the switcher
@@ -20,9 +20,9 @@ public:
     bool is_active() const { return state_machine_.is_active(); }
     void trigger();
     void cancel();
-    void confirm();   // activate the selected app now (Enter / release fallback)
+    void confirm(); // activate the selected app now (Enter / release fallback)
 
-private:
+  private:
     void setup_dispatch_table();
 
     using KeyActionHandler = std::function<void()>;

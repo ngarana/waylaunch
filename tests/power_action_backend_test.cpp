@@ -1,5 +1,5 @@
-#include "waylaunch/power/power_action_backend.h"
 #include "waylaunch/config.h"
+#include "waylaunch/power/power_action_backend.h"
 #include <cassert>
 #include <iostream>
 
@@ -60,12 +60,12 @@ void test_confirm_text_override() {
 
 void test_enabled_subset_and_order() {
     PowerConfig cfg;
-    cfg.enabled_actions = {"suspend", "lock", "bogus"};   // custom order, unknown id
+    cfg.enabled_actions = {"suspend", "lock", "bogus"}; // custom order, unknown id
     PowerActionBackend backend{cfg};
 
     const auto& acts = backend.actions();
-    assert(acts.size() == 2);            // "bogus" ignored
-    assert(acts[0].id == "suspend");     // list order preserved
+    assert(acts.size() == 2);        // "bogus" ignored
+    assert(acts[0].id == "suspend"); // list order preserved
     assert(acts[1].id == "lock");
     std::cout << "[PASS] enabled subset and order\n";
 }
@@ -101,7 +101,8 @@ void test_resolve_argv_normalization() {
 void test_split_argv() {
     using V = std::vector<std::string>;
     assert(PowerActionBackend::split_argv("loginctl poweroff") == (V{"loginctl", "poweroff"}));
-    assert(PowerActionBackend::split_argv("sh -c \"echo hi there\"") == (V{"sh", "-c", "echo hi there"}));
+    assert(PowerActionBackend::split_argv("sh -c \"echo hi there\"") ==
+           (V{"sh", "-c", "echo hi there"}));
     assert(PowerActionBackend::split_argv("cmd 'a b'  c") == (V{"cmd", "a b", "c"}));
     assert(PowerActionBackend::split_argv("  spaced   out  ") == (V{"spaced", "out"}));
     assert(PowerActionBackend::split_argv("").empty());

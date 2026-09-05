@@ -8,7 +8,7 @@ namespace waylaunch {
 
 namespace {
 std::string to_lower(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+    std::ranges::transform(s, s.begin(), ::tolower);
     return s;
 }
 } // namespace
@@ -27,7 +27,7 @@ std::vector<ListItem> CommandProvider::query(const ProviderQuery& q) {
         it.action_command = cmd.command;
         it.icon_name = cmd.icon.empty() ? "utilities-terminal" : cmd.icon;
         it.description = cmd.category.empty() ? "Command" : cmd.category;
-        it.score = (pos == 0 ? 900.0f : 400.0f) - std::min<size_t>(pos, 200);
+        it.score = (pos == 0 ? 900.0F : 400.0F) - static_cast<float>(std::min<size_t>(pos, 200));
         if (history_) it.score += history_->frecency("command:" + cmd.command);
         out.push_back(std::move(it));
     }

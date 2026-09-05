@@ -1,14 +1,12 @@
 #include "waylaunch/switcher/switcher_renderer.h"
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace waylaunch {
 
-void SwitcherRenderer::render(Renderer& renderer,
-                               const AppSwitcherManager& manager,
-                               const Theme& theme,
-                               int screen_w,
-                               int screen_h) {
+void SwitcherRenderer::render(Renderer& renderer, const AppSwitcherManager& manager,
+                              const Theme& theme, int screen_w, int screen_h) {
     if (!manager.is_visible()) return;
 
     const auto& groups = manager.app_groups();
@@ -27,12 +25,10 @@ void SwitcherRenderer::render(Renderer& renderer,
     int num_items = static_cast<int>(groups.size());
     int content_width = num_items * item_width;
     int hud_width = content_width + (padding_x * 2);
-    
+
     // Constraint max width to 80% screen width
     int max_hud_width = static_cast<int>(screen_w * 0.8);
-    if (hud_width > max_hud_width) {
-        hud_width = max_hud_width;
-    }
+    hud_width = std::min(hud_width, max_hud_width);
 
     int hud_height = item_height + (padding_y * 2);
     int hud_x = (screen_w - hud_width) / 2;
@@ -62,7 +58,7 @@ void SwitcherRenderer::render(Renderer& renderer,
         if (ix + item_width > hud_x + hud_width - padding_x) break;
 
         const auto& grp = groups[i];
-        bool is_selected = (static_cast<size_t>(i) == selected_idx);
+        bool is_selected = (std::cmp_equal(i, selected_idx));
 
         // Selection card background pill
         if (is_selected) {
@@ -71,15 +67,15 @@ void SwitcherRenderer::render(Renderer& renderer,
         }
 
         // Draw Icon
-        int icon_x = ix + (item_width - icon_size) / 2;
-        int icon_y = iy + (item_height - icon_size) / 2;
-        
+        int icon_x = ix + ((item_width - icon_size) / 2);
+        int icon_y = iy + ((item_height - icon_size) / 2);
+
         std::string label = grp.display_name.empty() ? "?" : grp.display_name.substr(0, 1);
         renderer.draw_icon(icon_x, icon_y, icon_size, grp.icon_name, label, theme.accent);
 
         // Draw Minimized Indicator Dot if all windows are minimized
         if (grp.is_all_minimized()) {
-            renderer.rounded_rect(icon_x + icon_size / 2 - 3, iy + item_height - 12, 6, 6, 3,
+            renderer.rounded_rect(icon_x + (icon_size / 2) - 3, iy + item_height - 12, 6, 6, 3,
                                   Color::from_rgba(0.7, 0.7, 0.7, 0.8));
         }
     }

@@ -4,13 +4,15 @@
 
 namespace waylaunch {
 
-namespace content { class Store; }
+namespace content {
+class Store;
+}
 class HistoryStore;
 
 // Full-text CONTENTS search over the waylaunchd index (BM25-ranked, best-first).
 // Async (runs on the search worker). Register only when the index is open.
 class ContentProvider : public ResultProvider {
-public:
+  public:
     ContentProvider(content::Store* store, int min_query, int max_results,
                     const HistoryStore* history)
         : store_(store), min_query_(min_query), max_results_(max_results), history_(history) {}
@@ -21,7 +23,7 @@ public:
     std::vector<ListItem> query(const ProviderQuery&) override;
     bool activate(const ListItem&) override;
 
-private:
+  private:
     content::Store* store_;
     int min_query_;
     int max_results_;

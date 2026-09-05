@@ -2,10 +2,10 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
-#include <string>
-#include <vector>
 #include <fcntl.h>
+#include <string>
 #include <unistd.h>
+#include <vector>
 
 #ifdef HAS_FOREIGN_TOPLEVEL
 #include <wayland-client.h>
@@ -16,8 +16,6 @@ constexpr uint32_t STATE_MAXIMIZED = 0;
 constexpr uint32_t STATE_MINIMIZED = 1;
 constexpr uint32_t STATE_ACTIVATED = 2;
 constexpr uint32_t STATE_FULLSCREEN = 3;
-
-extern "C" char** environ;
 
 namespace {
 
@@ -31,7 +29,7 @@ void run_activate_command(const std::string& cmd, const ToplevelWindow& win) {
     if (cmd.empty()) return;
     // Build argv/envp in the parent so nothing between fork and exec allocates.
     std::string e_app = "WL_APP_ID=" + win.app_id;
-    std::string e_cls = "WL_CLASS=" + win.app_id;   // alias; app_id == class here
+    std::string e_cls = "WL_CLASS=" + win.app_id; // alias; app_id == class here
     std::string e_ttl = "WL_TITLE=" + win.title;
     std::vector<char*> envp;
     for (char** e = environ; e && *e; ++e) envp.push_back(*e);
@@ -43,25 +41,33 @@ void run_activate_command(const std::string& cmd, const ToplevelWindow& win) {
                     const_cast<char*>(cmd.c_str()), nullptr};
 
     pid_t pid = fork();
-    if (pid != 0) return;   // parent / fork failed
+    if (pid != 0) return; // parent / fork failed
     setsid();
     int devnull = open("/dev/null", O_RDWR);
-    if (devnull >= 0) { dup2(devnull, 0); dup2(devnull, 1); dup2(devnull, 2); if (devnull > 2) close(devnull); }
+    if (devnull >= 0) {
+        dup2(devnull, 0);
+        dup2(devnull, 1);
+        dup2(devnull, 2);
+        if (devnull > 2) close(devnull);
+    }
     execve("/bin/sh", argv, envp.data());
     _exit(127);
 }
 
-void handle_toplevel_title_cb(void* data, zwlr_foreign_toplevel_handle_v1* handle, const char* title) {
+void handle_toplevel_title_cb(void* data, zwlr_foreign_toplevel_handle_v1* handle,
+                              const char* title) {
     auto* self = static_cast<WlrForeignToplevelBackend*>(data);
     self->handle_toplevel_title(handle, title);
 }
 
-void handle_toplevel_app_id_cb(void* data, zwlr_foreign_toplevel_handle_v1* handle, const char* app_id) {
+void handle_toplevel_app_id_cb(void* data, zwlr_foreign_toplevel_handle_v1* handle,
+                               const char* app_id) {
     auto* self = static_cast<WlrForeignToplevelBackend*>(data);
     self->handle_toplevel_app_id(handle, app_id);
 }
 
-void handle_toplevel_state_cb(void* data, zwlr_foreign_toplevel_handle_v1* handle, wl_array* state) {
+void handle_toplevel_state_cb(void* data, zwlr_foreign_toplevel_handle_v1* handle,
+                              wl_array* state) {
     auto* self = static_cast<WlrForeignToplevelBackend*>(data);
     self->handle_toplevel_state(handle, state);
 }
@@ -79,7 +85,8 @@ void handle_toplevel_closed_cb(void* data, zwlr_foreign_toplevel_handle_v1* hand
 void handle_toplevel_output_enter_cb(void*, zwlr_foreign_toplevel_handle_v1*, wl_output*) {}
 void handle_toplevel_output_leave_cb(void*, zwlr_foreign_toplevel_handle_v1*, wl_output*) {}
 void handle_toplevel_done_cb(void*, zwlr_foreign_toplevel_handle_v1*) {}
-void handle_toplevel_parent_cb(void*, zwlr_foreign_toplevel_handle_v1*, zwlr_foreign_toplevel_handle_v1*) {}
+void handle_toplevel_parent_cb(void*, zwlr_foreign_toplevel_handle_v1*,
+                               zwlr_foreign_toplevel_handle_v1*) {}
 
 const struct zwlr_foreign_toplevel_handle_v1_listener toplevel_handle_listener = {
     .title = handle_toplevel_title_cb,
@@ -92,7 +99,8 @@ const struct zwlr_foreign_toplevel_handle_v1_listener toplevel_handle_listener =
     .parent = handle_toplevel_parent_cb,
 };
 
-void handle_manager_toplevel_cb(void* data, zwlr_foreign_toplevel_manager_v1* /*manager*/, zwlr_foreign_toplevel_handle_v1* handle) {
+void handle_manager_toplevel_cb(void* data, zwlr_foreign_toplevel_manager_v1* /*manager*/,
+                                zwlr_foreign_toplevel_handle_v1* handle) {
     auto* self = static_cast<WlrForeignToplevelBackend*>(data);
     self->handle_manager_toplevel(handle);
 }
@@ -113,31 +121,26 @@ WlrForeignToplevelBackend::~WlrForeignToplevelBackend() {
     }
 }
 
-#ifdef HAS_FOREIGN_TOPLEVEL
 void WlrForeignToplevelBackend::bind_manager(zwlr_foreign_toplevel_manager_v1* manager) {
     if (manager_ || !manager) return;
     manager_ = manager;
     zwlr_foreign_toplevel_manager_v1_add_listener(manager_, &manager_listener, this);
 }
-#endif
 
 bool WlrForeignToplevelBackend::init(wl_display* /*display*/, wl_registry* registry) {
-    if (!registry) return false;
-    return true;
+    return registry != nullptr;
 }
 
 void WlrForeignToplevelBackend::add_observer(IToplevelObserver* observer) {
-    if (observer) {
-        observers_.push_back(observer);
-    }
+    if (observer) { observers_.push_back(observer); }
 }
 
 void WlrForeignToplevelBackend::remove_observer(IToplevelObserver* observer) {
-    observers_.erase(std::remove(observers_.begin(), observers_.end(), observer), observers_.end());
+    std::erase(observers_, observer);
 }
 
 void WlrForeignToplevelBackend::activate(uintptr_t handle_id, wl_seat* seat) {
-    if (!seat) return;   // activate requires the seat that owns the input focus
+    if (!seat) return; // activate requires the seat that owns the input focus
     auto it = handle_map_.find(handle_id);
     if (it == handle_map_.end()) return;
     zwlr_foreign_toplevel_handle_v1_activate(it->second, seat);
@@ -146,23 +149,24 @@ void WlrForeignToplevelBackend::activate(uintptr_t handle_id, wl_seat* seat) {
     // where `activate` alone doesn't).
     if (!activate_command_.empty()) {
         for (const auto& w : window_cache_) {
-            if (w.handle_id == handle_id) { run_activate_command(activate_command_, w); break; }
+            if (w.handle_id == handle_id) {
+                run_activate_command(activate_command_, w);
+                break;
+            }
         }
     }
 }
 
 void WlrForeignToplevelBackend::close(uintptr_t handle_id) {
     auto it = handle_map_.find(handle_id);
-    if (it != handle_map_.end()) {
-        zwlr_foreign_toplevel_handle_v1_close(it->second);
-    }
+    if (it != handle_map_.end()) { zwlr_foreign_toplevel_handle_v1_close(it->second); }
 }
 
 void WlrForeignToplevelBackend::set_minimized(uintptr_t handle_id, bool minimize) {
     auto it = handle_map_.find(handle_id);
     if (it == handle_map_.end()) return;
     if (minimize) zwlr_foreign_toplevel_handle_v1_set_minimized(it->second);
-    else          zwlr_foreign_toplevel_handle_v1_unset_minimized(it->second);
+    else zwlr_foreign_toplevel_handle_v1_unset_minimized(it->second);
 }
 
 void WlrForeignToplevelBackend::handle_manager_toplevel(zwlr_foreign_toplevel_handle_v1* handle) {
@@ -178,7 +182,8 @@ void WlrForeignToplevelBackend::handle_manager_toplevel(zwlr_foreign_toplevel_ha
     notify_created(win);
 }
 
-void WlrForeignToplevelBackend::handle_toplevel_title(zwlr_foreign_toplevel_handle_v1* handle, const char* title) {
+void WlrForeignToplevelBackend::handle_toplevel_title(zwlr_foreign_toplevel_handle_v1* handle,
+                                                      const char* title) {
     uintptr_t id = reinterpret_cast<uintptr_t>(handle);
     for (auto& win : window_cache_) {
         if (win.handle_id == id) {
@@ -189,7 +194,8 @@ void WlrForeignToplevelBackend::handle_toplevel_title(zwlr_foreign_toplevel_hand
     }
 }
 
-void WlrForeignToplevelBackend::handle_toplevel_app_id(zwlr_foreign_toplevel_handle_v1* handle, const char* app_id) {
+void WlrForeignToplevelBackend::handle_toplevel_app_id(zwlr_foreign_toplevel_handle_v1* handle,
+                                                       const char* app_id) {
     uintptr_t id = reinterpret_cast<uintptr_t>(handle);
     for (auto& win : window_cache_) {
         if (win.handle_id == id) {
@@ -200,7 +206,8 @@ void WlrForeignToplevelBackend::handle_toplevel_app_id(zwlr_foreign_toplevel_han
     }
 }
 
-void WlrForeignToplevelBackend::handle_toplevel_state(zwlr_foreign_toplevel_handle_v1* handle, wl_array* state) {
+void WlrForeignToplevelBackend::handle_toplevel_state(zwlr_foreign_toplevel_handle_v1* handle,
+                                                      wl_array* state) {
     uintptr_t id = reinterpret_cast<uintptr_t>(handle);
     for (auto& win : window_cache_) {
         if (win.handle_id == id) {
@@ -214,18 +221,11 @@ void WlrForeignToplevelBackend::handle_toplevel_state(zwlr_foreign_toplevel_hand
                 size_t count = state->size / sizeof(uint32_t);
                 for (size_t i = 0; i < count; ++i) {
                     switch (entries[i]) {
-                        case STATE_ACTIVATED:
-                            win.is_active = true;
-                            break;
-                        case STATE_MINIMIZED:
-                            win.is_minimized = true;
-                            break;
-                        case STATE_MAXIMIZED:
-                            win.is_maximized = true;
-                            break;
-                        case STATE_FULLSCREEN:
-                            win.is_fullscreen = true;
-                            break;
+                        case STATE_ACTIVATED: win.is_active = true; break;
+                        case STATE_MINIMIZED: win.is_minimized = true; break;
+                        case STATE_MAXIMIZED: win.is_maximized = true; break;
+                        case STATE_FULLSCREEN: win.is_fullscreen = true; break;
+                        default: break;
                     }
                 }
             }
@@ -239,12 +239,7 @@ void WlrForeignToplevelBackend::handle_toplevel_closed(zwlr_foreign_toplevel_han
     uintptr_t id = reinterpret_cast<uintptr_t>(handle);
     handle_map_.erase(id);
 
-    window_cache_.erase(
-        std::remove_if(window_cache_.begin(), window_cache_.end(), [id](const ToplevelWindow& w) {
-            return w.handle_id == id;
-        }),
-        window_cache_.end()
-    );
+    std::erase_if(window_cache_, [id](const ToplevelWindow& w) { return w.handle_id == id; });
 
     zwlr_foreign_toplevel_handle_v1_destroy(handle);
     notify_closed(id);

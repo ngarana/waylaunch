@@ -6,14 +6,11 @@
 namespace waylaunch {
 
 class SwitcherRenderer {
-public:
+  public:
     SwitcherRenderer() = default;
 
-    void render(Renderer& renderer,
-                const AppSwitcherManager& manager,
-                const Theme& theme,
-                int screen_w,
-                int screen_h);
+    static void render(Renderer& renderer, const AppSwitcherManager& manager, const Theme& theme,
+                       int screen_w, int screen_h);
 };
 
 } // namespace waylaunch

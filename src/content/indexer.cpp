@@ -1,8 +1,10 @@
 #include "waylaunch/content/indexer.h"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -11,6 +13,7 @@
 #include <sys/syscall.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -19,11 +22,11 @@ namespace waylaunch::content {
 
 namespace {
 
-constexpr int kBatch = 512;          // files per write transaction
-constexpr int kMaintainEvery = 20;   // batches between housekeeping passes
+constexpr int kBatch = 512;        // files per write transaction
+constexpr int kMaintainEvery = 20; // batches between housekeeping passes
 
 int64_t stat_mtime_ns(const struct stat& sb) {
-    return static_cast<int64_t>(sb.st_mtim.tv_sec) * 1000000000LL + sb.st_mtim.tv_nsec;
+    return (static_cast<int64_t>(sb.st_mtim.tv_sec) * 1000000000LL) + sb.st_mtim.tv_nsec;
 }
 
 // FNV-1a 64 over up to `cap` bytes of a file — cheap change confirmation (FR7).
@@ -34,8 +37,7 @@ std::string hash_file(const std::string& path, size_t cap) {
     std::array<char, 65536> buf;
     size_t total = 0;
     while (f && total < cap) {
-        f.read(buf.data(), static_cast<std::streamsize>(
-                               std::min(buf.size(), cap - total)));
+        f.read(buf.data(), static_cast<std::streamsize>(std::min(buf.size(), cap - total)));
         std::streamsize n = f.gcount();
         for (std::streamsize i = 0; i < n; i++) {
             h ^= static_cast<unsigned char>(buf[i]);
@@ -51,7 +53,7 @@ std::string hash_file(const std::string& path, size_t cap) {
 
 bool has_prefix(const std::string& s, const std::string& prefix) {
     if (s.size() < prefix.size()) return false;
-    if (s.compare(0, prefix.size(), prefix) != 0) return false;
+    if (!s.starts_with(prefix)) return false;
     // boundary: exact, or next char is '/'
     return s.size() == prefix.size() || s[prefix.size()] == '/';
 }
@@ -76,9 +78,7 @@ bool looks_like_hash_name(const std::string& path) {
     size_t dot = base.find('.');
     std::string stem = (dot == std::string::npos) ? base : base.substr(0, dot);
     if (stem.size() < 20) return false;
-    for (unsigned char c : stem)
-        if (!std::isxdigit(c)) return false;
-    return true;
+    return std::ranges::all_of(stem, [](unsigned char c) { return std::isxdigit(c) != 0; });
 }
 
 // Best-effort idle I/O priority for the calling thread (NFR3). Mirrors the
@@ -111,17 +111,13 @@ bool on_battery() {
 } // namespace
 
 Indexer::Indexer(Store& store, ContentConfig cfg)
-    : store_(store),
-      cfg_(std::move(cfg)),
-      extractor_(cfg_.extractors),
+    : store_(store), cfg_(std::move(cfg)), extractor_(cfg_.extractors),
       max_file_bytes_(cfg_.max_file_mb * 1024 * 1024) {}
 
 Indexer::~Indexer() { stop(); }
 
 bool Indexer::under_roots(const std::string& path) const {
-    for (const auto& r : cfg_.roots)
-        if (has_prefix(path, r)) return true;
-    return false;
+    return std::ranges::any_of(cfg_.roots, [&](const auto& r) { return has_prefix(path, r); });
 }
 
 bool Indexer::is_excluded(const std::string& path) const {
@@ -132,7 +128,7 @@ bool Indexer::is_excluded(const std::string& path) const {
         if (has_prefix(path, p)) return true;
     // Runtime excludes added via the control channel (FR8).
     {
-        std::lock_guard<std::mutex> lk(excl_mtx_);
+        std::scoped_lock lk(excl_mtx_);
         for (const auto& p : runtime_excludes_)
             if (has_prefix(path, p)) return true;
     }
@@ -159,23 +155,26 @@ bool Indexer::is_excluded(const std::string& path) const {
 
 void Indexer::index_file(const std::string& path) {
     struct stat sb;
-    if (::stat(path.c_str(), &sb) != 0) {   // vanished
+    if (::stat(path.c_str(), &sb) != 0) { // vanished
         store_.remove(path);
         return;
     }
-    if (!S_ISREG(sb.st_mode)) return;       // dirs walked separately; skip fifos/etc.
-    if (is_excluded(path)) { store_.remove(path); return; }
+    if (!S_ISREG(sb.st_mode)) return; // dirs walked separately; skip fifos/etc.
+    if (is_excluded(path)) {
+        store_.remove(path);
+        return;
+    }
 
     int64_t mtime = stat_mtime_ns(sb);
     int64_t size = static_cast<int64_t>(sb.st_size);
     auto existing = store_.get(path);
-    if (existing && existing->state == FileState::Indexed &&
-        existing->mtime_ns == mtime && existing->size == size)
-        return;   // unchanged
+    if (existing && existing->state == FileState::Indexed && existing->mtime_ns == mtime &&
+        existing->size == size)
+        return; // unchanged
 
     std::string hash = hash_file(path, max_file_bytes_);
     if (existing && !existing->content_hash.empty() && existing->content_hash == hash) {
-        store_.touch(path, mtime, size);   // touched but identical (FR7)
+        store_.touch(path, mtime, size); // touched but identical (FR7)
         return;
     }
 
@@ -190,7 +189,7 @@ void Indexer::index_file(const std::string& path) {
     rec.state = FileState::Indexed;
 
     std::string body;
-    if (size > static_cast<int64_t>(max_file_bytes_)) {
+    if (std::cmp_greater(size, max_file_bytes_)) {
         // Too large to extract: index metadata only (filename stays searchable).
         rec.mime = detect_mime(path);
     } else {
@@ -199,8 +198,8 @@ void Indexer::index_file(const std::string& path) {
         if (r.status == ExtractStatus::Ok || r.status == ExtractStatus::Empty ||
             r.status == ExtractStatus::Unsupported) {
             body = std::move(r.text);
-        } else {   // Timeout / Error: keep metadata, mark error, remember hash so
-                   // we don't re-attempt until the file changes (NFR6).
+        } else { // Timeout / Error: keep metadata, mark error, remember hash so
+                 // we don't re-attempt until the file changes (NFR6).
             rec.state = FileState::Error;
             errors_.fetch_add(1, std::memory_order_relaxed);
         }
@@ -214,16 +213,19 @@ bool Indexer::size_cap_reached(int64_t& used_out) {
     StoreStats st = store_.stats();
     used_out = st.db_used_bytes();
     db_used_bytes_.store(used_out, std::memory_order_relaxed);
-    if (cap <= 0) return false;                 // unlimited
+    if (cap <= 0) return false; // unlimited
     if (used_out <= cap) return false;
 
     // Over cap on live content. If the file is bloated with free pages, a
     // VACUUM may be all that is needed — but it rewrites the entire database,
     // so only pay for it when the freelist is actually worth reclaiming.
-    constexpr int64_t kVacuumWorthwhile = 64ll * 1024 * 1024;
+    constexpr int64_t kVacuumWorthwhile = 64LL * 1024 * 1024;
     if (st.db_free_bytes >= kVacuumWorthwhile) {
-        std::fprintf(stderr, "waylaunchd: index over cap with %lld MB of free pages; "
-                     "compacting\n", static_cast<long long>(st.db_free_bytes / (1024 * 1024)));
+        std::fprintf(
+            stderr,
+            "waylaunchd: index over cap with %lld MB of free pages; "
+            "compacting\n",
+            static_cast<long long>(st.db_free_bytes / (static_cast<int64_t>(1024 * 1024))));
         store_.vacuum();
         st = store_.stats();
         used_out = st.db_used_bytes();
@@ -251,17 +253,19 @@ void Indexer::crawl_all() {
                              "no new files will be indexed. Existing entries are still "
                              "refreshed and deletions still reclaim space. Raise "
                              "[content] max_index_mb or narrow [content] roots/excludes.\n",
-                             static_cast<long long>(used / (1024 * 1024)), cfg_.max_index_mb);
+                             static_cast<long long>(used / (static_cast<int64_t>(1024 * 1024))),
+                             cfg_.max_index_mb);
             }
             crawling_.store(false, std::memory_order_relaxed);
             return;
         }
         if (size_capped_.exchange(false, std::memory_order_relaxed))
             std::fprintf(stderr, "waylaunchd: index back under cap (%lld MB); resuming crawl\n",
-                         static_cast<long long>(used / (1024 * 1024)));
+                         static_cast<long long>(used / (static_cast<int64_t>(1024 * 1024))));
     }
 
-    int since_commit = 0, since_throttle = 0;
+    int since_commit = 0;
+    int since_throttle = 0;
     bool capped = false;
     store_.begin();
     for (const auto& root : cfg_.roots) {
@@ -269,11 +273,15 @@ void Indexer::crawl_all() {
         std::error_code ec;
         if (!fs::exists(root, ec)) continue;
         auto opts = fs::directory_options::skip_permission_denied;
-        fs::recursive_directory_iterator it(root, opts, ec), end;
+        fs::recursive_directory_iterator it(root, opts, ec);
+        fs::recursive_directory_iterator end;
         for (; it != end; it.increment(ec)) {
             if (stop_.load(std::memory_order_relaxed)) break;
             wait_if_paused();
-            if (ec) { ec.clear(); continue; }
+            if (ec) {
+                ec.clear();
+                continue;
+            }
             const fs::path& p = it->path();
             std::string sp = p.string();
             // Prune excluded/privacy directories (don't descend).
@@ -295,13 +303,14 @@ void Indexer::crawl_all() {
                 int64_t used = 0;
                 if (size_cap > 0 && size_cap_reached(used)) {
                     if (!size_capped_.exchange(true, std::memory_order_relaxed))
-                        std::fprintf(stderr,
-                                     "waylaunchd: index size cap reached mid-crawl "
-                                     "(%lld MB used of %zu MB cap); stopping discovery\n",
-                                     static_cast<long long>(used / (1024 * 1024)),
-                                     cfg_.max_index_mb);
+                        std::fprintf(
+                            stderr,
+                            "waylaunchd: index size cap reached mid-crawl "
+                            "(%lld MB used of %zu MB cap); stopping discovery\n",
+                            static_cast<long long>(used / (static_cast<int64_t>(1024 * 1024))),
+                            cfg_.max_index_mb);
                     capped = true;
-                    store_.begin();   // reopen a txn for the final commit below
+                    store_.begin(); // reopen a txn for the final commit below
                     break;
                 }
                 store_.begin();
@@ -346,14 +355,13 @@ void Indexer::full_reconcile() {
 }
 
 int Indexer::reconcile_interval() const {
-    if (watch_degraded_.load(std::memory_order_relaxed) &&
-        cfg_.reconcile_interval_degraded_s > 0)
+    if (watch_degraded_.load(std::memory_order_relaxed) && cfg_.reconcile_interval_degraded_s > 0)
         return cfg_.reconcile_interval_degraded_s;
     return cfg_.reconcile_interval_s;
 }
 
 void Indexer::run_loop() {
-    setpriority(PRIO_PROCESS, 0, cfg_.worker_nice);   // background CPU priority (NFR3)
+    setpriority(PRIO_PROCESS, 0, cfg_.worker_nice); // background CPU priority (NFR3)
     set_ionice_idle();
 
     using clock = std::chrono::steady_clock;
@@ -367,16 +375,13 @@ void Indexer::run_loop() {
         {
             std::unique_lock<std::mutex> lk(mtx_);
             auto pred = [&] {
-                return stop_.load() || reconcile_.load() || reindex_.load() ||
-                       !queue_.empty();
+                return stop_.load() || reconcile_.load() || reindex_.load() || !queue_.empty();
             };
             // Recompute the deadline each iteration so a mid-wait switch to the
             // degraded (shorter) interval takes effect on the next wake.
             int iv = reconcile_interval();
-            if (iv > 0)
-                cv_.wait_until(lk, last_pass + std::chrono::seconds(iv), pred);
-            else
-                cv_.wait(lk, pred);
+            if (iv > 0) cv_.wait_until(lk, last_pass + std::chrono::seconds(iv), pred);
+            else cv_.wait(lk, pred);
             if (stop_.load()) break;
 
             if (reindex_.exchange(false)) {
@@ -440,24 +445,24 @@ void Indexer::stop() {
 
 void Indexer::enqueue_index(std::string path) {
     {
-        std::lock_guard<std::mutex> lk(mtx_);
-        queue_.push_back({WorkItem::Index, std::move(path)});
+        std::scoped_lock lk(mtx_);
+        queue_.push_back({.kind = WorkItem::Index, .path = std::move(path)});
     }
     cv_.notify_one();
 }
 
 void Indexer::enqueue_remove(std::string path) {
     {
-        std::lock_guard<std::mutex> lk(mtx_);
-        queue_.push_back({WorkItem::Remove, std::move(path)});
+        std::scoped_lock lk(mtx_);
+        queue_.push_back({.kind = WorkItem::Remove, .path = std::move(path)});
     }
     cv_.notify_one();
 }
 
 void Indexer::enqueue_remove_tree(std::string path) {
     {
-        std::lock_guard<std::mutex> lk(mtx_);
-        queue_.push_back({WorkItem::RemoveTree, std::move(path)});
+        std::scoped_lock lk(mtx_);
+        queue_.push_back({.kind = WorkItem::RemoveTree, .path = std::move(path)});
     }
     cv_.notify_one();
 }
@@ -469,7 +474,7 @@ void Indexer::request_reconcile() {
 
 void Indexer::request_reindex() {
     reindex_.store(true);
-    watch_degraded_.store(false, std::memory_order_relaxed);  // a fresh index re-adds watches
+    watch_degraded_.store(false, std::memory_order_relaxed); // a fresh index re-adds watches
     cv_.notify_one();
 }
 
@@ -482,10 +487,10 @@ void Indexer::set_watch_degraded(bool degraded) {
 
 void Indexer::add_runtime_exclude(std::string path) {
     {
-        std::lock_guard<std::mutex> lk(excl_mtx_);
+        std::scoped_lock lk(excl_mtx_);
         runtime_excludes_.push_back(std::move(path));
     }
-    request_reconcile();   // drop any now-excluded files already indexed
+    request_reconcile(); // drop any now-excluded files already indexed
 }
 
 void Indexer::set_paused(bool paused) {
@@ -507,7 +512,7 @@ Indexer::Snapshot Indexer::snapshot() const {
     int64_t last = last_reconcile_s_.load(std::memory_order_relaxed);
     s.last_reconcile_ago_s = last ? (static_cast<int64_t>(::time(nullptr)) - last) : -1;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::scoped_lock lk(mtx_);
         s.queued = static_cast<int64_t>(queue_.size());
     }
     return s;

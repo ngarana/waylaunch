@@ -1,24 +1,22 @@
 #include "waylaunch/calculator.h"
+#include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <limits>
 #include <sstream>
 #include <stack>
-#include <cctype>
-#include <algorithm>
-#include <limits>
 #include <stdexcept>
 #include <vector>
 
 namespace waylaunch {
 
 class Calculator::Parser {
-public:
+  public:
     Result evaluate(const std::string& expression, bool degrees) {
         Result result;
         result.expression = expression;
 
-        if (expression.empty()) {
-            return result;
-        }
+        if (expression.empty()) { return result; }
 
         try {
             pos_ = 0;
@@ -30,21 +28,20 @@ public:
             result.numeric_result = value;
 
             // Format result
-            if (value == static_cast<int64_t>(value) && std::abs(value) < 1e15) {
+            if (value == static_cast<double>(static_cast<int64_t>(value)) &&
+                std::abs(value) < 1e15) {
                 result.result = std::to_string(static_cast<int64_t>(value));
             } else {
                 std::ostringstream oss;
                 oss << value;
                 result.result = oss.str();
             }
-        } catch (...) {
-            result.valid = false;
-        }
+        } catch (...) { result.valid = false; }
 
         return result;
     }
 
-private:
+  private:
     double parse_expression() {
         double left = parse_term();
         while (pos_ < expr_.size()) {
@@ -111,28 +108,22 @@ private:
             pos_++;
             double val = parse_expression();
             skip_space();
-            if (pos_ < expr_.size() && expr_[pos_] == ')') {
-                pos_++;
-            }
+            if (pos_ < expr_.size() && expr_[pos_] == ')') { pos_++; }
             return val;
         }
 
         // Function calls
         if (std::isalpha(expr_[pos_])) {
             std::string func;
-            while (pos_ < expr_.size() && std::isalpha(expr_[pos_])) {
-                func += expr_[pos_++];
-            }
-            std::transform(func.begin(), func.end(), func.begin(), ::tolower);
+            while (pos_ < expr_.size() && std::isalpha(expr_[pos_])) { func += expr_[pos_++]; }
+            std::ranges::transform(func, func.begin(), ::tolower);
 
             skip_space();
             if (pos_ < expr_.size() && expr_[pos_] == '(') {
                 pos_++;
                 double arg = parse_expression();
                 skip_space();
-                if (pos_ < expr_.size() && expr_[pos_] == ')') {
-                    pos_++;
-                }
+                if (pos_ < expr_.size() && expr_[pos_] == ')') { pos_++; }
 
                 if (func == "sin") return degrees_ ? std::sin(arg * M_PI / 180) : std::sin(arg);
                 if (func == "cos") return degrees_ ? std::cos(arg * M_PI / 180) : std::cos(arg);
@@ -149,13 +140,17 @@ private:
                 if (func == "ceil") return std::ceil(arg);
                 if (func == "floor") return std::floor(arg);
                 if (func == "round") return std::round(arg);
-                if (func == "sign") return (arg > 0) ? 1.0 : (arg < 0) ? -1.0 : 0.0;
+                if (func == "sign") {
+                    if (arg > 0) { return 1.0; }
+                    if (arg < 0) { return -1.0; }
+                    return 0.0;
+                }
             }
 
             // Constants
             if (func == "pi") return M_PI;
             if (func == "e") return M_E;
-            if (func == "phi") return (1 + std::sqrt(5.0)) / 2;
+            if (func == "phi") return std::numbers::phi;
             if (func == "inf") return std::numeric_limits<double>::infinity();
             if (func == "nan") return std::numeric_limits<double>::quiet_NaN();
 
@@ -175,9 +170,7 @@ private:
     }
 
     void skip_space() {
-        while (pos_ < expr_.size() && std::isspace(expr_[pos_])) {
-            pos_++;
-        }
+        while (pos_ < expr_.size() && std::isspace(expr_[pos_])) { pos_++; }
     }
 
     std::string expr_;
@@ -186,49 +179,36 @@ private:
 };
 
 Calculator::Calculator() = default;
-Calculator::~Calculator() = default;
 
-void Calculator::set_degrees_mode(bool degrees) {
-    degrees_mode_ = degrees;
-}
+void Calculator::set_degrees_mode(bool degrees) { degrees_mode_ = degrees; }
 
-bool Calculator::is_degrees_mode() const {
-    return degrees_mode_;
-}
+bool Calculator::is_degrees_mode() const { return degrees_mode_; }
 
 Calculator::Result Calculator::evaluate(const std::string& expression) const {
     Parser parser;
     return parser.evaluate(expression, degrees_mode_);
 }
 
-bool Calculator::is_calculator_query(const std::string& query) const {
+bool Calculator::is_calculator_query(const std::string& query) {
     if (query.empty()) return false;
 
     // Check if query contains mathematical operators or functions
     for (char c : query) {
-        if (c == '+' || c == '-' || c == '*' || c == '/' ||
-            c == '^' || c == '(' || c == ')') {
+        if (c == '+' || c == '-' || c == '*' || c == '/' || c == '^' || c == '(' || c == ')') {
             return true;
         }
     }
 
     // Check for math functions
     std::string lower = query;
-    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    std::ranges::transform(lower, lower.begin(), ::tolower);
 
-    static const std::vector<std::string> funcs = {
-        "sin", "cos", "tan", "asin", "acos", "atan",
-        "sqrt", "cbrt", "log", "ln", "exp", "abs",
-        "ceil", "floor", "round", "sign", "pi", "e"
-    };
+    static const std::vector<std::string> funcs = {"sin",  "cos",   "tan",   "asin", "acos", "atan",
+                                                   "sqrt", "cbrt",  "log",   "ln",   "exp",  "abs",
+                                                   "ceil", "floor", "round", "sign", "pi",   "e"};
 
-    for (const auto& f : funcs) {
-        if (lower.find(f) != std::string::npos) {
-            return true;
-        }
-    }
-
-    return false;
+    return std::ranges::any_of(funcs,
+                               [&](const auto& f) { return lower.find(f) != std::string::npos; });
 }
 
 } // namespace waylaunch

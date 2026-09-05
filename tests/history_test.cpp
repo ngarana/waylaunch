@@ -6,9 +6,10 @@
 #include <string>
 
 int main() {
-    const auto path = std::filesystem::temp_directory_path() /
-                      ("waylaunch-history-test-" + std::to_string(
-                          std::chrono::steady_clock::now().time_since_epoch().count()) + ".tsv");
+    const auto path =
+        std::filesystem::temp_directory_path() /
+        ("waylaunch-history-test-" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".tsv");
     std::error_code ec;
     std::filesystem::remove(path, ec);
 
@@ -31,7 +32,7 @@ int main() {
     reloaded.configure(path.string(), 10, 365, 30.0);
     assert(reloaded.load());
     assert(reloaded.recent(1)[0].query == "terminal");
-    assert(reloaded.frecency("/usr/bin/alacritty", t0 + 20) > 0.0f);
+    assert(reloaded.frecency("/usr/bin/alacritty", t0 + 20) > 0.0F);
 
     std::filesystem::remove(path, ec);
     return 0;

@@ -1,16 +1,16 @@
 #include "waylaunch/app_launcher.h"
-#include <filesystem>
-#include <fstream>
-#include <sstream>
 #include <algorithm>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 
 namespace waylaunch {
 
 namespace {
 std::string to_lower(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+    std::ranges::transform(s, s.begin(), ::tolower);
     return s;
 }
 } // namespace
@@ -18,16 +18,12 @@ std::string to_lower(std::string s) {
 AppLauncher::AppLauncher() = default;
 AppLauncher::~AppLauncher() = default;
 
-void AppLauncher::set_search_paths(const std::vector<std::string>& paths) {
-    search_paths_ = paths;
-}
+void AppLauncher::set_search_paths(const std::vector<std::string>& paths) { search_paths_ = paths; }
 
 std::vector<std::string> AppLauncher::get_desktop_dirs() const {
     std::vector<std::string> dirs;
 
-    if (!search_paths_.empty()) {
-        return search_paths_;
-    }
+    if (!search_paths_.empty()) { return search_paths_; }
 
     // Default XDG directories
     const char* data_home = getenv("XDG_DATA_HOME");
@@ -36,16 +32,14 @@ std::vector<std::string> AppLauncher::get_desktop_dirs() const {
     }
 
     const char* home = getenv("HOME");
-    if (home) {
-        dirs.push_back(std::string(home) + "/.local/share/applications");
-    }
+    if (home) { dirs.push_back(std::string(home) + "/.local/share/applications"); }
 
     // System directories
-    dirs.push_back("/usr/share/applications");
-    dirs.push_back("/usr/local/share/applications");
-    dirs.push_back("/usr/share/gnome/applications");
-    dirs.push_back("/usr/share/gnome/apps");
-    dirs.push_back("/usr/share/mate/applications");
+    dirs.emplace_back("/usr/share/applications");
+    dirs.emplace_back("/usr/local/share/applications");
+    dirs.emplace_back("/usr/share/gnome/applications");
+    dirs.emplace_back("/usr/share/gnome/apps");
+    dirs.emplace_back("/usr/share/mate/applications");
 
     return dirs;
 }
@@ -54,9 +48,7 @@ void AppLauncher::scan() {
     entries_.clear();
 
     for (const auto& dir : get_desktop_dirs()) {
-        if (!std::filesystem::exists(dir) || !std::filesystem::is_directory(dir)) {
-            continue;
-        }
+        if (!std::filesystem::exists(dir) || !std::filesystem::is_directory(dir)) { continue; }
 
         for (const auto& entry : std::filesystem::directory_iterator(dir)) {
             if (entry.path().extension() == ".desktop") {
@@ -66,10 +58,8 @@ void AppLauncher::scan() {
     }
 
     // Sort by name
-    std::sort(entries_.begin(), entries_.end(),
-        [](const DesktopEntry& a, const DesktopEntry& b) {
-            return a.name < b.name;
-        });
+    std::ranges::sort(entries_,
+                      [](const DesktopEntry& a, const DesktopEntry& b) { return a.name < b.name; });
 }
 
 void AppLauncher::parse_desktop_file(const std::string& path) {
@@ -83,9 +73,7 @@ void AppLauncher::parse_desktop_file(const std::string& path) {
 
     while (std::getline(file, line)) {
         // Remove carriage return
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
+        if (!line.empty() && line.back() == '\r') { line.pop_back(); }
 
         // Trim whitespace
         size_t start = line.find_first_not_of(" \t");
@@ -130,35 +118,27 @@ void AppLauncher::parse_desktop_file(const std::string& path) {
     }
 
     // Skip entries without name or marked as hidden
-    if (entry.name.empty() || entry.no_display || entry.hidden) {
-        return;
-    }
+    if (entry.name.empty() || entry.no_display || entry.hidden) { return; }
 
     // Clean up Exec field (remove %f, %u, etc.)
     size_t pos = entry.exec.find(" %");
-    if (pos != std::string::npos) {
-        entry.exec = entry.exec.substr(0, pos);
-    }
+    if (pos != std::string::npos) { entry.exec = entry.exec.substr(0, pos); }
 
     // Precompute the lowercased search haystack once (see DesktopEntry::search_key).
-    entry.search_key = to_lower(entry.name + ' ' + entry.generic_name + ' ' +
-                                entry.comment + ' ' + entry.categories);
+    entry.search_key = to_lower(entry.name + ' ' + entry.generic_name + ' ' + entry.comment + ' ' +
+                                entry.categories);
 
     entries_.push_back(std::move(entry));
 }
 
 std::vector<DesktopEntry> AppLauncher::search(const std::string& query) const {
-    if (query.empty()) {
-        return entries_;
-    }
+    if (query.empty()) { return entries_; }
 
     std::vector<DesktopEntry> results;
     const std::string query_lower = to_lower(query);
 
     for (const auto& entry : entries_) {
-        if (entry.search_key.find(query_lower) != std::string::npos) {
-            results.push_back(entry);
-        }
+        if (entry.search_key.find(query_lower) != std::string::npos) { results.push_back(entry); }
     }
 
     return results;

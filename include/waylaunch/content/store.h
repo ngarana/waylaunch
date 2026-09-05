@@ -20,13 +20,13 @@
 // by building a private wal-index) and reports *why* an index is unusable via
 // availability(), so the caller can tell "no matches" from "no index" (NFR8).
 
+#include <cstdint>
+#include <functional>
+#include <optional>
 #include <string>
 #include <vector>
-#include <optional>
-#include <functional>
-#include <cstdint>
 
-struct sqlite3;   // forward-declared; sqlite3.h is an implementation detail
+struct sqlite3; // forward-declared; sqlite3.h is an implementation detail
 
 namespace waylaunch::content {
 
@@ -51,16 +51,16 @@ enum class Availability {
 // One file as tracked in the index. `body` (extracted text) is passed to put()
 // separately rather than living here, since it can be large.
 struct FileRecord {
-    int64_t     id = 0;
-    std::string path;          // absolute
-    std::string name;          // basename
-    std::string parent;        // dirname
-    int64_t     size = 0;
-    int64_t     mtime_ns = 0;  // change detection
+    int64_t id = 0;
+    std::string path;   // absolute
+    std::string name;   // basename
+    std::string parent; // dirname
+    int64_t size = 0;
+    int64_t mtime_ns = 0; // change detection
     std::string mime;
-    std::string content_hash;  // raw bytes; skip re-extraction when unchanged (FR7)
-    int64_t     indexed_at = 0;
-    FileState   state = FileState::Pending;
+    std::string content_hash; // raw bytes; skip re-extraction when unchanged (FR7)
+    int64_t indexed_at = 0;
+    FileState state = FileState::Pending;
 };
 
 // Structured metadata predicates parsed out of a query (the kMDItem* analog):
@@ -73,11 +73,11 @@ struct FileRecord {
 // the free text drives the FTS MATCH. A query with only predicates lists
 // matching files ranked by recency.
 struct MetaFilter {
-    std::vector<std::string> mime_globs;      // OR'd GLOBs on files.mime (from kind:)
-    std::vector<std::string> name_likes;      // AND'd LIKE patterns on lower(name)
-    int64_t size_min = -1, size_max = -1;     // bytes, inclusive; -1 = unbounded
+    std::vector<std::string> mime_globs;        // OR'd GLOBs on files.mime (from kind:)
+    std::vector<std::string> name_likes;        // AND'd LIKE patterns on lower(name)
+    int64_t size_min = -1, size_max = -1;       // bytes, inclusive; -1 = unbounded
     int64_t mtime_min_ns = 0, mtime_max_ns = 0; // ns (files.mtime unit); 0 = unbounded
-    bool    active = false;                    // any predicate parsed?
+    bool active = false;                        // any predicate parsed?
 };
 
 // Split a raw query into metadata predicates (filled into `out`) and the
@@ -85,15 +85,15 @@ struct MetaFilter {
 // predicates pass through as free text, so a typo degrades to a literal search
 // rather than silently filtering everything out. `now_s` is the reference time
 // for relative `modified:` durations (injectable for tests; 0 → wall clock).
-std::string parse_meta_query(const std::string& query, MetaFilter& out, int64_t now_s = 0);
+std::string parse_meta_query(const std::string& query, MetaFilter& mf, int64_t now_s = 0);
 
 // A single content-search hit returned to the launcher.
 struct ContentHit {
     std::string path;
     std::string name;
     std::string mime;
-    std::string snippet;   // FTS5 snippet() of the matched body window
-    double      score = 0.0;   // normalized so higher == better
+    std::string snippet; // FTS5 snippet() of the matched body window
+    double score = 0.0;  // normalized so higher == better
 };
 
 struct StoreStats {
@@ -102,8 +102,8 @@ struct StoreStats {
     int64_t pending = 0;
     int64_t errored = 0;
     int64_t tombstoned = 0;
-    int64_t db_bytes = 0;        // on-disk size (page_count * page_size)
-    int64_t db_free_bytes = 0;   // of which reusable free pages (freelist)
+    int64_t db_bytes = 0;      // on-disk size (page_count * page_size)
+    int64_t db_free_bytes = 0; // of which reusable free pages (freelist)
     // Live content, i.e. what the size cap should be judged on: SQLite never
     // returns free pages to the OS without a VACUUM, so db_bytes alone makes a
     // churned index look permanently over-cap.
@@ -111,8 +111,8 @@ struct StoreStats {
 };
 
 struct StoreOptions {
-    bool      read_only = false;             // launcher opens read-only
-    MatchMode match = MatchMode::Prefix;     // writer picks; reader adopts stored mode
+    bool read_only = false;              // launcher opens read-only
+    MatchMode match = MatchMode::Prefix; // writer picks; reader adopts stored mode
 
     // Worst-case query governance (challenge §8). BM25 top-K over an ultra-common
     // term must score its whole posting list, so p99 grows with the corpus. The
@@ -121,13 +121,13 @@ struct StoreOptions {
     // candidate_budget most recently indexed matches" — bounded work with sane
     // relevance. query_budget_ms is the backstop: a full ranked query that blows
     // the budget is interrupted and re-run bounded. 0 disables either mechanism.
-    int64_t common_term_df  = 20000;
-    int     candidate_budget = 2048;
-    int     query_budget_ms  = 50;
+    int64_t common_term_df = 20000;
+    int candidate_budget = 2048;
+    int query_budget_ms = 50;
 };
 
 class Store {
-public:
+  public:
     Store() = default;
     ~Store();
     Store(const Store&) = delete;
@@ -195,12 +195,12 @@ public:
                                    const std::string& hl_close = "");
     StoreStats stats();
 
-private:
-    bool open_handle(int flags);          // open + register tokenizer/functions
-    bool recreate_db();                   // delete the files and start clean
+  private:
+    bool open_handle(int flags); // open + register tokenizer/functions
+    bool recreate_db();          // delete the files and start clean
     bool set_pragmas();
     bool apply_schema();
-    bool ensure_match_mode(MatchMode requested);  // rebuild if the stored mode differs
+    bool ensure_match_mode(MatchMode requested); // rebuild if the stored mode differs
     // Compile free text to an FTS5 MATCH expression. prefix_last completes the
     // final term with '*' (as-you-type); the bounded planner passes false so it
     // scans exact terms, which get FTS5's fast descending doclist walk.
@@ -213,10 +213,10 @@ private:
     // Pure-metadata query (no free text): matching files ranked by recency.
     std::vector<ContentHit> metadata_search(const MetaFilter& mf, int limit);
 
-    sqlite3*     db_ = nullptr;
-    std::string  path_;
-    MatchMode    match_ = MatchMode::Prefix;
-    bool         read_only_ = false;
+    sqlite3* db_ = nullptr;
+    std::string path_;
+    MatchMode match_ = MatchMode::Prefix;
+    bool read_only_ = false;
     Availability avail_ = Availability::NoIndex;
     StoreOptions opts_;
 };

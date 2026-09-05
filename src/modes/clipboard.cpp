@@ -1,7 +1,7 @@
 #include "waylaunch/clipboard.h"
 #include "waylaunch/subprocess.h"
-#include <vector>
 #include <string>
+#include <vector>
 
 namespace waylaunch {
 

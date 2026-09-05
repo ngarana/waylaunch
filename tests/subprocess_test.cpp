@@ -1,5 +1,6 @@
 #include "waylaunch/subprocess.h"
 #include <cassert>
+#include <cstddef>
 #include <string>
 
 int main() {
@@ -12,9 +13,9 @@ int main() {
     // Exercise the nonblocking stdin writer while the child produces more
     // output than a pipe can hold. The old single write-before-read path could
     // deadlock here or silently short-write.
-    const std::string large_input(1024 * 1024, 'x');
-    auto large = Subprocess::run(
-        {"sh", "-c", "(yes x | head -c 1048576) & cat >/dev/null; wait"}, large_input);
+    const std::string large_input(static_cast<std::size_t>(1024 * 1024), 'x');
+    auto large = Subprocess::run({"sh", "-c", "(yes x | head -c 1048576) & cat >/dev/null; wait"},
+                                 large_input);
     assert(large.exit_code == 0);
     assert(large.stdout.size() == 1024 * 1024);
     return 0;

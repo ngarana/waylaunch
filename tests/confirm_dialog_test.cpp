@@ -7,7 +7,7 @@ using namespace waylaunch;
 void test_default_closed() {
     ConfirmDialog d;
     assert(!d.is_open());
-    assert(d.action().id.empty());   // no action captured yet
+    assert(d.action().id.empty()); // no action captured yet
     std::cout << "[PASS] default closed\n";
 }
 
@@ -38,7 +38,7 @@ void test_close_and_reopen() {
     b.id = "suspend";
     d.open(b);
     assert(d.is_open());
-    assert(d.action().id == "suspend");   // latest action wins
+    assert(d.action().id == "suspend"); // latest action wins
     std::cout << "[PASS] close and reopen\n";
 }
 
@@ -76,17 +76,17 @@ void test_countdown() {
     assert(!d.expired(t0));
 
     Clock::time_point t1 = t0 + std::chrono::milliseconds(10500);
-    assert(d.remaining_seconds(t1) == 20);           // ceil(19.5)
+    assert(d.remaining_seconds(t1) == 20); // ceil(19.5)
     double f = d.remaining_fraction(t1);
-    assert(f > 0.62 && f < 0.68);                    // 19.5/30 = 0.65
+    assert(f > 0.62 && f < 0.68); // 19.5/30 = 0.65
 
     Clock::time_point t2 = t0 + std::chrono::seconds(31);
-    assert(d.remaining_seconds(t2) == 0);            // clamped, never negative
+    assert(d.remaining_seconds(t2) == 0); // clamped, never negative
     assert(d.remaining_fraction(t2) == 0.0);
     assert(d.expired(t2));
 
     d.close();
-    assert(!d.expired(t2));                          // closed dialogs never expire
+    assert(!d.expired(t2)); // closed dialogs never expire
     std::cout << "[PASS] countdown\n";
 }
 
@@ -97,11 +97,11 @@ void test_countdown_disabled() {
     a.id = "restart";
 
     Clock::time_point t0 = Clock::now();
-    d.open(a, 0, t0);                                // 0 = no countdown
+    d.open(a, 0, t0); // 0 = no countdown
     assert(!d.has_countdown());
     assert(d.remaining_seconds(t0 + std::chrono::hours(1)) == 0);
     assert(d.remaining_fraction(t0 + std::chrono::hours(1)) == 0.0);
-    assert(!d.expired(t0 + std::chrono::hours(1)));  // never auto-confirms
+    assert(!d.expired(t0 + std::chrono::hours(1))); // never auto-confirms
     std::cout << "[PASS] countdown disabled\n";
 }
 

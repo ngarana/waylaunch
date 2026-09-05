@@ -15,9 +15,9 @@
 #include <filesystem>
 #include <string>
 
+#include <csignal>
 #include <fcntl.h>
 #include <poll.h>
-#include <signal.h>
 #include <sys/eventfd.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -33,8 +33,8 @@ int g_shutdown_fd = -1;
 void on_signal(int) {
     if (g_shutdown_fd >= 0) {
         uint64_t one = 1;
-        ssize_t w = write(g_shutdown_fd, &one, sizeof(one));   // async-signal-safe
-        (void)w;
+        ssize_t w = write(g_shutdown_fd, &one, sizeof(one)); // async-signal-safe
+        (void) w;
     }
 }
 
@@ -50,7 +50,8 @@ std::string build_status(const ContentConfig& cfg, Indexer& indexer, FsWatcher& 
     out += "running: yes\n";
     out += "paused: " + yesno(s.paused) + "\n";
     out += "crawling: " + yesno(s.crawling) + "\n";
-    out += "match: " + std::string(cfg.match == MatchMode::Substring ? "substring" : "prefix") + "\n";
+    out +=
+        "match: " + std::string(cfg.match == MatchMode::Substring ? "substring" : "prefix") + "\n";
     out += "db: " + ContentConfig::db_path() + "\n";
     out += "db_bytes: " + std::to_string(st.db_bytes) + "\n";
     out += "db_free_bytes: " + std::to_string(st.db_free_bytes) + "\n";
@@ -90,15 +91,26 @@ void print_help() {
 
 int main(int argc, char** argv) {
     std::string config_path;
-    bool once = false, reindex = false;
+    bool once = false;
+    bool reindex = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
-        if ((a == "-c" || a == "--config") && i + 1 < argc) config_path = argv[++i];
-        else if (a == "--once") once = true;
-        else if (a == "--reindex") reindex = true;
-        else if (a == "-h" || a == "--help") { print_help(); return 0; }
-        else if (a == "--version") { std::printf("waylaunchd 0.1.0\n"); return 0; }
-        else { std::fprintf(stderr, "waylaunchd: unknown option '%s'\n", a.c_str()); return 2; }
+        if ((a == "-c" || a == "--config") && i + 1 < argc) {
+            config_path = argv[++i];
+        } else if (a == "--once") {
+            once = true;
+        } else if (a == "--reindex") {
+            reindex = true;
+        } else if (a == "-h" || a == "--help") {
+            print_help();
+            return 0;
+        } else if (a == "--version") {
+            std::printf("waylaunchd 0.1.0\n");
+            return 0;
+        } else {
+            std::fprintf(stderr, "waylaunchd: unknown option '%s'\n", a.c_str());
+            return 2;
+        }
     }
 
     signal(SIGPIPE, SIG_IGN);
@@ -116,7 +128,7 @@ int main(int argc, char** argv) {
 
     std::string db = ContentConfig::db_path();
     Store store;
-    if (!store.open(db, {false, cfg.match})) {
+    if (!store.open(db, {.read_only = false, .match = cfg.match})) {
         std::fprintf(stderr, "waylaunchd: cannot open index at %s\n", db.c_str());
         return 1;
     }
@@ -128,7 +140,7 @@ int main(int argc, char** argv) {
         indexer.run_once();
         auto s = indexer.snapshot();
         std::fprintf(stderr, "waylaunchd: --once done (indexed_ops=%lld errors=%lld)\n",
-                     (long long)s.indexed, (long long)s.errors);
+                     static_cast<long long>(s.indexed), static_cast<long long>(s.errors));
         return 0;
     }
 
@@ -148,59 +160,74 @@ int main(int argc, char** argv) {
 
     FsWatcher watcher(cfg.roots, [&](const std::string& p) { return indexer.is_excluded(p); });
     watcher.start({
-        [&](const std::string& p) { indexer.enqueue_index(p); },
-        [&](const std::string& p) { indexer.enqueue_remove(p); },
-        [&] { indexer.request_reconcile(); },
-        [&](const std::string& p) { indexer.enqueue_remove_tree(p); },
-        [&] {
-            indexer.set_watch_degraded(true);
-            std::fprintf(stderr,
-                "waylaunchd: WARNING inotify watch limit hit "
-                "(fs.inotify.max_user_watches) — some subtrees are unwatched; "
-                "relying on periodic reconcile every %ds. Raise the sysctl to "
-                "restore instant freshness.\n",
-                cfg.reconcile_interval_degraded_s);
-        },
+        .on_index = [&](const std::string& p) { indexer.enqueue_index(p); },
+        .on_remove = [&](const std::string& p) { indexer.enqueue_remove(p); },
+        .on_overflow = [&] { indexer.request_reconcile(); },
+        .on_remove_tree = [&](const std::string& p) { indexer.enqueue_remove_tree(p); },
+        .on_watch_limit =
+            [&] {
+                indexer.set_watch_degraded(true);
+                std::fprintf(stderr,
+                             "waylaunchd: WARNING inotify watch limit hit "
+                             "(fs.inotify.max_user_watches) — some subtrees are unwatched; "
+                             "relying on periodic reconcile every %ds. Raise the sysctl to "
+                             "restore instant freshness.\n",
+                             cfg.reconcile_interval_degraded_s);
+            },
     });
 
     // A dedicated read-only handle for status queries (separate from the writer).
     Store status_reader;
-    status_reader.open(db, {true, cfg.match});
+    status_reader.open(db, {.read_only = true, .match = cfg.match});
 
     std::atomic<bool> want_shutdown{false};
     ControlServer control(ContentConfig::socket_path());
-    bool control_ok = control.start([&](const std::string& cmd, const std::string& arg) -> std::string {
-        if (cmd == "ping") return "pong\n";
-        if (cmd == "status") return build_status(cfg, indexer, watcher, status_reader);
-        if (cmd == "pause") { indexer.set_paused(true); return "ok: paused\n"; }
-        if (cmd == "resume") { indexer.set_paused(false); return "ok: resumed\n"; }
-        if (cmd == "reindex") { indexer.request_reindex(); return "ok: reindexing\n"; }
-        if (cmd == "reconcile") { indexer.request_reconcile(); return "ok: reconciling\n"; }
-        if (cmd == "exclude") {
-            if (arg.empty()) return "error: exclude needs a path\n";
-            indexer.add_runtime_exclude(expand_tilde(arg));
-            return "ok: excluded " + arg + "\n";
-        }
-        if (cmd == "shutdown") {
-            want_shutdown.store(true);
-            uint64_t one = 1;
-            ssize_t w = write(g_shutdown_fd, &one, sizeof(one));
-            (void)w;
-            return "ok: shutting down\n";
-        }
-        return "error: unknown command '" + cmd + "'\n";
-    });
+    bool control_ok =
+        control.start([&](const std::string& cmd, const std::string& arg) -> std::string {
+            if (cmd == "ping") return "pong\n";
+            if (cmd == "status") return build_status(cfg, indexer, watcher, status_reader);
+            if (cmd == "pause") {
+                indexer.set_paused(true);
+                return "ok: paused\n";
+            }
+            if (cmd == "resume") {
+                indexer.set_paused(false);
+                return "ok: resumed\n";
+            }
+            if (cmd == "reindex") {
+                indexer.request_reindex();
+                return "ok: reindexing\n";
+            }
+            if (cmd == "reconcile") {
+                indexer.request_reconcile();
+                return "ok: reconciling\n";
+            }
+            if (cmd == "exclude") {
+                if (arg.empty()) return "error: exclude needs a path\n";
+                indexer.add_runtime_exclude(expand_tilde(arg));
+                return "ok: excluded " + arg + "\n";
+            }
+            if (cmd == "shutdown") {
+                want_shutdown.store(true);
+                uint64_t one = 1;
+                ssize_t w = write(g_shutdown_fd, &one, sizeof(one));
+                (void) w;
+                return "ok: shutting down\n";
+            }
+            return "error: unknown command '" + cmd + "'\n";
+        });
 
     if (!control_ok)
-        std::fprintf(stderr, "waylaunchd: WARNING control socket unavailable (%s) — "
+        std::fprintf(stderr,
+                     "waylaunchd: WARNING control socket unavailable (%s) — "
                      "indexing continues, but waylaunchctl won't connect\n",
                      ContentConfig::socket_path().c_str());
-    std::fprintf(stderr, "waylaunchd: indexing %zu root(s); socket %s\n",
-                 cfg.roots.size(), ContentConfig::socket_path().c_str());
+    std::fprintf(stderr, "waylaunchd: indexing %zu root(s); socket %s\n", cfg.roots.size(),
+                 ContentConfig::socket_path().c_str());
 
     // Wait for a shutdown signal / control command.
     for (;;) {
-        pollfd pfd{g_shutdown_fd, POLLIN, 0};
+        pollfd pfd{.fd = g_shutdown_fd, .events = POLLIN, .revents = 0};
         int pr = poll(&pfd, 1, -1);
         if (pr < 0 && errno == EINTR) continue;
         break;

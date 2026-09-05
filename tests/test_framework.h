@@ -1,11 +1,12 @@
 #pragma once
 
-#include <string>
-#include <vector>
+#include <cmath>
 #include <functional>
 #include <iostream>
 #include <sstream>
-#include <cmath>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace test {
 
@@ -16,14 +17,14 @@ struct TestResult {
 };
 
 class TestRunner {
-public:
+  public:
     static TestRunner& instance() {
         static TestRunner runner;
         return runner;
     }
 
     void add_test(const std::string& name, std::function<void()> test_fn) {
-        tests_.push_back({name, test_fn});
+        tests_.push_back({.name = name, .fn = std::move(test_fn)});
     }
 
     int run_all() {
@@ -53,7 +54,7 @@ public:
 
     std::string current_test_name() const { return current_test_; }
 
-private:
+  private:
     struct Test {
         std::string name;
         std::function<void()> fn;
@@ -63,52 +64,55 @@ private:
 };
 
 class TestRegistrar {
-public:
+  public:
     TestRegistrar(const std::string& name, std::function<void()> fn) {
-        TestRunner::instance().add_test(name, fn);
+        TestRunner::instance().add_test(name, std::move(fn));
     }
 };
 
 } // namespace test
 
-#define TEST_ASSERT(cond) \
-    do { \
-        if (!(cond)) { \
-            std::ostringstream oss; \
-            oss << "Assertion failed: " #cond " at " __FILE__ ":" << __LINE__; \
-            throw std::runtime_error(oss.str()); \
-        } \
-    } while(0)
+#define TEST_ASSERT(cond)                                                                          \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::ostringstream oss;                                                                \
+            oss << "Assertion failed: " #cond " at " __FILE__ ":" << __LINE__;                     \
+            throw std::runtime_error(oss.str());                                                   \
+        }                                                                                          \
+    } while (0)
 
-#define TEST_ASSERT_EQ(a, b) \
-    do { \
-        auto va = (a); auto vb = (b); \
-        if (va != vb) { \
-            std::ostringstream oss; \
-            oss << "Assertion failed: " #a " == " #b " (" << va << " != " << vb << ") at " __FILE__ ":" << __LINE__; \
-            throw std::runtime_error(oss.str()); \
-        } \
-    } while(0)
+#define TEST_ASSERT_EQ(a, b)                                                                       \
+    do {                                                                                           \
+        auto va = (a);                                                                             \
+        auto vb = (b);                                                                             \
+        if (va != vb) {                                                                            \
+            std::ostringstream oss;                                                                \
+            oss << "Assertion failed: " #a " == " #b " (" << va << " != " << vb                    \
+                << ") at " __FILE__ ":" << __LINE__;                                               \
+            throw std::runtime_error(oss.str());                                                   \
+        }                                                                                          \
+    } while (0)
 
-#define TEST_ASSERT_STR(a, b) \
-    do { \
-        if ((a) != (b)) { \
-            std::ostringstream oss; \
-            oss << "Assertion failed: " #a " == " #b " (\"" << (a) << "\" != \"" << (b) << "\") at " __FILE__ ":" << __LINE__; \
-            throw std::runtime_error(oss.str()); \
-        } \
-    } while(0)
+#define TEST_ASSERT_STR(a, b)                                                                      \
+    do {                                                                                           \
+        if ((a) != (b)) {                                                                          \
+            std::ostringstream oss;                                                                \
+            oss << "Assertion failed: " #a " == " #b " (\"" << (a) << "\" != \"" << (b)            \
+                << "\") at " __FILE__ ":" << __LINE__;                                             \
+            throw std::runtime_error(oss.str());                                                   \
+        }                                                                                          \
+    } while (0)
 
-#define TEST_ASSERT_NEAR(a, b, eps) \
-    do { \
-        if (std::abs((a) - (b)) > (eps)) { \
-            std::ostringstream oss; \
+#define TEST_ASSERT_NEAR(a, b, eps)                                                                \
+    do {                                                                                           \
+        if (std::abs((a) - (b)) > (eps)) {                                                         \
+            std::ostringstream oss;                                                                \
             oss << "Assertion failed: |" #a " - " #b "| <= " #eps " at " __FILE__ ":" << __LINE__; \
-            throw std::runtime_error(oss.str()); \
-        } \
-    } while(0)
+            throw std::runtime_error(oss.str());                                                   \
+        }                                                                                          \
+    } while (0)
 
-#define TEST(name) \
-    static void test_fn_##name(); \
-    static test::TestRegistrar reg_##name(#name, test_fn_##name); \
+#define TEST(name)                                                                                 \
+    static void test_fn_##name();                                                                  \
+    static test::TestRegistrar reg_##name(#name, test_fn_##name);                                  \
     static void test_fn_##name()

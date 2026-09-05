@@ -1,10 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
-#include <memory>
-#include <functional>
 #include <xkbcommon/xkbcommon.h>
 
 struct wl_display;
@@ -83,13 +83,13 @@ using CloseHandler = std::function<void()>;
 using RedrawHandler = std::function<void()>;
 
 class WaylandCore {
-public:
+  public:
     WaylandCore();
     ~WaylandCore();
 
     bool init();
     void run();
-    void set_running(bool v);   // begin/stop the external dispatch loop
+    void set_running(bool v); // begin/stop the external dispatch loop
     void quit();
 
     Buffer* acquire_buffer();
@@ -109,7 +109,7 @@ public:
     void set_key_handler(KeyHandler handler);
     void set_modifiers_handler(ModifiersHandler handler);
     void set_mouse_handler(MouseHandler handler);
-    void set_mouse_move_handler(MouseMoveHandler handler);   // pointer motion/enter (hover)
+    void set_mouse_move_handler(MouseMoveHandler handler); // pointer motion/enter (hover)
     void set_axis_handler(AxisHandler handler);
     void set_close_handler(CloseHandler handler);
     void set_redraw_handler(RedrawHandler handler);
@@ -118,14 +118,14 @@ public:
     int32_t primary_scale() const;
     int32_t output_width() const;
     int32_t output_height() const;
-    int32_t surface_width() const;   // current surface/buffer width (may differ from output)
+    int32_t surface_width() const; // current surface/buffer width (may differ from output)
     int32_t surface_height() const;
 
     wl_display* display() const;
     wl_surface* surface() const;
-    wl_seat* seat() const;        // for clients that need the seat (e.g. switcher activate)
+    wl_seat* seat() const; // for clients that need the seat (e.g. switcher activate)
     bool is_running() const;
-    bool is_configured() const;   // true once the (layer/xdg) surface has been configured
+    bool is_configured() const; // true once the (layer/xdg) surface has been configured
 
     // Is a modifier (by its xkb name, e.g. XKB_MOD_NAME_ALT) currently held? Keeps
     // the xkb_state detail inside WaylandCore instead of exposing kbd_ to callers.
@@ -134,7 +134,7 @@ public:
     // Client-side backdrop capture for glassmorphism: grabs the primary output
     // into an SHM buffer BEFORE the overlay is mapped, so we can blur it ourselves.
     bool capture_backdrop();
-    void set_want_backdrop(bool v);   // if false, skip the (screencopy) capture entirely
+    void set_want_backdrop(bool v); // if false, skip the (screencopy) capture entirely
     bool has_backdrop() const;
     const uint8_t* backdrop_data() const;
     int backdrop_width() const;
@@ -145,8 +145,9 @@ public:
 
     void handle_keymap(uint32_t format, int32_t fd, uint32_t size);
     void handle_key(uint32_t serial, uint32_t time, uint32_t key, uint32_t state);
-    void handle_modifiers(uint32_t mods_depressed, uint32_t mods_latched, uint32_t mods_locked, uint32_t group);
-    void handle_output_geometry(int32_t x, int32_t y, int32_t w, int32_t h, int32_t transform, int32_t factor);
+    void handle_modifiers(uint32_t md, uint32_t ml, uint32_t mk, uint32_t group) const;
+    void handle_output_geometry(int32_t x, int32_t y, int32_t w, int32_t h, int32_t transform,
+                                int32_t factor);
     void handle_output_mode(uint32_t flags, int32_t width, int32_t height, int32_t refresh);
     void handle_output_scale(int32_t factor);
     void handle_output_name(const std::string& name);
@@ -169,7 +170,7 @@ public:
     wl_cursor_theme* cursor_theme_ = nullptr;
     wl_cursor* cursor_ = nullptr;
     wl_surface* cursor_surface_ = nullptr;
-    void ensure_cursor(uint32_t serial);   // load (once) + attach the pointer image
+    void ensure_cursor(uint32_t serial); // load (once) + attach the pointer image
     wl_compositor* compositor_ = nullptr;
     wl_shm* shm_ = nullptr;
     wl_seat* seat_ = nullptr;
@@ -190,8 +191,12 @@ public:
     zwlr_foreign_toplevel_manager_v1* foreign_toplevel_manager_ = nullptr;
     using ForeignToplevelListener = std::function<void(zwlr_foreign_toplevel_manager_v1*)>;
     ForeignToplevelListener foreign_toplevel_listener_;
-    void set_foreign_toplevel_listener(ForeignToplevelListener h) { foreign_toplevel_listener_ = std::move(h); }
-    zwlr_foreign_toplevel_manager_v1* foreign_toplevel_manager() const { return foreign_toplevel_manager_; }
+    void set_foreign_toplevel_listener(ForeignToplevelListener h) {
+        foreign_toplevel_listener_ = std::move(h);
+    }
+    zwlr_foreign_toplevel_manager_v1* foreign_toplevel_manager() const {
+        return foreign_toplevel_manager_;
+    }
 #endif
 
 #ifdef HAS_SCREENCOPY
@@ -216,7 +221,7 @@ public:
     void handle_sc_failed();
 #endif
 
-private:
+  private:
     wl_display* display_ = nullptr;
     wl_registry* registry_ = nullptr;
     wl_surface* surface_ = nullptr;

@@ -12,25 +12,35 @@
 #include <string>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 
 namespace fs = std::filesystem;
 using namespace waylaunch::content;
 using namespace std::chrono_literals;
 
 static int failures = 0;
-#define CHECK(c, m) do { if (!(c)) { std::printf("  FAIL: %s\n", m); failures++; } \
-                         else std::printf("  ok: %s\n", m); } while (0)
+#define CHECK(c, m)                                                                                \
+    do {                                                                                           \
+        if ((c)) {                                                                                 \
+            std::printf("  ok: %s\n", m);                                                          \
+        } else {                                                                                   \
+            std::printf("  FAIL: %s\n", m);                                                        \
+            failures++;                                                                            \
+        }                                                                                          \
+    } while (0)
 
 static void wf(const fs::path& p, const std::string& c) {
-    std::ofstream f(p, std::ios::binary); f << c; f.flush();
+    std::ofstream f(p, std::ios::binary);
+    f << c;
+    f.flush();
 }
 static bool wait_for(Store& r, const std::string& q, int want, int ms = 8000) {
     auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
     while (std::chrono::steady_clock::now() < end) {
-        if ((int)r.search(q, 10).size() >= want) return true;
+        if (std::cmp_greater_equal(r.search(q, 10).size(), want)) return true;
         std::this_thread::sleep_for(40ms);
     }
-    return (int)r.search(q, 10).size() >= want;
+    return std::cmp_greater_equal(r.search(q, 10).size(), want);
 }
 static bool wait_gone(Store& r, const std::string& q, int ms = 8000) {
     auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
@@ -67,11 +77,13 @@ int main() {
     CHECK(wait_for(reader, "wombat", 1), "crawl indexed alpha.txt");
     CHECK(wait_for(reader, "penguins", 1), "crawl indexed sub/notes.md");
 
-    FsWatcher watcher({base.string()}, [&](const std::string& p) { return indexer.is_excluded(p); });
-    watcher.start({[&](const std::string& p) { indexer.enqueue_index(p); },
-                   [&](const std::string& p) { indexer.enqueue_remove(p); },
-                   [&] { indexer.request_reconcile(); },
-                   [&](const std::string& p) { indexer.enqueue_remove_tree(p); }});
+    FsWatcher watcher({base.string()},
+                      [&](const std::string& p) { return indexer.is_excluded(p); });
+    watcher.start(
+        {.on_index = [&](const std::string& p) { indexer.enqueue_index(p); },
+         .on_remove = [&](const std::string& p) { indexer.enqueue_remove(p); },
+         .on_overflow = [&] { indexer.request_reconcile(); },
+         .on_remove_tree = [&](const std::string& p) { indexer.enqueue_remove_tree(p); }});
     std::this_thread::sleep_for(100ms);
 
     wf(base / "beta.txt", "a brand new file about aardvark");

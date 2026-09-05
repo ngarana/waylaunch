@@ -3,9 +3,9 @@
 // activate()'s "handled" path has process side effects (spawn/clipboard), so we
 // only assert its rejection path here — the query logic is what carries risk.
 
+#include "waylaunch/config.h" // Command (HistoryStore is forward-declared by the provider)
 #include "waylaunch/providers/calculator_provider.h"
 #include "waylaunch/providers/command_provider.h"
-#include "waylaunch/config.h"    // Command (HistoryStore is forward-declared by the provider)
 
 #include <cassert>
 #include <cctype>
@@ -16,8 +16,8 @@ using namespace waylaunch;
 
 static ProviderQuery mkq(const std::string& text) {
     std::string lower = text;
-    for (auto& c : lower) c = static_cast<char>(std::tolower((unsigned char)c));
-    return ProviderQuery{text, lower, 6};
+    for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ProviderQuery{.text = text, .lower = lower, .max_results = 6};
 }
 
 int main() {
@@ -28,9 +28,9 @@ int main() {
         auto r = calc.query(mkq("6*7"));
         assert(r.size() == 1);
         assert(r[0].kind == ItemKind::Calculator);
-        assert(!r[0].path.empty());               // the result payload (copied on Return)
-        assert(r[0].name.rfind("= ", 0) == 0);    // rendered as "= 42"
-        assert(r[0].score > 1000.0f);             // wins the Top Hit
+        assert(!r[0].path.empty());            // the result payload (copied on Return)
+        assert(r[0].name.rfind("= ", 0) == 0); // rendered as "= 42"
+        assert(r[0].score > 1000.0F);          // wins the Top Hit
 
         assert(calc.query(mkq("just some words")).empty());
         assert(calc.query(mkq("")).empty());
@@ -64,7 +64,7 @@ int main() {
         assert(r[0].action_command == "loginctl lock-session");
 
         assert(prov.query(mkq("zzz-nomatch")).empty());
-        assert(prov.query(mkq("SLEEP")).size() == 1);   // case-insensitive
+        assert(prov.query(mkq("SLEEP")).size() == 1); // case-insensitive
 
         // activate() only claims Command items (no process is spawned here).
         ListItem app;

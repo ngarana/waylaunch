@@ -2,34 +2,19 @@
 
 namespace waylaunch {
 
-enum class SwitcherState {
-    Hidden,
-    ActiveHoldingMod,
-    Dismissing
-};
+enum class SwitcherState { Hidden, ActiveHoldingMod, Dismissing };
 
-enum class SwitcherEvent {
-    Trigger,
-    Next,
-    Prev,
-    Jump,
-    Quit,
-    Minimize,
-    Confirm,
-    Cancel
-};
+enum class SwitcherEvent { Trigger, Next, Prev, Jump, Quit, Minimize, Confirm, Cancel };
 
 class SwitcherStateMachine {
-public:
+  public:
     SwitcherState current_state() const { return state_; }
-    
-    bool is_active() const {
-        return state_ == SwitcherState::ActiveHoldingMod;
-    }
+
+    bool is_active() const { return state_ == SwitcherState::ActiveHoldingMod; }
 
     void process_event(SwitcherEvent event);
 
-private:
+  private:
     SwitcherState state_ = SwitcherState::Hidden;
 };
 

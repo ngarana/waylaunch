@@ -5,6 +5,26 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install lint dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format clang-tidy
+      - name: clang-format check
+        run: |
+          clang-format --dry-run --Werror \
+            $(find src include tests -name '*.cpp' -o -name '*.h')
+      - name: Configure (compile commands for clang-tidy)
+        run: cmake -S . -B build -DBUILD_TESTING=ON
+      - name: clang-tidy check
+        run: |
+          clang-tidy -p build \
+            $(find src include tests -name '*.cpp') \
+            --warnings-as-errors='*'
+
   linux:
     runs-on: ubuntu-latest
     steps:

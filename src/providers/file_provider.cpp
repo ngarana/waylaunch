@@ -1,23 +1,24 @@
 #include "waylaunch/providers/file_provider.h"
-#include "waylaunch/history.h"
-#include "waylaunch/subprocess.h"
 #include "waylaunch/clipboard.h"
+#include "waylaunch/history.h"
 #include "waylaunch/search_util.h"
+#include "waylaunch/subprocess.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <filesystem>
 #include <queue>
 #include <sys/stat.h>
+#include <utility>
 #include <vector>
 
 namespace waylaunch {
 
 namespace {
 std::string to_lower(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::ranges::transform(s, s.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return s;
 }
 
@@ -42,25 +43,19 @@ bool matches_exclude(const std::string& name, const std::string& pat) {
 }
 
 bool name_excluded(const std::string& name, const std::vector<std::string>& excludes) {
-    for (const auto& ex : excludes) {
-        if (matches_exclude(name, ex)) return true;
-    }
-    return false;
+    return std::ranges::any_of(excludes, [&](const auto& ex) { return matches_exclude(name, ex); });
 }
 } // namespace
 
-bool FileProvider::is_available() const {
-    return true;
-}
+bool FileProvider::is_available() const { return true; }
 
 std::vector<ListItem> FileProvider::query(const ProviderQuery& q) {
     std::vector<ListItem> out;
-    if (static_cast<int>(q.text.size()) < min_query_) return out;
+    if (std::cmp_less(q.text.size(), min_query_)) return out;
 
     constexpr std::size_t kMaxVisited = 200000;
     constexpr int kDeadlineMs = 300;
-    const auto deadline = std::chrono::steady_clock::now()
-                          + std::chrono::milliseconds(kDeadlineMs);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kDeadlineMs);
 
     const std::string& ql = q.lower;
     std::size_t visited = 0;
@@ -81,7 +76,8 @@ std::vector<ListItem> FileProvider::query(const ProviderQuery& q) {
             std::string dir = std::move(dirs.front());
             dirs.pop();
 
-            std::filesystem::directory_iterator it(dir, ec), end;
+            std::filesystem::directory_iterator it(dir, ec);
+            std::filesystem::directory_iterator end;
             if (ec) continue;
             for (; it != end; ++it) {
                 const auto& entry = *it;
@@ -115,10 +111,11 @@ std::vector<ListItem> FileProvider::query(const ProviderQuery& q) {
                 it_item.icon_name = is_dir ? "folder" : icon_for_file(path);
 
                 size_t pos = nl.find(ql);
-                float s = (pos == 0) ? 1000.0f - std::min<size_t>(nl.size(), 300)
-                                      : 600.0f - std::min<size_t>(pos, 300);
-                s -= path_depth(path) * 6.0f;
-                if (is_dir) s += 15.0f;
+                float s = (pos == 0)
+                              ? 1000.0F - static_cast<float>(std::min<size_t>(nl.size(), 300))
+                              : 600.0F - static_cast<float>(std::min<size_t>(pos, 300));
+                s -= static_cast<float>(path_depth(path)) * 6.0F;
+                if (is_dir) s += 15.0F;
                 if (have_stat) s += recency_bonus(st.st_mtime);
                 if (history_) s += history_->frecency(path);
                 it_item.score = s;
@@ -130,8 +127,8 @@ std::vector<ListItem> FileProvider::query(const ProviderQuery& q) {
     }
 
 done:
-    std::stable_sort(hits.begin(), hits.end(),
-                     [](const ListItem& a, const ListItem& b) { return a.score > b.score; });
+    std::ranges::stable_sort(
+        hits, [](const ListItem& a, const ListItem& b) { return a.score > b.score; });
     if (hits.size() > static_cast<size_t>(std::max(1, max_results_)))
         hits.resize(static_cast<size_t>(std::max(1, max_results_)));
     out = std::move(hits);

@@ -1,10 +1,10 @@
 #include "waylaunch/config.h"
 #include "waylaunch/launcher_ui.h"
-#include <iostream>
-#include <string>
 #include <csignal>
 #include <cstdlib>
 #include <fcntl.h>
+#include <iostream>
+#include <string>
 #include <sys/file.h>
 #include <unistd.h>
 
@@ -28,18 +28,20 @@ int acquire_single_instance(const char* lock_name, int existing_signal) {
         if (::ftruncate(fd, 0) == 0) {
             std::string pid = std::to_string(::getpid()) + "\n";
             ssize_t w = ::write(fd, pid.data(), pid.size());
-            (void)w;
+            (void) w;
         }
-        return fd;   // we own it; keep the fd open for our lifetime
+        return fd; // we own it; keep the fd open for our lifetime
     }
     // Another instance holds the lock → signal it and step aside.
     char buf[32] = {0};
     ::lseek(fd, 0, SEEK_SET);
     ssize_t n = ::read(fd, buf, sizeof(buf) - 1);
     if (n > 0) {
-        long other = std::atol(buf);
-        if (other > 1 && existing_signal > 0)
+        char* end = nullptr;
+        long other = std::strtol(buf, &end, 10);
+        if (end != buf && other > 1 && existing_signal > 0) {
             ::kill(static_cast<pid_t>(other), existing_signal);
+        }
     }
     ::close(fd);
     return -1;
@@ -68,11 +70,12 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--power") {
             power_mode = true;
         } else if (arg == "--reverse") {
-            switcher_reverse = true;   // preselect the far end (Alt+Shift+Tab)
+            switcher_reverse = true; // preselect the far end (Alt+Shift+Tab)
         } else if (arg == "--save") {
             config_path = (i + 1 < argc) ? argv[++i] : waylaunch::Config::default_config_path();
             if (!config.load(config_path)) {
-                std::cerr << "Warning: Could not load config from " << config_path << ", using defaults.\n";
+                std::cerr << "Warning: Could not load config from " << config_path
+                          << ", using defaults.\n";
             }
             if (config.save(config_path)) {
                 std::cout << "Saved config to " << config_path << "\n";
@@ -93,7 +96,8 @@ int main(int argc, char* argv[]) {
                       << "  -v, --version        Show version\n";
             return 0;
         } else if (arg == "--version" || arg == "-v") {
-            std::cout << "waylaunch 0.1.0\n"; return 0;
+            std::cout << "waylaunch 0.1.0\n";
+            return 0;
         } else if (arg == "--debug") {
             config.get().general.debug = true;
         }
@@ -114,14 +118,17 @@ int main(int argc, char* argv[]) {
     // keeping them on separate locks so opening one never disturbs another. The
     // resident switcher distinguishes direction by signal: SIGUSR1 forward,
     // SIGUSR2 reverse (Alt+Shift+Tab).
-    int lock_fd = power_mode
-        ? acquire_single_instance("waylaunch-power.lock", 0)
-        : switcher_mode
-        ? acquire_single_instance("waylaunch-switcher.lock",
-                                  switcher_reverse ? SIGUSR2 : SIGUSR1)
-        : acquire_single_instance("waylaunch-launcher.lock", SIGTERM);
+    int lock_fd = -2;
+    if (power_mode) {
+        lock_fd = acquire_single_instance("waylaunch-power.lock", 0);
+    } else if (switcher_mode) {
+        lock_fd = acquire_single_instance("waylaunch-switcher.lock",
+                                          switcher_reverse ? SIGUSR2 : SIGUSR1);
+    } else {
+        lock_fd = acquire_single_instance("waylaunch-launcher.lock", SIGTERM);
+    }
     if (lock_fd == -1) return 0;
-    (void)lock_fd;   // held open for our lifetime; the OS releases it on exit
+    (void) lock_fd; // held open for our lifetime; the OS releases it on exit
 
     if (config_path.empty()) config_path = waylaunch::Config::default_config_path();
 

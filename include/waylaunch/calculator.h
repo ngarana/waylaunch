@@ -1,13 +1,13 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <variant>
-#include <optional>
 
 namespace waylaunch {
 
 class Calculator {
-public:
+  public:
     struct Result {
         bool valid = false;
         std::string expression;
@@ -16,18 +16,18 @@ public:
     };
 
     Calculator();
-    ~Calculator();
+    ~Calculator() = default;
 
     void set_degrees_mode(bool degrees);
     bool is_degrees_mode() const;
 
     Result evaluate(const std::string& expression) const;
-    bool is_calculator_query(const std::string& query) const;
+    static bool is_calculator_query(const std::string& query);
 
-private:
+  private:
     // Expression parser
     class Parser;
-    
+
     bool degrees_mode_ = false;
 };
 

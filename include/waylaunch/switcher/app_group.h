@@ -1,9 +1,9 @@
 #pragma once
 
 #include "waylaunch/switcher/toplevel_backend.h"
+#include <algorithm>
 #include <string>
 #include <vector>
-#include <algorithm>
 
 namespace waylaunch {
 
@@ -16,15 +16,11 @@ struct AppGroup {
 
     bool is_all_minimized() const {
         if (windows.empty()) return false;
-        return std::all_of(windows.begin(), windows.end(), [](const auto& w) {
-            return w.is_minimized;
-        });
+        return std::ranges::all_of(windows, [](const auto& w) { return w.is_minimized; });
     }
 
     bool is_any_active() const {
-        return std::any_of(windows.begin(), windows.end(), [](const auto& w) {
-            return w.is_active;
-        });
+        return std::ranges::any_of(windows, [](const auto& w) { return w.is_active; });
     }
 
     uintptr_t primary_handle() const {

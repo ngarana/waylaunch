@@ -1,23 +1,23 @@
 #include "waylaunch/subprocess.h"
-#include <array>
 #include <algorithm>
+#include <array>
 #include <cerrno>
+#include <csignal>
+#include <cstddef>
+#include <cstring>
 #include <fcntl.h>
+#include <filesystem>
+#include <poll.h>
 #include <spawn.h>
+#include <sstream>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <signal.h>
-#include <poll.h>
-#include <cstring>
-#include <filesystem>
-#include <sstream>
-
-extern char** environ;
 
 namespace waylaunch {
 
 ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::string& stdin_data) {
-    if (argv.empty()) return {-1, "", "Failed to spawn: empty argv"};
+    if (argv.empty())
+        return {.exit_code = -1, .stdout = "", .stderr = "Failed to spawn: empty argv"};
 
     int stdin_pipe[2] = {-1, -1};
     int stdout_pipe[2] = {-1, -1};
@@ -34,7 +34,9 @@ ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::s
     };
     auto pipe_failure = [&](int error) {
         close_all();
-        return ProcessResult{-1, "", "Failed to create pipe: " + std::string(strerror(error))};
+        return ProcessResult{.exit_code = -1,
+                             .stdout = "",
+                             .stderr = "Failed to create pipe: " + std::string(strerror(error))};
     };
 
     if (pipe(stdin_pipe) < 0) return pipe_failure(errno);
@@ -45,7 +47,9 @@ ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::s
     int action_error = posix_spawn_file_actions_init(&actions);
     if (action_error != 0) {
         close_all();
-        return {-1, "", "Failed to prepare spawn: " + std::string(strerror(action_error))};
+        return {.exit_code = -1,
+                .stdout = "",
+                .stderr = "Failed to prepare spawn: " + std::string(strerror(action_error))};
     }
     auto add_action = [&](int result) {
         if (result == 0) return true;
@@ -65,11 +69,14 @@ ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::s
     if (!actions_ready) {
         posix_spawn_file_actions_destroy(&actions);
         close_all();
-        return {-1, "", "Failed to prepare spawn: " + std::string(strerror(action_error))};
+        return {.exit_code = -1,
+                .stdout = "",
+                .stderr = "Failed to prepare spawn: " + std::string(strerror(action_error))};
     }
 
     std::vector<char*> c_argv;
-    for (auto& s : argv) c_argv.push_back(const_cast<char*>(s.c_str()));
+    c_argv.reserve(argv.size());
+    for (const auto& s : argv) c_argv.push_back(const_cast<char*>(s.c_str()));
     c_argv.push_back(nullptr);
 
     pid_t pid;
@@ -78,7 +85,9 @@ ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::s
 
     if (ret != 0) {
         close_all();
-        return {-1, "", "Failed to spawn: " + std::string(strerror(ret))};
+        return {.exit_code = -1,
+                .stdout = "",
+                .stderr = "Failed to spawn: " + std::string(strerror(ret))};
     }
 
     close(stdin_pipe[1]);
@@ -92,15 +101,15 @@ ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::s
         stdin_pipe[0] = -1;
     }
 
-    std::string stdout_buf, stderr_buf;
+    std::string stdout_buf;
+    std::string stderr_buf;
     std::array<char, 4096> read_buf;
     std::size_t stdin_offset = 0;
-    std::array<pollfd, 3> pfds = {{
-        {stdin_data.empty() ? -1 : stdin_pipe[0],
-         static_cast<short>(stdin_data.empty() ? 0 : POLLOUT), 0},
-        {stdout_pipe[0], POLLIN, 0},
-        {stderr_pipe[0], POLLIN, 0}
-    }};
+    std::array<pollfd, 3> pfds = {{{.fd = stdin_data.empty() ? -1 : stdin_pipe[0],
+                                    .events = static_cast<short>(stdin_data.empty() ? 0 : POLLOUT),
+                                    .revents = 0},
+                                   {.fd = stdout_pipe[0], .events = POLLIN, .revents = 0},
+                                   {.fd = stderr_pipe[0], .events = POLLIN, .revents = 0}}};
 
     auto set_nonblocking = [](int fd) {
         int flags = fcntl(fd, F_GETFL, 0);
@@ -135,11 +144,10 @@ ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::s
     auto read_output = [&](pollfd& pfd, std::string& output) {
         if (pfd.fd < 0 || !(pfd.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))) return;
         ssize_t n;
-        do {
-            n = read(pfd.fd, read_buf.data(), read_buf.size());
-        } while (n < 0 && errno == EINTR);
-        if (n > 0) output.append(read_buf.data(), static_cast<std::size_t>(n));
-        else if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+        do { n = read(pfd.fd, read_buf.data(), read_buf.size()); } while (n < 0 && errno == EINTR);
+        if (n > 0) {
+            output.append(read_buf.data(), static_cast<std::size_t>(n));
+        } else if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
             close(pfd.fd);
             pfd.fd = -1;
         }
@@ -154,8 +162,14 @@ ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::s
         if (poll_ret < 0) {
             stdin_error = "poll: " + std::string(strerror(errno));
             close_stdin();
-            if (pfds[1].fd >= 0) { close(pfds[1].fd); pfds[1].fd = -1; }
-            if (pfds[2].fd >= 0) { close(pfds[2].fd); pfds[2].fd = -1; }
+            if (pfds[1].fd >= 0) {
+                close(pfds[1].fd);
+                pfds[1].fd = -1;
+            }
+            if (pfds[2].fd >= 0) {
+                close(pfds[2].fd);
+                pfds[2].fd = -1;
+            }
             kill(pid, SIGTERM);
             break;
         }
@@ -166,7 +180,8 @@ ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::s
                 close_stdin();
             } else if (pfds[0].revents & POLLOUT) {
                 const std::size_t remaining = stdin_data.size() - stdin_offset;
-                const std::size_t chunk = std::min<std::size_t>(remaining, 64 * 1024);
+                const std::size_t chunk =
+                    std::min<std::size_t>(remaining, static_cast<const unsigned long>(64 * 1024));
                 ssize_t n;
                 do {
                     n = write(pfds[0].fd, stdin_data.data() + stdin_offset, chunk);
@@ -188,16 +203,15 @@ ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::s
 
     int status;
     pid_t waited;
-    do {
-        waited = waitpid(pid, &status, 0);
-    } while (waited < 0 && errno == EINTR);
+    do { waited = waitpid(pid, &status, 0); } while (waited < 0 && errno == EINTR);
     int exit_code = waited == pid && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     if (!stdin_error.empty()) {
         if (!stderr_buf.empty() && stderr_buf.back() != '\n') stderr_buf.push_back('\n');
         stderr_buf += stdin_error;
         stderr_buf.push_back('\n');
     }
-    return {exit_code, std::move(stdout_buf), std::move(stderr_buf)};
+    return {
+        .exit_code = exit_code, .stdout = std::move(stdout_buf), .stderr = std::move(stderr_buf)};
 }
 
 bool Subprocess::command_exists(const std::string& command) {

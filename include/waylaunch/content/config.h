@@ -6,8 +6,8 @@
 // fall back to the existing `[search]` file-search settings when unset, so a user
 // who configured file search gets content search over the same tree for free.
 
-#include "waylaunch/content/store.h"       // MatchMode
-#include "waylaunch/content/extractor.h"   // ExtractOptions
+#include "waylaunch/content/extractor.h" // ExtractOptions
+#include "waylaunch/content/store.h"     // MatchMode
 
 #include <string>
 #include <vector>
@@ -15,33 +15,33 @@
 namespace waylaunch::content {
 
 struct ContentConfig {
-    bool                     enable = true;         // master switch (also gates UI)
-    std::vector<std::string> roots;                 // absolute, ~-expanded
-    std::vector<std::string> excludes;              // dir names / path substrings skipped
-    std::vector<std::string> exclude_paths;         // absolute privacy prefixes never read
-    size_t                   max_file_mb = 8;        // don't open files larger than this
-    size_t                   max_text_mb = 2;        // cap extracted text per file
-    MatchMode                match = MatchMode::Prefix;  // "prefix" | "substring"
-    int                      min_query = 3;          // chars before content search fires
-    int                      max_results = 6;
+    bool enable = true;                     // master switch (also gates UI)
+    std::vector<std::string> roots;         // absolute, ~-expanded
+    std::vector<std::string> excludes;      // dir names / path substrings skipped
+    std::vector<std::string> exclude_paths; // absolute privacy prefixes never read
+    size_t max_file_mb = 8;                 // don't open files larger than this
+    size_t max_text_mb = 2;                 // cap extracted text per file
+    MatchMode match = MatchMode::Prefix;    // "prefix" | "substring"
+    int min_query = 3;                      // chars before content search fires
+    int max_results = 6;
     std::vector<std::string> extractors = {"text", "pdf", "office", "html"};
-    bool                     throttle_on_battery = true;
-    int                      worker_nice = 10;
-    size_t                   max_index_mb = 0;        // 0 = unlimited hard cap
+    bool throttle_on_battery = true;
+    int worker_nice = 10;
+    size_t max_index_mb = 0; // 0 = unlimited hard cap
     // Periodic full-reconcile backstop (§4.5/§9): the safety net that catches
     // changes inotify missed — in subtrees left unwatched because watch
     // descriptors were exhausted, or after any dropped event. 0 disables it.
     // The daemon reconciles more often once watches are known-exhausted.
-    int                      reconcile_interval_s = 900;          // 15 min steady state
-    int                      reconcile_interval_degraded_s = 180; // 3 min when watch-limited
+    int reconcile_interval_s = 900;          // 15 min steady state
+    int reconcile_interval_degraded_s = 180; // 3 min when watch-limited
 
     // Effective extractor options derived from the caps above.
     ExtractOptions extract_options() const;
 
     // Standard per-user locations.
-    static std::string db_path();         // $XDG_DATA_HOME/waylaunch/index.db
-    static std::string socket_path();     // $XDG_RUNTIME_DIR/waylaunch/waylaunchd.sock
-    static std::string runtime_dir();     // $XDG_RUNTIME_DIR/waylaunch
+    static std::string db_path();     // $XDG_DATA_HOME/waylaunch/index.db
+    static std::string socket_path(); // $XDG_RUNTIME_DIR/waylaunch/waylaunchd.sock
+    static std::string runtime_dir(); // $XDG_RUNTIME_DIR/waylaunch
 };
 
 // Parse [content] (+ [search] fallbacks) from a config.toml. Missing file →

@@ -12,7 +12,7 @@ struct DesktopEntry {
     std::string categories;
     std::string comment;
     std::string generic_name;
-    std::string desktop_path;   // source .desktop file (for "reveal in files")
+    std::string desktop_path; // source .desktop file (for "reveal in files")
     bool no_display = false;
     bool hidden = false;
     // Lowercased "name generic comment categories", built once at scan time so
@@ -22,7 +22,7 @@ struct DesktopEntry {
 };
 
 class AppLauncher {
-public:
+  public:
     AppLauncher();
     ~AppLauncher();
 
@@ -31,7 +31,7 @@ public:
 
     std::vector<DesktopEntry> search(const std::string& query) const;
 
-private:
+  private:
     void parse_desktop_file(const std::string& path);
     std::vector<std::string> get_desktop_dirs() const;
 

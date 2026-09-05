@@ -16,13 +16,24 @@ namespace fs = std::filesystem;
 using namespace waylaunch::content;
 
 static int failures = 0;
-#define CHECK(c, m) do { if (!(c)) { std::printf("  FAIL: %s\n", m); failures++; } \
-                         else std::printf("  ok: %s\n", m); } while (0)
+#define CHECK(c, m)                                                                                \
+    do {                                                                                           \
+        if ((c)) {                                                                                 \
+            std::printf("  ok: %s\n", m);                                                          \
+        } else {                                                                                   \
+            std::printf("  FAIL: %s\n", m);                                                        \
+            failures++;                                                                            \
+        }                                                                                          \
+    } while (0)
 
 static FileRecord rec(const std::string& path, const std::string& name) {
     FileRecord r;
-    r.path = path; r.name = name; r.parent = fs::path(path).parent_path().string();
-    r.size = 100; r.mtime_ns = 123; r.mime = "text/plain";
+    r.path = path;
+    r.name = name;
+    r.parent = fs::path(path).parent_path().string();
+    r.size = 100;
+    r.mtime_ns = 123;
+    r.mime = "text/plain";
     r.content_hash = std::string("\x01\x02\x03\x04", 4);
     r.state = FileState::Indexed;
     return r;
@@ -36,9 +47,13 @@ int main() {
 
     Store w;
     CHECK(w.open(db, {false, MatchMode::Prefix}), "open writer");
-    CHECK(w.put(rec(dir / "OneTargetTwo.txt", "OneTargetTwo.txt"), "the quick brown fox report"), "put camel");
-    CHECK(w.put(rec(dir / "notes_snake.md", "notes_snake.md"), "quarterly revenue one_target_two"), "put snake");
-    CHECK(w.put(rec(dir / "HTMLParser.java", "HTMLParser.java"), "class getHTTPResponse parseXML2JSON"), "put java");
+    CHECK(w.put(rec(dir / "OneTargetTwo.txt", "OneTargetTwo.txt"), "the quick brown fox report"),
+          "put camel");
+    CHECK(w.put(rec(dir / "notes_snake.md", "notes_snake.md"), "quarterly revenue one_target_two"),
+          "put snake");
+    CHECK(w.put(rec(dir / "HTMLParser.java", "HTMLParser.java"),
+                "class getHTTPResponse parseXML2JSON"),
+          "put java");
     CHECK(w.stats().indexed == 3, "3 indexed");
 
     CHECK(w.search("target", 5).size() == 2, "camel+snake both match 'target'");
@@ -48,7 +63,8 @@ int main() {
     CHECK(!snip.empty() && !snip[0].snippet.empty(), "snippet returned");
 
     // upsert replaces content
-    CHECK(w.put(rec(dir / "notes_snake.md", "notes_snake.md"), "totally different now"), "re-put (upsert)");
+    CHECK(w.put(rec(dir / "notes_snake.md", "notes_snake.md"), "totally different now"),
+          "re-put (upsert)");
     CHECK(w.stats().total == 3, "still 3 after upsert");
     CHECK(w.search("quar", 5).empty(), "old term gone after upsert");
     CHECK(w.search("different", 5).size() == 1, "new term present after upsert");
@@ -89,10 +105,10 @@ int main() {
         std::string edb = (dir / "equiv.db").string();
         Store e;
         CHECK(e.open(edb, {false, MatchMode::Prefix}), "equiv: open");
-        e.put(rec(dir / "f_camel.txt", "f_camel.txt"),  "the OneTargetTwo body");
-        e.put(rec(dir / "f_snake.txt", "f_snake.txt"),  "the one_target_two body");
-        e.put(rec(dir / "f_kebab.txt", "f_kebab.txt"),  "the one-target-two body");
-        e.put(rec(dir / "f_flat.txt",  "f_flat.txt"),   "the onetargettwo body");
+        e.put(rec(dir / "f_camel.txt", "f_camel.txt"), "the OneTargetTwo body");
+        e.put(rec(dir / "f_snake.txt", "f_snake.txt"), "the one_target_two body");
+        e.put(rec(dir / "f_kebab.txt", "f_kebab.txt"), "the one-target-two body");
+        e.put(rec(dir / "f_flat.txt", "f_flat.txt"), "the onetargettwo body");
         // The single shared word all three boundary forms split to.
         CHECK(e.search("target", 9).size() == 3, "equiv: 'target' finds the 3 boundary forms");
         // Each boundary spelling as a query resolves to the phrase one+target+two
@@ -114,7 +130,7 @@ int main() {
         std::string pdb = (dir / "prec.db").string();
         Store p;
         CHECK(p.open(pdb, {false, MatchMode::Prefix}), "precision: open");
-        p.put(rec(dir / "hit.txt", "hit.txt"),  "look at OneTargetTwo here");
+        p.put(rec(dir / "hit.txt", "hit.txt"), "look at OneTargetTwo here");
         p.put(rec(dir / "miss.txt", "miss.txt"), "just one lonely word");
         auto r2 = p.search("OneTargetTwo", 9);
         CHECK(r2.size() == 1, "precision: camel query matches only the real compound");
@@ -144,9 +160,9 @@ int main() {
         std::string tdb = (dir / "tree.db").string();
         Store t;
         CHECK(t.open(tdb, {false, MatchMode::Prefix}), "subtree: open");
-        t.put(rec(dir / "proj/a.txt",       "a.txt"),  "alpha content"); // note: rec derives parent
-        t.put(rec(dir / "proj/sub/b.txt",   "b.txt"),  "bravo content");
-        t.put(rec(dir / "proj2/c.txt",      "c.txt"),  "charlie content");
+        t.put(rec(dir / "proj/a.txt", "a.txt"), "alpha content"); // note: rec derives parent
+        t.put(rec(dir / "proj/sub/b.txt", "b.txt"), "bravo content");
+        t.put(rec(dir / "proj2/c.txt", "c.txt"), "charlie content");
         CHECK(t.stats().total == 3, "subtree: 3 files indexed");
         CHECK(t.remove_subtree((dir / "proj").string()), "subtree: remove proj/");
         CHECK(t.search("alpha", 5).empty(), "subtree: nested file dropped");
@@ -166,8 +182,12 @@ int main() {
     {
         // Tamper user_version to force a schema mismatch.
         std::string mdb = (dir / "mig.db").string();
-        { Store w2; CHECK(w2.open(mdb, {false, MatchMode::Prefix}), "avail: build v-current");
-          w2.put(rec(dir / "z.txt", "z.txt"), "zeta payload"); w2.close(); }
+        {
+            Store w2;
+            CHECK(w2.open(mdb, {false, MatchMode::Prefix}), "avail: build v-current");
+            w2.put(rec(dir / "z.txt", "z.txt"), "zeta payload");
+            w2.close();
+        }
         sqlite3* raw = nullptr;
         sqlite3_open(mdb.c_str(), &raw);
         sqlite3_exec(raw, "PRAGMA user_version=999;", nullptr, nullptr, nullptr);
@@ -183,20 +203,20 @@ int main() {
         Store ok;
         CHECK(ok.open(mdb, {true, MatchMode::Prefix}) && ok.availability() == Availability::Ok,
               "avail: reader Ok after writer rebuild");
-        w3.close(); ok.close();
+        w3.close();
+        ok.close();
     }
 
     // ---- bounded worst-case planner still returns ranked results (§8) -----
     {
         std::string bdb = (dir / "bounded.db").string();
-        StoreOptions bo{false, MatchMode::Prefix};
-        bo.common_term_df = 1;      // force the bounded path for any repeated term
+        StoreOptions bo{.read_only = false, .match = MatchMode::Prefix};
+        bo.common_term_df = 1; // force the bounded path for any repeated term
         bo.candidate_budget = 4;
         Store b;
         CHECK(b.open(bdb, bo), "bounded: open with tiny df threshold");
         for (int i = 0; i < 12; i++)
-            b.put(rec(dir / ("c" + std::to_string(i) + ".txt"),
-                      "c" + std::to_string(i) + ".txt"),
+            b.put(rec(dir / ("c" + std::to_string(i) + ".txt"), "c" + std::to_string(i) + ".txt"),
                   "common token here document number " + std::to_string(i));
         auto rb = b.search("common", 3);
         CHECK(rb.size() == 3, "bounded: honors the limit under the bounded planner");
@@ -206,25 +226,33 @@ int main() {
 
     // ---- metadata predicate parser (unit) ---------------------------------
     {
-        const int64_t T = 1000000000, NS = 1000000000LL, DAY = 86400;
+        const int64_t T = 1000000000;
+        const int64_t NS = 1000000000LL;
+        const int64_t DAY = 86400;
         MetaFilter mf;
         std::string rem = parse_meta_query("kind:pdf quarterly revenue", mf, T);
         CHECK(rem == "quarterly revenue", "parse: predicate stripped, free text kept");
         CHECK(mf.active && mf.mime_globs.size() == 1 && mf.mime_globs[0] == "application/pdf",
               "parse: kind:pdf → application/pdf glob");
 
-        mf = {}; parse_meta_query("size:>1M", mf, T);
-        CHECK(mf.size_min == 1024 * 1024 + 1, "parse: size:>1M → size_min");
-        mf = {}; parse_meta_query("size:<=500k", mf, T);
-        CHECK(mf.size_max == 500 * 1024, "parse: size:<=500k → size_max");
-        mf = {}; parse_meta_query("modified:<7d", mf, T);
-        CHECK(mf.mtime_min_ns == (T - 7 * DAY) * NS, "parse: modified:<7d → recent lower bound");
-        mf = {}; parse_meta_query("modified:>2w", mf, T);
-        CHECK(mf.mtime_max_ns == (T - 14 * DAY) * NS, "parse: modified:>2w → older upper bound");
-        mf = {}; std::string r2 = parse_meta_query("ext:xlsx budget", mf, T);
+        mf = {};
+        parse_meta_query("size:>1M", mf, T);
+        CHECK(mf.size_min == (1024 * 1024) + 1, "parse: size:>1M → size_min");
+        mf = {};
+        parse_meta_query("size:<=500k", mf, T);
+        CHECK(mf.size_max == static_cast<int64_t>(500 * 1024), "parse: size:<=500k → size_max");
+        mf = {};
+        parse_meta_query("modified:<7d", mf, T);
+        CHECK(mf.mtime_min_ns == (T - (7 * DAY)) * NS, "parse: modified:<7d → recent lower bound");
+        mf = {};
+        parse_meta_query("modified:>2w", mf, T);
+        CHECK(mf.mtime_max_ns == (T - (14 * DAY)) * NS, "parse: modified:>2w → older upper bound");
+        mf = {};
+        std::string r2 = parse_meta_query("ext:xlsx budget", mf, T);
         CHECK(r2 == "budget" && mf.name_likes.size() == 1 && mf.name_likes[0] == "%.xlsx",
               "parse: ext:xlsx → name LIKE, text kept");
-        mf = {}; std::string r3 = parse_meta_query("bogus:foo size:huge hello", mf, T);
+        mf = {};
+        std::string r3 = parse_meta_query("bogus:foo size:huge hello", mf, T);
         CHECK(!mf.active && r3 == "bogus:foo size:huge hello",
               "parse: unknown/malformed predicates pass through as literal text");
     }
@@ -234,22 +262,31 @@ int main() {
         auto mrec = [&](const std::string& p, const std::string& name, const std::string& mime,
                         int64_t size, int64_t mtime_ns) {
             FileRecord r;
-            r.path = p; r.name = name; r.parent = fs::path(p).parent_path().string();
-            r.size = size; r.mtime_ns = mtime_ns; r.mime = mime;
-            r.content_hash = "h"; r.state = FileState::Indexed;
+            r.path = p;
+            r.name = name;
+            r.parent = fs::path(p).parent_path().string();
+            r.size = size;
+            r.mtime_ns = mtime_ns;
+            r.mime = mime;
+            r.content_hash = "h";
+            r.state = FileState::Indexed;
             return r;
         };
-        const int64_t now = static_cast<int64_t>(::time(nullptr)), NS = 1000000000LL, DAY = 86400;
+        const int64_t now = static_cast<int64_t>(::time(nullptr));
+        const int64_t NS = 1000000000LL;
+        const int64_t DAY = 86400;
         std::string mdb = (dir / "meta.db").string();
         Store m;
         CHECK(m.open(mdb, {false, MatchMode::Prefix}), "meta: open");
-        m.put(mrec((dir / "report.pdf").string(), "report.pdf", "application/pdf",
-                   5000, now * NS), "quarterly revenue mongoose");
-        m.put(mrec((dir / "notes.txt").string(), "notes.txt", "text/plain",
-                   200, (now - 10 * DAY) * NS), "quarterly revenue penguins");
+        m.put(mrec((dir / "report.pdf").string(), "report.pdf", "application/pdf", 5000, now * NS),
+              "quarterly revenue mongoose");
+        m.put(mrec((dir / "notes.txt").string(), "notes.txt", "text/plain", 200,
+                   (now - (10 * DAY)) * NS),
+              "quarterly revenue penguins");
         m.put(mrec((dir / "sheet.xlsx").string(), "sheet.xlsx",
-                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                   9000, (now - 2 * DAY) * NS), "budget quarterly numbers");
+                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 9000,
+                   (now - (2 * DAY)) * NS),
+              "budget quarterly numbers");
 
         CHECK(m.search("kind:pdf", 5).size() == 1, "meta: kind:pdf → 1 file");
         CHECK(!m.search("kind:pdf", 5).empty() && m.search("kind:pdf", 5)[0].name == "report.pdf",
@@ -257,8 +294,10 @@ int main() {
         CHECK(m.search("kind:spreadsheet", 5).size() == 1, "meta: kind:spreadsheet → the xlsx");
         CHECK(m.search("ext:xlsx", 5).size() == 1, "meta: ext:xlsx → 1 file");
         CHECK(m.search("revenue", 5).size() == 2, "meta: content 'revenue' → pdf + txt");
-        CHECK(m.search("kind:pdf revenue", 5).size() == 1, "meta: kind:pdf + revenue → only the pdf");
-        CHECK(m.search("kind:text revenue", 5).size() == 1, "meta: kind:text + revenue → only the txt");
+        CHECK(m.search("kind:pdf revenue", 5).size() == 1,
+              "meta: kind:pdf + revenue → only the pdf");
+        CHECK(m.search("kind:text revenue", 5).size() == 1,
+              "meta: kind:text + revenue → only the txt");
         CHECK(m.search("size:>1k", 9).size() == 2, "meta: size:>1k (pure) → pdf + xlsx");
         CHECK(m.search("size:<1k", 9).size() == 1, "meta: size:<1k (pure) → txt");
         CHECK(m.search("quarterly size:>1k", 9).size() == 2, "meta: content + size filter");

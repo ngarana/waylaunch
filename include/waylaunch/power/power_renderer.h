@@ -1,8 +1,8 @@
 #pragma once
 
-#include "waylaunch/renderer.h"
-#include "waylaunch/power/power_manager.h"
 #include "waylaunch/power/confirm_dialog_renderer.h"
+#include "waylaunch/power/power_manager.h"
+#include "waylaunch/renderer.h"
 
 namespace waylaunch {
 
@@ -12,17 +12,13 @@ namespace waylaunch {
 // name themselves). Delegates the confirmation dialog to ConfirmDialogRenderer.
 // Pure output: reads a PowerManager, never mutates it.
 class PowerRenderer {
-public:
+  public:
     PowerRenderer() = default;
 
-    void render(Renderer& renderer,
-                const PowerManager& manager,
-                const Theme& theme,
-                int screen_w,
-                int screen_h,
-                double font_scale = 1.0);
+    void render(Renderer& renderer, const PowerManager& manager, const Theme& theme, int screen_w,
+                int screen_h, double font_scale = 1.0);
 
-private:
+  private:
     ConfirmDialogRenderer dialog_renderer_;
 };
 

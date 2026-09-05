@@ -2,13 +2,11 @@
 
 #include <vector>
 
-namespace waylaunch {
-
 // Pure geometry for the power overlay — the single source of truth shared by
 // the renderers (where to draw) and pointer hit-testing (what's under the
 // cursor), mirroring how LauncherUI::relayout() feeds both render and hit_test.
 // No cairo, no Wayland: header-friendly and unit-testable.
-namespace power_layout {
+namespace waylaunch::power_layout {
 
 struct Rect {
     int x = 0, y = 0, w = 0, h = 0;
@@ -25,7 +23,7 @@ struct Hud {
     std::vector<Rect> cards;
     int corner_radius = 24;
     int icon_size = 64;
-    int icon_gap_top = 10;   // gap from cell top to the icon
+    int icon_gap_top = 10; // gap from cell top to the icon
 };
 Hud hud(int screen_w, int screen_h, int num_actions);
 
@@ -39,5 +37,4 @@ struct Dialog {
 };
 Dialog dialog(int screen_w, int screen_h);
 
-} // namespace power_layout
-} // namespace waylaunch
+} // namespace waylaunch::power_layout

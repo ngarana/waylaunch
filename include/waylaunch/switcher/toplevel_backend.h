@@ -1,9 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
-#include <memory>
 
 struct wl_display;
 struct wl_registry;
@@ -23,7 +23,7 @@ struct ToplevelWindow {
 };
 
 class IToplevelObserver {
-public:
+  public:
     virtual ~IToplevelObserver() = default;
     virtual void on_window_created(const ToplevelWindow& window) = 0;
     virtual void on_window_updated(const ToplevelWindow& window) = 0;
@@ -31,7 +31,7 @@ public:
 };
 
 class IToplevelBackend {
-public:
+  public:
     virtual ~IToplevelBackend() = default;
     virtual bool init(wl_display* display, wl_registry* registry) = 0;
     virtual void add_observer(IToplevelObserver* observer) = 0;

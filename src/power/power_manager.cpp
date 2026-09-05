@@ -55,14 +55,14 @@ void PowerManager::activate_selected() {
         notify_change();
         return;
     }
-    pending_ = *a;   // runs after the surface is torn down (execute_pending)
+    pending_ = *a; // runs after the surface is torn down (execute_pending)
     hide();
 }
 
 void PowerManager::confirm() {
-    if (!dialog_.is_open()) return;   // reject: no action was put up for confirmation
+    if (!dialog_.is_open()) return; // reject: no action was put up for confirmation
     pending_ = dialog_.action();
-    hide();   // also closes the dialog
+    hide(); // also closes the dialog
 }
 
 void PowerManager::toggle_dialog_focus() {

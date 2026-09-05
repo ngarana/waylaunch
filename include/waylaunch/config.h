@@ -1,10 +1,10 @@
 #pragma once
 
 #include <map>
-#include <string>
-#include <vector>
 #include <optional>
+#include <string>
 #include <toml++/toml.hpp>
+#include <vector>
 
 namespace waylaunch {
 
@@ -31,18 +31,18 @@ struct ConfigFont {
 
 // Spotlight panel geometry + glassmorphism.
 struct AppearanceConfig {
-    int width          = 720;    // panel width in px
-    int margin_top     = 150;    // distance from top of screen
-    int corner_radius  = 16;
-    int search_height  = 64;     // search field height
-    int row_height     = 56;     // result row height
-    int icon_size      = 34;
-    int list_width     = 402;    // left result column width
-    int max_per_group  = 6;      // max rows per category
-    std::string blur   = "auto"; // "auto" | "on" | "off" (client-side frosted glass)
-    double panel_opacity  = 0.58;// glass tint alpha when blurred
-    double opaque_opacity = 0.96;// panel alpha when no blur is available
-    double backdrop_tint  = 0.55;// darkening over the blurred backdrop
+    int width = 720;      // panel width in px
+    int margin_top = 150; // distance from top of screen
+    int corner_radius = 16;
+    int search_height = 64; // search field height
+    int row_height = 56;    // result row height
+    int icon_size = 34;
+    int list_width = 402;         // left result column width
+    int max_per_group = 6;        // max rows per category
+    std::string blur = "auto";    // "auto" | "on" | "off" (client-side frosted glass)
+    double panel_opacity = 0.58;  // glass tint alpha when blurred
+    double opaque_opacity = 0.96; // panel alpha when no blur is available
+    double backdrop_tint = 0.55;  // darkening over the blurred backdrop
 };
 
 struct ThemeConfig {
@@ -65,7 +65,7 @@ struct SearchPath {
 
 struct SearchConfig {
     std::string placeholder = "Spotlight Search";
-    std::vector<SearchPath> paths;   // .desktop scan dirs (+ non-desktop file roots)
+    std::vector<SearchPath> paths; // .desktop scan dirs (+ non-desktop file roots)
 
     // Which result providers are active in the unified search.
     bool enable_applications = true;
@@ -74,10 +74,10 @@ struct SearchConfig {
     bool enable_commands = true;
 
     // File search (async native filesystem walk) tuning.
-    std::vector<std::string> file_roots;      // dirs to search; "~" expands to $HOME
-    std::vector<std::string> file_excludes;   // exclude patterns (exact basename or glob: *.tmp)
-    int file_min_query = 2;                   // min chars before file search runs
-    int max_file_results = 6;                 // rows kept after ranking
+    std::vector<std::string> file_roots;    // dirs to search; "~" expands to $HOME
+    std::vector<std::string> file_excludes; // exclude patterns (exact basename or glob: *.tmp)
+    int file_min_query = 2;                 // min chars before file search runs
+    int max_file_results = 6;               // rows kept after ranking
 };
 
 struct HistoryConfig {
@@ -120,13 +120,13 @@ struct AppSwitcherConfig {
 // [power] — the power-actions overlay (waylaunch --power). Additive: omitting
 // the section yields full defaults; enabled_actions = [] disables the overlay.
 struct PowerConfig {
-    std::vector<std::string> enabled_actions =
-        {"lock", "restart", "exit", "hibernate", "suspend", "shutdown"};
+    std::vector<std::string> enabled_actions = {"lock",      "restart", "exit",
+                                                "hibernate", "suspend", "shutdown"};
     bool confirm_destructive = true;
-    int countdown_seconds = 60;                     // dialog auto-confirms at 0; 0 = off
-    double font_scale = 1.0;                        // power overlay only
-    std::map<std::string, std::string> commands;    // [power.commands] id → command
-    std::map<std::string, std::string> confirm_text;// [power.confirm_text] id → phrase
+    int countdown_seconds = 60;                      // dialog auto-confirms at 0; 0 = off
+    double font_scale = 1.0;                         // power overlay only
+    std::map<std::string, std::string> commands;     // [power.commands] id → command
+    std::map<std::string, std::string> confirm_text; // [power.confirm_text] id → phrase
 };
 
 struct LauncherConfig {
@@ -141,7 +141,7 @@ struct LauncherConfig {
 };
 
 class Config {
-public:
+  public:
     Config();
     ~Config();
 
@@ -155,7 +155,7 @@ public:
     static std::string default_config_path();
     static std::string config_dir();
 
-private:
+  private:
     LauncherConfig config_;
 };
 

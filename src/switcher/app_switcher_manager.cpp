@@ -1,10 +1,10 @@
 #include "waylaunch/switcher/app_switcher_manager.h"
 #include <algorithm>
-#include <fstream>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
-#include <cctype>
 #include <filesystem>
+#include <fstream>
 
 namespace waylaunch {
 
@@ -24,12 +24,8 @@ std::string resolve_icon_name(const std::string& app_id) {
         std::string user_apps = std::string(xdg_data ? xdg_data : "") + "/applications";
 
         search_dirs = {
-            "/usr/share/applications",
-            "/usr/local/share/applications",
-            user_apps,
-            local_apps,
-            "/usr/share/gnome/apps",
-            "/usr/share/mate/applications",
+            "/usr/share/applications", "/usr/local/share/applications", user_apps, local_apps,
+            "/usr/share/gnome/apps",   "/usr/share/mate/applications",
         };
         dirs_ready = true;
     }
@@ -68,21 +64,26 @@ std::string resolve_icon_name(const std::string& app_id) {
             c.push_back(no_dots + ".desktop");
         }
         std::string dashed = id;
-        for (char& ch : dashed) if (ch == '.') ch = '-';
+        for (char& ch : dashed)
+            if (ch == '.') ch = '-';
         c.push_back(dashed + ".desktop");
         std::string underscored = id;
-        for (char& ch : underscored) if (ch == '.') ch = '_';
+        for (char& ch : underscored)
+            if (ch == '.') ch = '_';
         c.push_back(underscored + ".desktop");
 
-        std::sort(c.begin(), c.end());
-        c.erase(std::unique(c.begin(), c.end()), c.end());
+        std::ranges::sort(c);
+        auto uniq = std::ranges::unique(c);
+        c.erase(uniq.begin(), uniq.end());
         return c;
     };
 
     auto find_desktop_file = [&](const std::vector<std::string>& cands) -> std::string {
         for (const auto& name : cands) {
             for (const auto& dir : search_dirs) {
-                std::string path = dir + "/" + name;
+                std::string path = dir;
+                path += '/';
+                path += name;
                 if (std::filesystem::exists(path)) return path;
             }
         }
@@ -125,8 +126,7 @@ std::string resolve_icon_name(const std::string& app_id) {
 
 } // namespace
 
-AppSwitcherManager::AppSwitcherManager(IToplevelBackend* backend)
-    : backend_(backend) {
+AppSwitcherManager::AppSwitcherManager(IToplevelBackend* backend) : backend_(backend) {
     if (backend_) {
         backend_->add_observer(this);
         rebuild_groups();
@@ -134,24 +134,18 @@ AppSwitcherManager::AppSwitcherManager(IToplevelBackend* backend)
 }
 
 AppSwitcherManager::~AppSwitcherManager() {
-    if (backend_) {
-        backend_->remove_observer(this);
-    }
+    if (backend_) { backend_->remove_observer(this); }
 }
 
 void AppSwitcherManager::on_window_created(const ToplevelWindow& window) {
     rebuild_groups();
-    if (window.is_active) {
-        touch_active_group(window.app_id);
-    }
+    if (window.is_active) { touch_active_group(window.app_id); }
     notify_change();
 }
 
 void AppSwitcherManager::on_window_updated(const ToplevelWindow& window) {
     rebuild_groups();
-    if (window.is_active) {
-        touch_active_group(window.app_id);
-    }
+    if (window.is_active) { touch_active_group(window.app_id); }
     notify_change();
 }
 
@@ -195,11 +189,9 @@ void AppSwitcherManager::jump_to(size_t index) {
 void AppSwitcherManager::quit_selected() {
     const AppGroup* grp = selected_group();
     if (!grp || !backend_) return;
-    
+
     // Close all windows belonging to the selected app group
-    for (const auto& w : grp->windows) {
-        backend_->close(w.handle_id);
-    }
+    for (const auto& w : grp->windows) { backend_->close(w.handle_id); }
 }
 
 void AppSwitcherManager::toggle_minimize_selected() {
@@ -207,30 +199,22 @@ void AppSwitcherManager::toggle_minimize_selected() {
     if (!grp || !backend_) return;
 
     bool target_minimize = !grp->is_all_minimized();
-    for (const auto& w : grp->windows) {
-        backend_->set_minimized(w.handle_id, target_minimize);
-    }
+    for (const auto& w : grp->windows) { backend_->set_minimized(w.handle_id, target_minimize); }
 }
 
 void AppSwitcherManager::confirm_selection(wl_seat* seat) {
     const AppGroup* grp = selected_group();
     if (grp && backend_) {
         uintptr_t handle = grp->primary_handle();
-        if (handle) {
-            backend_->activate(handle, seat);
-        }
+        if (handle) { backend_->activate(handle, seat); }
     }
     hide();
 }
 
-void AppSwitcherManager::cancel() {
-    hide();
-}
+void AppSwitcherManager::cancel() { hide(); }
 
 const AppGroup* AppSwitcherManager::selected_group() const {
-    if (selected_index_ < groups_.size()) {
-        return &groups_[selected_index_];
-    }
+    if (selected_index_ < groups_.size()) { return &groups_[selected_index_]; }
     return nullptr;
 }
 
@@ -244,13 +228,18 @@ void AppSwitcherManager::rebuild_groups() {
         // Group by app_id, or (group_by_app=false) one entry per window so
         // individual instances — e.g. the same app on different workspaces — are
         // separately selectable. The per-window key is unique by handle.
-        std::string key = group_by_app_
-            ? (win.app_id.empty() ? std::string("unknown") : win.app_id)
-            : ("\x01w:" + std::to_string(win.handle_id));
+        std::string key;
+        if (!group_by_app_) {
+            key = "\x01w:";
+            key += std::to_string(win.handle_id);
+        } else if (!win.app_id.empty()) {
+            key = win.app_id;
+        } else {
+            key = "unknown";
+        }
 
-        auto it = std::find_if(new_groups.begin(), new_groups.end(), [&](const AppGroup& g) {
-            return g.app_id == key;
-        });
+        auto it =
+            std::ranges::find_if(new_groups, [&](const AppGroup& g) { return g.app_id == key; });
 
         if (it != new_groups.end()) {
             it->windows.push_back(win);
@@ -259,18 +248,21 @@ void AppSwitcherManager::rebuild_groups() {
             g.app_id = key;
             // Ungrouped entries show the window title so instances are
             // distinguishable; grouped entries show the app id.
-            g.display_name = group_by_app_
-                ? key
-                : (win.title.empty() ? (win.app_id.empty() ? "window" : win.app_id) : win.title);
-            g.icon_name = win.icon_name.empty()
-                ? resolve_icon_name(win.app_id)
-                : win.icon_name;
+            if (group_by_app_) {
+                g.display_name = key;
+            } else if (!win.title.empty()) {
+                g.display_name = win.title;
+            } else if (!win.app_id.empty()) {
+                g.display_name = win.app_id;
+            } else {
+                g.display_name = "window";
+            }
+            g.icon_name = win.icon_name.empty() ? resolve_icon_name(win.app_id) : win.icon_name;
             g.windows.push_back(win);
-            
+
             // Preserve existing MRU timestamp if present
-            auto old_it = std::find_if(groups_.begin(), groups_.end(), [&](const AppGroup& og) {
-                return og.app_id == key;
-            });
+            auto old_it =
+                std::ranges::find_if(groups_, [&](const AppGroup& og) { return og.app_id == key; });
             if (old_it != groups_.end()) {
                 g.last_focused_time = old_it->last_focused_time;
             } else {
@@ -284,11 +276,14 @@ void AppSwitcherManager::rebuild_groups() {
     // Keep the entry holding the currently-active window at the MRU head, so a
     // plain Alt+Tab lands on the previous one (works for grouped and per-window).
     for (auto& g : new_groups) {
-        if (g.is_any_active()) { g.last_focused_time = ++clock_counter_; break; }
+        if (g.is_any_active()) {
+            g.last_focused_time = ++clock_counter_;
+            break;
+        }
     }
 
     // Sort MRU: highest timestamp first
-    std::sort(new_groups.begin(), new_groups.end(), [](const AppGroup& a, const AppGroup& b) {
+    std::ranges::sort(new_groups, [](const AppGroup& a, const AppGroup& b) {
         return a.last_focused_time > b.last_focused_time;
     });
 
@@ -306,15 +301,13 @@ void AppSwitcherManager::touch_active_group(const std::string& app_id) {
             break;
         }
     }
-    std::sort(groups_.begin(), groups_.end(), [](const AppGroup& a, const AppGroup& b) {
+    std::ranges::sort(groups_, [](const AppGroup& a, const AppGroup& b) {
         return a.last_focused_time > b.last_focused_time;
     });
 }
 
 void AppSwitcherManager::notify_change() {
-    if (on_change_) {
-        on_change_();
-    }
+    if (on_change_) { on_change_(); }
 }
 
 } // namespace waylaunch

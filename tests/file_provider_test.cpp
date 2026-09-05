@@ -32,11 +32,12 @@ void touch(const fs::path& p) {
 ProviderQuery mkq(const std::string& text) {
     std::string lower = text;
     for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return ProviderQuery{text, lower, 6};
+    return ProviderQuery{.text = text, .lower = lower, .max_results = 6};
 }
 
 std::vector<std::string> names_of(const std::vector<ListItem>& r) {
     std::vector<std::string> out;
+    out.reserve(r.size());
     for (const auto& it : r) out.push_back(it.name);
     return out;
 }
@@ -89,8 +90,8 @@ int main() {
         auto names = names_of(r);
         assert(names.size() == 3);
         assert(names[0] == "apple_docs");
-        assert(std::find(names.begin(), names.end(), "apple.txt") != names.end());
-        assert(std::find(names.begin(), names.end(), "apple.tmp") != names.end());
+        assert(std::ranges::find(names, "apple.txt") != names.end());
+        assert(std::ranges::find(names, "apple.tmp") != names.end());
 
         auto apr = prov.query(mkq("APR"));
         assert(apr.size() == 1);

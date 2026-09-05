@@ -4,21 +4,21 @@ namespace waylaunch {
 
 enum class PowerState {
     Hidden,
-    Active,        // grid shown, selection navigable
-    ConfirmOpen,   // modal confirmation dialog owns the keys
+    Active,      // grid shown, selection navigable
+    ConfirmOpen, // modal confirmation dialog owns the keys
     Dismissing
 };
 
 enum class PowerEvent {
-    Trigger,       // show the overlay
-    OpenConfirm,   // destructive action selected → dialog
-    Execute,       // action confirmed (or non-destructive activated)
-    Cancel,        // Esc: dialog → grid, grid → dismiss
-    Dismissed      // teardown complete
+    Trigger,     // show the overlay
+    OpenConfirm, // destructive action selected → dialog
+    Execute,     // action confirmed (or non-destructive activated)
+    Cancel,      // Esc: dialog → grid, grid → dismiss
+    Dismissed    // teardown complete
 };
 
 class PowerStateMachine {
-public:
+  public:
     PowerState current_state() const { return state_; }
 
     bool is_active() const {
@@ -28,7 +28,7 @@ public:
 
     void process_event(PowerEvent event);
 
-private:
+  private:
     PowerState state_ = PowerState::Hidden;
 };
 

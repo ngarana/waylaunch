@@ -1,10 +1,10 @@
 #pragma once
 
 #include "waylaunch/switcher/toplevel_backend.h"
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include <memory>
 
 #ifdef HAS_FOREIGN_TOPLEVEL
 #include "wlr-foreign-toplevel-management-client-protocol.h"
@@ -13,7 +13,7 @@
 namespace waylaunch {
 
 class WlrForeignToplevelBackend : public IToplevelBackend {
-public:
+  public:
     WlrForeignToplevelBackend() = default;
     ~WlrForeignToplevelBackend() override;
 
@@ -42,7 +42,7 @@ public:
     void handle_toplevel_closed(zwlr_foreign_toplevel_handle_v1* handle);
 #endif
 
-private:
+  private:
     void sync_cache();
     void notify_created(const ToplevelWindow& win);
     void notify_updated(const ToplevelWindow& win);

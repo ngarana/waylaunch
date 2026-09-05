@@ -3,11 +3,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <sstream>
-#include <exception>
 
 namespace waylaunch {
 namespace {
@@ -52,7 +52,7 @@ std::vector<std::string> split_fields(const std::string& line) {
 
 void HistoryStore::configure(std::string path, int max_entries, int max_age_days,
                              double half_life_days) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     path_ = std::move(path);
     max_entries_ = std::max(1, max_entries);
     max_age_days_ = std::max(1, max_age_days);
@@ -60,7 +60,7 @@ void HistoryStore::configure(std::string path, int max_entries, int max_age_days
 }
 
 bool HistoryStore::load() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     entries_.clear();
     if (path_.empty()) return false;
 
@@ -82,6 +82,7 @@ bool HistoryStore::load() {
                 entries_.push_back(std::move(entry));
         } catch (const std::exception&) {
             // Ignore one malformed history row; the remaining history remains usable.
+            (void) 0;
         }
     }
     prune_locked(std::time(nullptr));
@@ -91,12 +92,13 @@ bool HistoryStore::load() {
 void HistoryStore::record(const std::string& query, const std::string& key,
                           const std::string& label, std::time_t now) {
     if (query.empty() || key.empty()) return;
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = std::find_if(entries_.begin(), entries_.end(), [&](const HistoryEntry& entry) {
+    std::scoped_lock lock(mutex_);
+    auto it = std::ranges::find_if(entries_, [&](const HistoryEntry& entry) {
         return entry.query == query && entry.key == key;
     });
     if (it == entries_.end()) {
-        entries_.push_back({query, key, label, now, 1});
+        entries_.push_back(
+            {.query = query, .key = key, .label = label, .last_used = now, .uses = 1});
     } else {
         it->last_used = now;
         it->uses = std::min<uint32_t>(it->uses + 1, 1000000U);
@@ -107,7 +109,7 @@ void HistoryStore::record(const std::string& query, const std::string& key,
 }
 
 std::vector<HistoryEntry> HistoryStore::recent(std::size_t limit) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     // Keep only the most recent activation for each query in the suggestion
     // list; the underlying per-target rows remain available for frecency.
     std::map<std::string, HistoryEntry> by_query;
@@ -117,8 +119,9 @@ std::vector<HistoryEntry> HistoryStore::recent(std::size_t limit) const {
             by_query[entry.query] = entry;
     }
     std::vector<HistoryEntry> result;
+    result.reserve(by_query.size());
     for (auto& [_, entry] : by_query) result.push_back(std::move(entry));
-    std::stable_sort(result.begin(), result.end(), [](const auto& a, const auto& b) {
+    std::ranges::stable_sort(result, [](const auto& a, const auto& b) {
         if (a.last_used != b.last_used) return a.last_used > b.last_used;
         return a.uses > b.uses;
     });
@@ -127,8 +130,8 @@ std::vector<HistoryEntry> HistoryStore::recent(std::size_t limit) const {
 }
 
 float HistoryStore::frecency(const std::string& key, std::time_t now) const {
-    if (key.empty()) return 0.0f;
-    std::lock_guard<std::mutex> lock(mutex_);
+    if (key.empty()) return 0.0F;
+    std::scoped_lock lock(mutex_);
     double score = 0.0;
     for (const auto& entry : entries_) {
         if (entry.key != key) continue;
@@ -148,14 +151,13 @@ std::string HistoryStore::default_path() {
 }
 
 void HistoryStore::prune_locked(std::time_t now) {
-    const auto oldest = now - static_cast<std::time_t>(max_age_days_) * 86400;
-    entries_.erase(std::remove_if(entries_.begin(), entries_.end(), [&](const auto& entry) {
-        return entry.last_used < oldest;
-    }), entries_.end());
+    const auto oldest = now - (static_cast<std::time_t>(max_age_days_) * 86400);
+    auto removed = std::ranges::remove_if(
+        entries_, [&](const auto& entry) { return entry.last_used < oldest; });
+    entries_.erase(removed.begin(), removed.end());
     if (entries_.size() <= static_cast<std::size_t>(max_entries_)) return;
-    std::stable_sort(entries_.begin(), entries_.end(), [](const auto& a, const auto& b) {
-        return a.last_used > b.last_used;
-    });
+    std::ranges::stable_sort(
+        entries_, [](const auto& a, const auto& b) { return a.last_used > b.last_used; });
     entries_.resize(static_cast<std::size_t>(max_entries_));
 }
 
@@ -171,8 +173,8 @@ bool HistoryStore::save_locked() const {
     std::ofstream file(temporary, std::ios::trunc);
     if (!file) return false;
     for (const auto& entry : entries_) {
-        file << "1\t" << entry.last_used << '\t' << entry.uses << '\t'
-             << escape_field(entry.query) << '\t' << escape_field(entry.key) << '\n';
+        file << "1\t" << entry.last_used << '\t' << entry.uses << '\t' << escape_field(entry.query)
+             << '\t' << escape_field(entry.key) << '\n';
     }
     file.close();
     if (!file) return false;

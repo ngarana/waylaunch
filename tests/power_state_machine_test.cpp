@@ -58,12 +58,12 @@ void test_cancel_at_grid_dismisses() {
 
 void test_invalid_events_ignored() {
     PowerStateMachine fsm;
-    fsm.process_event(PowerEvent::Execute);      // nothing shown yet
+    fsm.process_event(PowerEvent::Execute); // nothing shown yet
     fsm.process_event(PowerEvent::OpenConfirm);
     assert(fsm.current_state() == PowerState::Hidden);
 
     fsm.process_event(PowerEvent::Trigger);
-    fsm.process_event(PowerEvent::Trigger);      // re-trigger while active: no-op
+    fsm.process_event(PowerEvent::Trigger); // re-trigger while active: no-op
     assert(fsm.current_state() == PowerState::Active);
     std::cout << "[PASS] invalid events ignored\n";
 }

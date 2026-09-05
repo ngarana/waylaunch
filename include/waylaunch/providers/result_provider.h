@@ -21,7 +21,7 @@ struct ProviderQuery {
 // thread for async ones (is_async() == true). Either way it MUST NOT touch
 // Wayland/Cairo — results are marshaled back and rendered on the UI thread.
 class ResultProvider {
-public:
+  public:
     virtual ~ResultProvider() = default;
 
     virtual std::string id() const = 0;                // "calculator", "applications", ...

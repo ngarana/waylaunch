@@ -1,20 +1,21 @@
 #include "waylaunch/renderer.h"
-#include <cairo/cairo.h>
-#include <pango/pangocairo.h>
-#include <librsvg/rsvg.h>
-#include <cstring>
 #include <algorithm>
+#include <cairo/cairo.h>
 #include <cctype>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <librsvg/rsvg.h>
+#include <memory>
+#include <pango/pangocairo.h>
 #include <sstream>
 #include <string>
-#include <unordered_set>
-#include <unordered_map>
-#include <memory>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace waylaunch {
 
@@ -51,20 +52,30 @@ Color Color::from_hex(const std::string& hex) {
     return c;
 }
 
-Color Color::from_rgba(double r, double g, double b, double a) { return {r, g, b, a}; }
+Color Color::from_rgba(double r, double g, double b, double a) {
+    return {.r = r, .g = g, .b = b, .a = a};
+}
 
 struct Renderer::CairoState {
     cairo_surface_t* surface = nullptr;
     cairo_t* cr = nullptr;
 
     ~CairoState() {
-        if (cr) { cairo_destroy(cr); cr = nullptr; }
-        if (surface) { cairo_surface_destroy(surface); surface = nullptr; }
+        if (cr) {
+            cairo_destroy(cr);
+            cr = nullptr;
+        }
+        if (surface) {
+            cairo_surface_destroy(surface);
+            surface = nullptr;
+        }
     }
 };
 
 Renderer::Renderer() : cairo_(std::make_unique<CairoState>()) {}
-Renderer::~Renderer() { if (backdrop_) cairo_surface_destroy(backdrop_); }
+Renderer::~Renderer() {
+    if (backdrop_) cairo_surface_destroy(backdrop_);
+}
 
 namespace {
 // Separable box blur over a small premultiplied/opaque ARGB32 surface.
@@ -79,31 +90,55 @@ void box_blur_argb(cairo_surface_t* s, int radius, int passes) {
     std::vector<unsigned char> tmp(static_cast<size_t>(stride) * h);
     for (int p = 0; p < passes; ++p) {
         for (int y = 0; y < h; ++y) {
-            unsigned char* row = data + y * stride;
-            unsigned char* out = tmp.data() + y * stride;
+            unsigned char* row = data + (static_cast<ptrdiff_t>(y * stride));
+            unsigned char* out = tmp.data() + (static_cast<ptrdiff_t>(y * stride));
             for (int x = 0; x < w; ++x) {
-                int b = 0, g = 0, r = 0, a = 0, cnt = 0;
+                int b = 0;
+                int g = 0;
+                int r = 0;
+                int a = 0;
+                int cnt = 0;
                 for (int dx = -radius; dx <= radius; ++dx) {
                     int xx = x + dx;
                     if (xx < 0 || xx >= w) continue;
-                    unsigned char* px = row + xx * 4;
-                    b += px[0]; g += px[1]; r += px[2]; a += px[3]; ++cnt;
+                    unsigned char* px = row + (static_cast<ptrdiff_t>(xx * 4));
+                    b += px[0];
+                    g += px[1];
+                    r += px[2];
+                    a += px[3];
+                    ++cnt;
                 }
-                unsigned char* o = out + x * 4;
-                o[0] = b / cnt; o[1] = g / cnt; o[2] = r / cnt; o[3] = a / cnt;
+                unsigned char* o = out + (static_cast<ptrdiff_t>(x * 4));
+                o[0] = b / cnt;
+                o[1] = g / cnt;
+                o[2] = r / cnt;
+                o[3] = a / cnt;
             }
         }
         for (int x = 0; x < w; ++x) {
             for (int y = 0; y < h; ++y) {
-                int b = 0, g = 0, r = 0, a = 0, cnt = 0;
+                int b = 0;
+                int g = 0;
+                int r = 0;
+                int a = 0;
+                int cnt = 0;
                 for (int dy = -radius; dy <= radius; ++dy) {
                     int yy = y + dy;
                     if (yy < 0 || yy >= h) continue;
-                    unsigned char* px = tmp.data() + yy * stride + x * 4;
-                    b += px[0]; g += px[1]; r += px[2]; a += px[3]; ++cnt;
+                    unsigned char* px = tmp.data() + static_cast<ptrdiff_t>(yy * stride) +
+                                        static_cast<ptrdiff_t>(x * 4);
+                    b += px[0];
+                    g += px[1];
+                    r += px[2];
+                    a += px[3];
+                    ++cnt;
                 }
-                unsigned char* o = data + y * stride + x * 4;
-                o[0] = b / cnt; o[1] = g / cnt; o[2] = r / cnt; o[3] = a / cnt;
+                unsigned char* o =
+                    data + static_cast<ptrdiff_t>(y * stride) + static_cast<ptrdiff_t>(x * 4);
+                o[0] = b / cnt;
+                o[1] = g / cnt;
+                o[2] = r / cnt;
+                o[3] = a / cnt;
             }
         }
     }
@@ -113,18 +148,21 @@ void box_blur_argb(cairo_surface_t* s, int radius, int passes) {
 
 void Renderer::set_backdrop(const uint8_t* data, int width, int height, int stride,
                             uint32_t shm_format, bool y_invert) {
-    if (backdrop_) { cairo_surface_destroy(backdrop_); backdrop_ = nullptr; }
+    if (backdrop_) {
+        cairo_surface_destroy(backdrop_);
+        backdrop_ = nullptr;
+    }
     if (!data || width <= 0 || height <= 0) return;
 
     // Treat the captured desktop as opaque (RGB24 ignores the 4th byte). The
     // compositor often captures opaque content with alpha=0 in ARGB8888, which as
     // premultiplied ARGB32 would render fully transparent → no visible glass.
     cairo_format_t cfmt;
-    if (shm_format == 0 || shm_format == 1) cfmt = CAIRO_FORMAT_RGB24;  // A/XRGB8888
-    else return;                                                        // unsupported → no glass
+    if (shm_format == 0 || shm_format == 1) cfmt = CAIRO_FORMAT_RGB24; // A/XRGB8888
+    else return;                                                       // unsupported → no glass
 
-    cairo_surface_t* src = cairo_image_surface_create_for_data(
-        const_cast<unsigned char*>(data), cfmt, width, height, stride);
+    cairo_surface_t* src = cairo_image_surface_create_for_data(const_cast<unsigned char*>(data),
+                                                               cfmt, width, height, stride);
     if (!src || cairo_surface_status(src) != CAIRO_STATUS_SUCCESS) {
         if (src) cairo_surface_destroy(src);
         return;
@@ -182,15 +220,13 @@ void Renderer::begin(uint8_t* data, int stride, int width, int height) {
     cairo_.reset();
     cairo_ = std::make_unique<CairoState>();
 
-    cairo_->surface = cairo_image_surface_create_for_data(
-        data, CAIRO_FORMAT_ARGB32, width, height, stride);
+    cairo_->surface =
+        cairo_image_surface_create_for_data(data, CAIRO_FORMAT_ARGB32, width, height, stride);
     cairo_->cr = cairo_create(cairo_->surface);
 }
 
 void Renderer::end() {
-    if (cairo_ && cairo_->surface) {
-        cairo_surface_flush(cairo_->surface);
-    }
+    if (cairo_ && cairo_->surface) { cairo_surface_flush(cairo_->surface); }
     cairo_.reset();
 }
 
@@ -218,7 +254,8 @@ void Renderer::draw_selection_pill(int x, int y, int w, int h, int radius, const
     rounded_rect(x, y, w, h, radius, Color::from_rgba(accent.r, accent.g, accent.b, 0.6));
 }
 
-void Renderer::draw_text(int x, int y, const std::string& text, const RenderFontConfig& font, const Color& color) {
+void Renderer::draw_text(int x, int y, const std::string& text, const RenderFontConfig& font,
+                         const Color& color) {
     with_layout(cairo_->cr, font, text, [&](PangoLayout* layout) {
         cairo_set_source_rgba(cairo_->cr, color.r, color.g, color.b, color.a);
         cairo_move_to(cairo_->cr, x, y);
@@ -262,12 +299,12 @@ void Renderer::draw_search_glyph(int cx, int cy, int size, const Color& color) {
     cairo_set_source_rgba(cr, color.r, color.g, color.b, color.a);
 
     // lens
-    cairo_arc(cr, cx + r * 0.55, cy + r * 0.55, r * 0.6, 0, 2 * M_PI);
+    cairo_arc(cr, cx + (r * 0.55), cy + (r * 0.55), r * 0.6, 0, 2 * M_PI);
     cairo_stroke(cr);
 
     // handle
-    cairo_move_to(cr, cx + r * 1.15, cy + r * 1.15);
-    cairo_line_to(cr, cx + r * 1.7, cy + r * 1.7);
+    cairo_move_to(cr, cx + (r * 1.15), cy + (r * 1.15));
+    cairo_line_to(cr, cx + (r * 1.7), cy + (r * 1.7));
     cairo_stroke(cr);
 }
 
@@ -275,7 +312,10 @@ cairo_t* Renderer::cr() const { return cairo_ ? cairo_->cr : nullptr; }
 
 void Renderer::round_rect_path(cairo_t* cr, int x, int y, int w, int h, int radius) {
     double r = std::min({static_cast<double>(radius), w / 2.0, h / 2.0});
-    if (r < 1.0) { cairo_rectangle(cr, x, y, w, h); return; }
+    if (r < 1.0) {
+        cairo_rectangle(cr, x, y, w, h);
+        return;
+    }
     cairo_new_sub_path(cr);
     cairo_arc(cr, x + w - r, y + r, r, -M_PI / 2, 0);
     cairo_arc(cr, x + w - r, y + h - r, r, 0, M_PI / 2);
@@ -312,13 +352,18 @@ namespace {
 // cache of loaded cairo surfaces keyed by "name@size"
 struct IconCache {
     std::unordered_map<std::string, cairo_surface_t*> map;
-    ~IconCache() { for (auto& kv : map) cairo_surface_destroy(kv.second); }
+    ~IconCache() {
+        for (auto& kv : map) cairo_surface_destroy(kv.second);
+    }
 };
-IconCache& icon_cache() { static IconCache c; return c; }
+IconCache& icon_cache() {
+    static IconCache c;
+    return c;
+}
 
 namespace fs = std::filesystem;
 
-std::string trim(std::string value) {
+std::string trim(const std::string& value) {
     const auto first = value.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) return {};
     const auto last = value.find_last_not_of(" \t\r\n");
@@ -373,7 +418,7 @@ bool read_theme_index(const fs::path& path, IconTheme& theme) {
             else if (key == "Inherits") theme.inherits = split_csv(value);
             continue;
         }
-        if (section.rfind("Icon Theme ", 0) == 0) continue;
+        if (section.starts_with("Icon Theme ")) continue;
         if (section.empty()) continue;
         auto& directory = theme.metadata[section];
         directory.name = section;
@@ -385,24 +430,28 @@ bool read_theme_index(const fs::path& path, IconTheme& theme) {
             else if (key == "Threshold") directory.threshold = std::stoi(value);
         } catch (const std::exception&) {
             // A malformed optional index entry should not make icons disappear.
+            (void) 0;
         }
     }
     return true;
 }
 
 std::string configured_icon_theme() {
-    if (const char* theme = std::getenv("WAYLAUNCH_ICON_THEME"); theme && *theme)
-        return theme;
+    if (const char* theme = std::getenv("WAYLAUNCH_ICON_THEME"); theme && *theme) return theme;
     // GTK_ICON_THEME is a setting, not a GTK runtime dependency. Honour it so
     // waylaunch follows an explicitly selected desktop theme.
-    if (const char* theme = std::getenv("GTK_ICON_THEME"); theme && *theme)
-        return theme;
+    if (const char* theme = std::getenv("GTK_ICON_THEME"); theme && *theme) return theme;
 
     const char* config_home = std::getenv("XDG_CONFIG_HOME");
     const char* home = std::getenv("HOME");
-    fs::path settings = config_home && *config_home
-        ? fs::path(config_home) / "gtk-3.0/settings.ini"
-        : (home && *home ? fs::path(home) / ".config/gtk-3.0/settings.ini" : fs::path{});
+    fs::path settings;
+    if (config_home && *config_home) {
+        settings = fs::path(config_home) / "gtk-3.0/settings.ini";
+    } else if (home && *home) {
+        settings = fs::path(home) / ".config/gtk-3.0/settings.ini";
+    } else {
+        settings = fs::path{};
+    }
     std::ifstream file(settings);
     std::string section;
     std::string line;
@@ -412,7 +461,8 @@ std::string configured_icon_theme() {
             section = line.substr(1, line.size() - 2);
         } else if (section == "Settings") {
             const auto equals = line.find('=');
-            if (equals != std::string::npos && trim(line.substr(0, equals)) == "gtk-icon-theme-name")
+            if (equals != std::string::npos &&
+                trim(line.substr(0, equals)) == "gtk-icon-theme-name")
                 return trim(line.substr(equals + 1));
         }
     }
@@ -431,7 +481,8 @@ std::vector<fs::path> icon_roots() {
     std::string dirs = data_dirs && *data_dirs ? data_dirs : "/usr/local/share:/usr/share";
     std::stringstream stream(dirs);
     std::string dir;
-    while (std::getline(stream, dir, ':')) if (!dir.empty()) roots.emplace_back(dir);
+    while (std::getline(stream, dir, ':'))
+        if (!dir.empty()) roots.emplace_back(dir);
     return roots;
 }
 
@@ -465,18 +516,46 @@ fs::path find_icon_in_theme(const fs::path& theme_root, const std::string& name,
     if (directories.empty()) {
         // A few themes omit index.theme. These are the conventional locations
         // used by hicolor and simple application themes.
-        directories = {{"scalable", "Scalable", 0, 0, 0, 0},
-                       {"48x48", "Fixed", 48, 0, 0, 0},
-                       {"32x32", "Fixed", 32, 0, 0, 0},
-                       {"24x24", "Fixed", 24, 0, 0, 0},
-                       {"16x16", "Fixed", 16, 0, 0, 0},
-                       {"", "", 0, 0, 0, 0}};
+        directories = {
+            {.name = "scalable",
+             .type = "Scalable",
+             .size = 0,
+             .min_size = 0,
+             .max_size = 0,
+             .threshold = 0},
+            {.name = "48x48",
+             .type = "Fixed",
+             .size = 48,
+             .min_size = 0,
+             .max_size = 0,
+             .threshold = 0},
+            {.name = "32x32",
+             .type = "Fixed",
+             .size = 32,
+             .min_size = 0,
+             .max_size = 0,
+             .threshold = 0},
+            {.name = "24x24",
+             .type = "Fixed",
+             .size = 24,
+             .min_size = 0,
+             .max_size = 0,
+             .threshold = 0},
+            {.name = "16x16",
+             .type = "Fixed",
+             .size = 16,
+             .min_size = 0,
+             .max_size = 0,
+             .threshold = 0},
+            {.name = "", .type = "", .size = 0, .min_size = 0, .max_size = 0, .threshold = 0}};
     }
-    std::stable_sort(directories.begin(), directories.end(), [size](const auto& left, const auto& right) {
+    std::ranges::stable_sort(directories, [size](const auto& left, const auto& right) {
         auto distance = [size](const ThemeDirectory& directory) {
             if (directory.type == "Scalable") {
-                if (directory.min_size > 0 && size < directory.min_size) return directory.min_size - size;
-                if (directory.max_size > 0 && size > directory.max_size) return size - directory.max_size;
+                if (directory.min_size > 0 && size < directory.min_size)
+                    return directory.min_size - size;
+                if (directory.max_size > 0 && size > directory.max_size)
+                    return size - directory.max_size;
                 return 0;
             }
             return std::abs(directory.size - size);
@@ -484,13 +563,16 @@ fs::path find_icon_in_theme(const fs::path& theme_root, const std::string& name,
         return distance(left) < distance(right);
     });
     for (const auto& directory : directories) {
-        if (auto candidate = image_with_extension(theme_root / directory.name, name); !candidate.empty())
+        if (auto candidate = image_with_extension(theme_root / directory.name, name);
+            !candidate.empty())
             return candidate;
     }
 
     for (const auto& inherited : theme.inherits) {
-        if (auto candidate = find_icon_in_theme(theme_root.parent_path() / inherited, name, size, visited);
-            !candidate.empty()) return candidate;
+        if (auto candidate =
+                find_icon_in_theme(theme_root.parent_path() / inherited, name, size, visited);
+            !candidate.empty())
+            return candidate;
     }
     return {};
 }
@@ -501,21 +583,26 @@ fs::path resolve_icon_path(const std::string& name, int size) {
     if (fs::is_regular_file(direct, error)) return direct;
 
     std::vector<std::string> themes;
-    if (const std::string current = configured_icon_theme(); !current.empty()) themes.push_back(current);
-    themes.push_back("hicolor");
+    if (const std::string current = configured_icon_theme(); !current.empty())
+        themes.push_back(current);
+    themes.emplace_back("hicolor");
     std::unordered_set<std::string> seen_themes;
     for (const auto& root : icon_roots()) {
         for (const auto& theme : themes) {
             if (!seen_themes.insert(root.string() + "\n" + theme).second) continue;
-            if (auto candidate = find_icon_in_theme(root / "icons" / theme, name, size, seen_themes);
-                !candidate.empty()) return candidate;
+            if (auto candidate =
+                    find_icon_in_theme(root / "icons" / theme, name, size, seen_themes);
+                !candidate.empty())
+                return candidate;
         }
     }
 
     if (const char* home = std::getenv("HOME"); home && *home) {
         for (const auto& theme : themes) {
-            if (auto candidate = find_icon_in_theme(fs::path(home) / ".icons" / theme, name, size, seen_themes);
-                !candidate.empty()) return candidate;
+            if (auto candidate =
+                    find_icon_in_theme(fs::path(home) / ".icons" / theme, name, size, seen_themes);
+                !candidate.empty())
+                return candidate;
         }
     }
     fs::path pixmaps = "/usr/share/pixmaps";
@@ -535,7 +622,10 @@ cairo_surface_t* load_svg_surface(const fs::path& path, int size) {
     cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
     cairo_paint(cr);
     cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-    const RsvgRectangle viewport{0.0, 0.0, static_cast<double>(size), static_cast<double>(size)};
+    const RsvgRectangle viewport{.x = 0.0,
+                                 .y = 0.0,
+                                 .width = static_cast<double>(size),
+                                 .height = static_cast<double>(size)};
     const bool rendered = cairo_status(cr) == CAIRO_STATUS_SUCCESS &&
                           rsvg_handle_render_document(handle, cr, &viewport, &error);
     cairo_destroy(cr);
@@ -550,8 +640,8 @@ cairo_surface_t* load_svg_surface(const fs::path& path, int size) {
 
 cairo_surface_t* load_image_surface(const fs::path& path, int size) {
     std::string extension = path.extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::ranges::transform(extension, extension.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (extension == ".svg") return load_svg_surface(path, size);
     if (extension != ".png") return nullptr;
     cairo_surface_t* surface = cairo_image_surface_create_from_png(path.c_str());
@@ -564,9 +654,9 @@ cairo_surface_t* load_image_surface(const fs::path& path, int size) {
 
 std::string monogram_of(const std::string& label) {
     for (char c : label) {
-        if (std::isalpha((unsigned char)c)) {
-            char buf[2] = { static_cast<char>(std::toupper((unsigned char)c)), 0 };
-            return std::string(buf);
+        if (std::isalpha(static_cast<unsigned char>(c))) {
+            char buf[2] = {static_cast<char>(std::toupper(static_cast<unsigned char>(c))), 0};
+            return {buf};
         }
     }
     return label.empty() ? "#" : label.substr(0, 1);
@@ -596,18 +686,21 @@ void Renderer::draw_icon(int x, int y, int size, const std::string& icon_name,
     int radius = std::max(4, size / 5);
     if (!surf) {
         // monogram placeholder: rounded square accent-tinted
-        Color bg{accent.r, accent.g, accent.b, 0.18};
+        Color bg{.r = accent.r, .g = accent.g, .b = accent.b, .a = 0.18};
         rounded_rect(x, y, size, size, radius, bg);
-        Color fg{accent.r, accent.g, accent.b, 1.0};
+        Color fg{.r = accent.r, .g = accent.g, .b = accent.b, .a = 1.0};
         std::string m = monogram_of(label.empty() ? icon_name : label);
-        RenderFontConfig f{"Sans", static_cast<double>(size) * 0.5, true, false};
+        RenderFontConfig f{.family = "Sans",
+                           .size = static_cast<double>(size) * 0.5,
+                           .bold = true,
+                           .italic = false};
         with_layout(cairo_->cr, f, m, [&](PangoLayout* layout) {
             // Center by ink extents so the glyph is optically centred in the tile.
             PangoRectangle ink;
             pango_layout_get_pixel_extents(layout, &ink, nullptr);
             cairo_set_source_rgba(cairo_->cr, fg.r, fg.g, fg.b, fg.a);
-            cairo_move_to(cairo_->cr, x + (size - ink.width) / 2 - ink.x,
-                          y + (size - ink.height) / 2 - ink.y);
+            cairo_move_to(cairo_->cr, x + ((size - ink.width) / 2.0) - ink.x,
+                          y + ((size - ink.height) / 2.0) - ink.y);
             pango_cairo_show_layout(cairo_->cr, layout);
         });
         return;
@@ -620,8 +713,9 @@ void Renderer::draw_icon(int x, int y, int size, const std::string& icon_name,
     int sw = cairo_image_surface_get_width(surf);
     int sh = cairo_image_surface_get_height(surf);
     double scale = std::min(static_cast<double>(size) / sw, static_cast<double>(size) / sh);
-    double dw = sw * scale, dh = sh * scale;
-    cairo_translate(cairo_->cr, x + (size - dw) / 2, y + (size - dh) / 2);
+    double dw = sw * scale;
+    double dh = sh * scale;
+    cairo_translate(cairo_->cr, x + ((size - dw) / 2), y + ((size - dh) / 2));
     cairo_scale(cairo_->cr, scale, scale);
     cairo_set_source_surface(cairo_->cr, surf, 0, 0);
     cairo_paint(cairo_->cr);

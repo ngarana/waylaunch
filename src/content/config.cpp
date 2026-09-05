@@ -1,8 +1,7 @@
 #include "waylaunch/content/config.h"
 
-#include <toml++/toml.hpp>
-
 #include <algorithm>
+#include <toml++/toml.hpp>
 
 #include <cstdlib>
 #include <unistd.h>
@@ -25,8 +24,7 @@ std::string default_config_path() {
 }
 
 // Read an array-of-strings TOML node into a vector (const or mutable node-view).
-template <typename NodeView>
-std::vector<std::string> str_array(NodeView node) {
+template <typename NodeView> std::vector<std::string> str_array(NodeView node) {
     std::vector<std::string> out;
     if (auto arr = node.as_array())
         for (auto& e : *arr)
@@ -47,7 +45,7 @@ std::string expand_tilde(const std::string& p) {
     if (h.empty()) return p;
     if (p.size() == 1) return h;
     if (p[1] == '/') return h + p.substr(1);
-    return p;  // ~user unsupported
+    return p; // ~user unsupported
 }
 
 std::string ContentConfig::runtime_dir() {
@@ -62,8 +60,9 @@ std::string ContentConfig::socket_path() { return runtime_dir() + "/waylaunchd.s
 std::string ContentConfig::db_path() {
     const char* xdg = getenv("XDG_DATA_HOME");
     std::string base;
-    if (xdg && xdg[0]) base = std::string(xdg) + "/waylaunch";
-    else {
+    if (xdg && xdg[0]) {
+        base = std::string(xdg) + "/waylaunch";
+    } else {
         std::string h = home_dir();
         base = h.empty() ? "./.local/share/waylaunch" : h + "/.local/share/waylaunch";
     }
@@ -85,8 +84,11 @@ ContentConfig load_content_config(const std::string& config_path) {
     // Sensible privacy defaults regardless of config (NFR7 / §8).
     std::string h = home_dir();
     if (!h.empty()) {
-        c.exclude_paths = {h + "/.ssh", h + "/.gnupg", h + "/.mozilla",
-                           h + "/.local/share/keyrings", h + "/.password-store",
+        c.exclude_paths = {h + "/.ssh",
+                           h + "/.gnupg",
+                           h + "/.mozilla",
+                           h + "/.local/share/keyrings",
+                           h + "/.password-store",
                            h + "/.config/waylaunch"};
     }
 
@@ -100,20 +102,20 @@ ContentConfig load_content_config(const std::string& config_path) {
     }
 
     // [search] fallbacks for roots/excludes.
-    std::vector<std::string> search_roots, search_excludes;
-    if (auto s = tbl["search"].as_table()) {
+    std::vector<std::string> search_roots;
+    std::vector<std::string> search_excludes;
+    if (auto* s = tbl["search"].as_table()) {
         search_roots = expand_all(str_array((*s)["file_roots"]));
         search_excludes = str_array((*s)["file_excludes"]);
     }
 
-    if (auto ct = tbl["content"].as_table()) {
+    if (auto* ct = tbl["content"].as_table()) {
         const toml::table& t = *ct;
         if (auto v = t["enable"].value<bool>()) c.enable = *v;
         c.roots = expand_all(str_array(t["roots"]));
         c.excludes = str_array(t["excludes"]);
         // Merge user-specified privacy paths onto the built-in defaults.
-        for (auto& p : expand_all(str_array(t["exclude_paths"])))
-            c.exclude_paths.push_back(p);
+        for (auto& p : expand_all(str_array(t["exclude_paths"]))) c.exclude_paths.push_back(p);
         if (auto v = t["max_file_mb"].value<int64_t>()) c.max_file_mb = static_cast<size_t>(*v);
         if (auto v = t["max_text_mb"].value<int64_t>()) c.max_text_mb = static_cast<size_t>(*v);
         if (auto v = t["max_index_mb"].value<int64_t>()) c.max_index_mb = static_cast<size_t>(*v);
@@ -144,27 +146,59 @@ ContentConfig load_content_config(const std::string& config_path) {
     // files (~3/4 of a 1.5 GB index) and it is why the crawl kept hitting the
     // size cap. There is no negation syntax: a built-in cannot be opted out of.
     static const char* kBuiltinExcludes[] = {
-        ".git", "node_modules", ".cache", "target", ".venv", "__pycache__",
-        ".cargo", ".rustup", "go/pkg", ".local/share/Trash", ".npm", "build",
+        ".git",
+        "node_modules",
+        ".cache",
+        "target",
+        ".venv",
+        "__pycache__",
+        ".cargo",
+        ".rustup",
+        "go/pkg",
+        ".local/share/Trash",
+        ".npm",
+        "build",
         // Generated caches seen dominating a real index; all are reproducible
         // build/tool output with no reason to be searchable.
-        ".mypy_cache", ".pytest_cache", ".ruff_cache", ".hypothesis", ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".hypothesis",
+        ".tox",
         // Package/tool stores. These hold content-addressed blobs rather than
         // documents — a pnpm store alone contributed 34k files to that index.
-        ".pnpm-store", ".pre-commit-home", ".yarn", ".m2", ".ivy2", ".nuget",
-        ".gem", ".bundle", ".conda", ".stack-work", ".ccache", ".sccache",
-        ".gradle", ".terraform", ".terragrunt-cache", ".parcel-cache",
-        ".turbo", ".nx", ".angular", ".vite", ".svelte-kit", ".eggs",
-        "bower_components", "vcpkg_installed",
+        ".pnpm-store",
+        ".pre-commit-home",
+        ".yarn",
+        ".m2",
+        ".ivy2",
+        ".nuget",
+        ".gem",
+        ".bundle",
+        ".conda",
+        ".stack-work",
+        ".ccache",
+        ".sccache",
+        ".gradle",
+        ".terraform",
+        ".terragrunt-cache",
+        ".parcel-cache",
+        ".turbo",
+        ".nx",
+        ".angular",
+        ".vite",
+        ".svelte-kit",
+        ".eggs",
+        "bower_components",
+        "vcpkg_installed",
     };
-    for (const char* d : kBuiltinExcludes) c.excludes.push_back(d);
+    for (const char* d : kBuiltinExcludes) c.excludes.emplace_back(d);
     for (const auto& d : search_excludes) c.excludes.push_back(d);
     // Dedupe, preserving first-seen order (the user's own entries stay in front).
     std::vector<std::string> uniq;
     uniq.reserve(c.excludes.size());
     for (auto& d : c.excludes)
-        if (!d.empty() && std::find(uniq.begin(), uniq.end(), d) == uniq.end())
-            uniq.push_back(d);
+        if (!d.empty() && std::ranges::find(uniq, d) == uniq.end()) uniq.push_back(d);
     c.excludes.swap(uniq);
     return c;
 }

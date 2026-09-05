@@ -1,15 +1,15 @@
 #pragma once
 
-#include "waylaunch/switcher/toplevel_backend.h"
 #include "waylaunch/switcher/app_group.h"
-#include <vector>
-#include <memory>
+#include "waylaunch/switcher/toplevel_backend.h"
 #include <functional>
+#include <memory>
+#include <vector>
 
 namespace waylaunch {
 
 class AppSwitcherManager : public IToplevelObserver {
-public:
+  public:
     explicit AppSwitcherManager(IToplevelBackend* backend);
     ~AppSwitcherManager() override;
 
@@ -26,7 +26,7 @@ public:
     void navigate_next();
     void navigate_prev();
     void jump_to(size_t index);
-    
+
     void quit_selected();
     void toggle_minimize_selected();
     void confirm_selection(wl_seat* seat);
@@ -40,9 +40,12 @@ public:
     void set_change_callback(ChangeCallback cb) { on_change_ = std::move(cb); }
 
     // false → one entry per window (individual instances) instead of per app.
-    void set_group_by_app(bool v) { group_by_app_ = v; rebuild_groups(); }
+    void set_group_by_app(bool v) {
+        group_by_app_ = v;
+        rebuild_groups();
+    }
 
-private:
+  private:
     void rebuild_groups();
     void touch_active_group(const std::string& app_id);
     void notify_change();

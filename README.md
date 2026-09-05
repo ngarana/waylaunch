@@ -278,7 +278,7 @@ icon_size      = 64       # icon size in px
 card_size      = 104      # card size in px
 corner_radius  = 20       # glass HUD corner radius
 show_app_names = true     # show application title below HUD
-group_by_app   = true     # true: one entry per app 
+group_by_app   = true     # true: one entry per app
 quick_actions  = true     # enable Q (quit app) and H (hide/minimize)
 
 # Optional: compositor-specific fallback for compositors that don't follow the

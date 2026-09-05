@@ -1,0 +1,31 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # Repo-wide C++ quality gates: same configs CI enforces
+  # (.clang-format, .clang-tidy). Requires a configured build dir for
+  # clang-tidy (`cmake -S . -B build`), since it needs compile_commands.json.
+  - repo: local
+    hooks:
+      - id: clang-format-check
+        name: clang-format check
+        language: system
+        entry: clang-format --dry-run --Werror
+        files: ^(src|include|tests)/.*\.(cpp|h)$
+        exclude: .*/build/.*
+        pass_filenames: true
+      - id: clang-tidy-check
+        name: clang-tidy check
+        language: system
+        entry: clang-tidy -p build --warnings-as-errors=*
+        files: ^(src|include|tests)/.*\.cpp$
+        exclude: .*/build/.*
+        pass_filenames: true
+        require_serial: true

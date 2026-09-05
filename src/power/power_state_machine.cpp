@@ -9,9 +9,9 @@ void PowerStateMachine::process_event(PowerEvent event) {
             break;
 
         case PowerState::Active:
-            if (event == PowerEvent::OpenConfirm)  state_ = PowerState::ConfirmOpen;
-            else if (event == PowerEvent::Execute) state_ = PowerState::Dismissing;
-            else if (event == PowerEvent::Cancel)  state_ = PowerState::Dismissing;
+            if (event == PowerEvent::OpenConfirm) state_ = PowerState::ConfirmOpen;
+            else if (event == PowerEvent::Execute || event == PowerEvent::Cancel)
+                state_ = PowerState::Dismissing;
             break;
 
         case PowerState::ConfirmOpen:
@@ -21,9 +21,7 @@ void PowerStateMachine::process_event(PowerEvent event) {
                 state_ = PowerState::Dismissing;
             break;
 
-        case PowerState::Dismissing:
-            state_ = PowerState::Hidden;
-            break;
+        case PowerState::Dismissing: state_ = PowerState::Hidden; break;
     }
 }
 

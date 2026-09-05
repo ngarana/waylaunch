@@ -1,0 +1,37 @@
+---
+Checks: >
+  -*,
+  bugprone-*,
+  clang-analyzer-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -readability-function-cognitive-complexity,
+  -modernize-use-trailing-return-type,
+  -modernize-use-nodiscard,
+  -readability-identifier-naming,
+  -readability-implicit-bool-conversion,
+  -readability-braces-around-statements,
+  -readability-named-parameter,
+  -portability-avoid-pragma-once,
+  -performance-enum-size,
+  -modernize-avoid-c-arrays,
+  -modernize-use-auto,
+  -bugprone-easily-swappable-parameters,
+  -clang-analyzer-optin.performance.Padding
+WarningsAsErrors: false
+HeaderFilterRegex: '.*/waylaunch/(src|include|tests)/.*'
+FormatStyle: file
+CheckOptions:
+  - key: readability-braces-around-statements.ShortStatementLines
+    value: 1
+  - key: modernize-loop-convert.MinConfidence
+    value: reasonable
+  - key: modernize-use-auto.MinTypeNameLength
+    value: 5
+  - key: readability-const-return-type.AllowStrings
+    value: false
+...

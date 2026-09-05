@@ -4,21 +4,22 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fcntl.h>
 #include <fstream>
 #include <mutex>
 #include <poll.h>
-#include <signal.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
-#include <time.h>
 #include <unistd.h>
+#include <utility>
 
 #ifdef HAVE_LIBMAGIC
 #include <magic.h>
@@ -33,15 +34,15 @@ namespace {
 // a bounded stdout capture. This is the sandbox around untrusted format parsers.
 // --------------------------------------------------------------------------
 struct Capped {
-    bool        ok = false;
-    bool        timed_out = false;
+    bool ok = false;
+    bool timed_out = false;
     std::string out;
 };
 
 int64_t now_ms() {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return static_cast<int64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+    return (static_cast<int64_t>(ts.tv_sec) * 1000) + (ts.tv_nsec / 1000000);
 }
 
 // --------------------------------------------------------------------------
@@ -64,37 +65,40 @@ bool write_cg_file(const std::string& path, const std::string& val) {
     if (fd < 0) return false;
     ssize_t n = write(fd, val.data(), val.size());
     close(fd);
-    return n == static_cast<ssize_t>(val.size());
+    return std::cmp_equal(n, val.size());
 }
 
 class ExtractCgroup {
-public:
+  public:
     static ExtractCgroup& instance() {
         static ExtractCgroup g;
         return g;
     }
 
-    int fd() const { return fd_; }   // O_DIRECTORY fd of ./extract, -1 if unavailable
+    int fd() const { return fd_; } // O_DIRECTORY fd of ./extract, -1 if unavailable
 
     // Best-effort memory cap on the extract group (0 = uncapped).
     void set_memory_max(size_t bytes) {
         if (fd_ < 0) return;
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::scoped_lock lk(mtx_);
         if (bytes == applied_) return;
-        if (write_cg_file(extract_dir_ + "/memory.max",
-                          bytes ? std::to_string(bytes) : "max"))
+        if (write_cg_file(extract_dir_ + "/memory.max", bytes ? std::to_string(bytes) : "max"))
             applied_ = bytes;
     }
 
-private:
+  private:
     ExtractCgroup() {
         std::ifstream f("/proc/self/cgroup");
-        std::string line, cgpath;
+        std::string line;
+        std::string cgpath;
         while (std::getline(f, line))
-            if (line.rfind("0::", 0) == 0) { cgpath = line.substr(3); break; }
+            if (line.starts_with("0::")) {
+                cgpath = line.substr(3);
+                break;
+            }
         if (cgpath.empty() || cgpath == "/") return;
         std::string base = "/sys/fs/cgroup" + cgpath;
-        if (access(base.c_str(), W_OK) != 0) return;   // not delegated to us
+        if (access(base.c_str(), W_OK) != 0) return; // not delegated to us
 
         std::string main_dir = base + "/main";
         extract_dir_ = base + "/extract";
@@ -103,23 +107,22 @@ private:
             return;
         // Leaf-ify: controllers can only be distributed to children once the
         // parent has no member processes, so the daemon moves itself to ./main.
-        if (!write_cg_file(main_dir + "/cgroup.procs", std::to_string(getpid())))
-            return;
+        if (!write_cg_file(main_dir + "/cgroup.procs", std::to_string(getpid()))) return;
         // Controller delegation is best-effort (fails when unrelated processes
         // share the parent, e.g. a terminal scope) — CLONE_INTO_CGROUP
         // placement and group-kill still work without it.
         write_cg_file(base + "/cgroup.subtree_control", "+memory");
         write_cg_file(base + "/cgroup.subtree_control", "+pids");
-        write_cg_file(extract_dir_ + "/memory.oom.group", "1");  // OOM kills whole tree
-        write_cg_file(extract_dir_ + "/memory.swap.max", "0");   // OOM, don't thrash
-        write_cg_file(extract_dir_ + "/pids.max", "32");         // no fork bombs
+        write_cg_file(extract_dir_ + "/memory.oom.group", "1"); // OOM kills whole tree
+        write_cg_file(extract_dir_ + "/memory.swap.max", "0");  // OOM, don't thrash
+        write_cg_file(extract_dir_ + "/pids.max", "32");        // no fork bombs
         fd_ = open(extract_dir_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     }
 
     std::string extract_dir_;
-    int         fd_ = -1;
-    size_t      applied_ = 0;
-    std::mutex  mtx_;
+    int fd_ = -1;
+    size_t applied_ = 0;
+    std::mutex mtx_;
 };
 
 #ifndef CLONE_INTO_CGROUP
@@ -131,7 +134,7 @@ private:
 pid_t spawn_child(int cgroup_fd) {
 #ifdef SYS_clone3
     if (cgroup_fd >= 0) {
-        struct {   // struct clone_args, CLONE_ARGS_SIZE_VER2 layout
+        struct { // struct clone_args, CLONE_ARGS_SIZE_VER2 layout
             uint64_t flags, pidfd, child_tid, parent_tid, exit_signal;
             uint64_t stack, stack_size, tls, set_tid, set_tid_size, cgroup;
         } args{};
@@ -153,10 +156,12 @@ std::string resolve_in_path(const std::string& prog) {
     size_t start = 0;
     while (start <= paths.size()) {
         size_t colon = paths.find(':', start);
-        std::string dir = paths.substr(start, colon == std::string::npos ? std::string::npos
-                                                                          : colon - start);
+        std::string dir =
+            paths.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
         if (!dir.empty()) {
-            std::string full = dir + "/" + prog;
+            std::string full = dir;
+            full += '/';
+            full += prog;
             if (access(full.c_str(), X_OK) == 0) return full;
         }
         if (colon == std::string::npos) break;
@@ -165,8 +170,7 @@ std::string resolve_in_path(const std::string& prog) {
     return "";
 }
 
-Capped run_capped(const std::vector<std::string>& argv, const ExtractOptions& opt,
-                  size_t max_out) {
+Capped run_capped(const std::vector<std::string>& argv, const ExtractOptions& opt, size_t max_out) {
     Capped r;
     if (argv.empty()) return r;
     std::string exe = resolve_in_path(argv[0]);
@@ -185,9 +189,9 @@ Capped run_capped(const std::vector<std::string>& argv, const ExtractOptions& op
     }
     if (pid == 0) {
         // --- child ---
-        setpgid(0, 0);                       // own group so we can kill any tree
-        prctl(PR_SET_PDEATHSIG, SIGKILL);    // die with the daemon, never orphan
-        if (getppid() == 1) _exit(127);      // parent already gone before prctl
+        setpgid(0, 0);                    // own group so we can kill any tree
+        prctl(PR_SET_PDEATHSIG, SIGKILL); // die with the daemon, never orphan
+        if (getppid() == 1) _exit(127);   // parent already gone before prctl
         dup2(outpipe[1], STDOUT_FILENO);
         int devnull = open("/dev/null", O_RDWR);
         if (devnull >= 0) {
@@ -201,7 +205,7 @@ Capped run_capped(const std::vector<std::string>& argv, const ExtractOptions& op
         rlimit rl;
         rl.rlim_cur = rl.rlim_max = static_cast<rlim_t>(opt.cpu_seconds);
         setrlimit(RLIMIT_CPU, &rl);
-        rl.rlim_cur = rl.rlim_max = static_cast<rlim_t>(max_out * 4 + (1u << 20));
+        rl.rlim_cur = rl.rlim_max = static_cast<rlim_t>((max_out * 4) + (1U << 20));
         setrlimit(RLIMIT_FSIZE, &rl);
         rl.rlim_cur = rl.rlim_max = 0;
         setrlimit(RLIMIT_CORE, &rl);
@@ -221,8 +225,8 @@ Capped run_capped(const std::vector<std::string>& argv, const ExtractOptions& op
         for (const auto& s : argv) cargv.push_back(const_cast<char*>(s.c_str()));
         cargv.push_back(nullptr);
         char* env[] = {const_cast<char*>("PATH=/usr/local/bin:/usr/bin:/bin"),
-                       const_cast<char*>("LC_ALL=C.UTF-8"),
-                       const_cast<char*>("HOME=/nonexistent"), nullptr};
+                       const_cast<char*>("LC_ALL=C.UTF-8"), const_cast<char*>("HOME=/nonexistent"),
+                       nullptr};
         execve(exe.c_str(), cargv.data(), env);
         _exit(127);
     }
@@ -241,7 +245,7 @@ Capped run_capped(const std::vector<std::string>& argv, const ExtractOptions& op
             killed = true;
             break;
         }
-        pollfd pfd{outpipe[0], POLLIN, 0};
+        pollfd pfd{.fd = outpipe[0], .events = POLLIN, .revents = 0};
         int pr = poll(&pfd, 1, static_cast<int>(std::min<int64_t>(remaining, 250)));
         if (pr < 0) break;
         if (pr == 0) continue;
@@ -250,16 +254,14 @@ Capped run_capped(const std::vector<std::string>& argv, const ExtractOptions& op
             if (r.out.size() < max_out) {
                 size_t take = std::min(static_cast<size_t>(n), max_out - r.out.size());
                 r.out.append(buf, take);
-                if (r.out.size() >= max_out) {   // enough text; stop the parser
+                if (r.out.size() >= max_out) { // enough text; stop the parser
                     kill(-pid, SIGKILL);
                     killed = true;
                     break;
                 }
             }
-        } else if (n == 0) {
-            break;                                // EOF
-        } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            break;
+        } else if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+            break; // EOF or unrecoverable read error
         }
     }
     close(outpipe[0]);
@@ -278,8 +280,7 @@ std::string lower_ext(const std::string& path) {
     auto slash = path.find_last_of('/');
     if (dot == std::string::npos || (slash != std::string::npos && dot < slash)) return "";
     std::string e = path.substr(dot + 1);
-    std::transform(e.begin(), e.end(), e.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
+    std::ranges::transform(e, e.begin(), [](unsigned char c) { return std::tolower(c); });
     return e;
 }
 
@@ -290,7 +291,10 @@ void sanitize(std::string& s, size_t cap) {
     out.reserve(s.size());
     for (unsigned char c : s) {
         if (c == 0) continue;
-        if (c < 0x09 || (c > 0x0d && c < 0x20)) { out.push_back(' '); continue; }
+        if (c < 0x09 || (c > 0x0d && c < 0x20)) {
+            out.push_back(' ');
+            continue;
+        }
         out.push_back(static_cast<char>(c));
     }
     s.swap(out);
@@ -301,7 +305,7 @@ std::string read_file_capped(const std::string& path, size_t cap) {
     if (!f) return "";
     std::string data;
     data.resize(cap);
-    f.read(&data[0], static_cast<std::streamsize>(cap));
+    f.read(data.data(), static_cast<std::streamsize>(cap));
     data.resize(static_cast<size_t>(f.gcount()));
     return data;
 }
@@ -309,19 +313,21 @@ std::string read_file_capped(const std::string& path, size_t cap) {
 // --- built-in importers ---------------------------------------------------
 bool looks_like_text(const std::string& s) {
     if (s.empty()) return false;
-    size_t bad = 0, n = std::min<size_t>(s.size(), 8192);
+    size_t bad = 0;
+    size_t n = std::min<size_t>(s.size(), 8192);
     for (size_t i = 0; i < n; i++) {
         unsigned char c = s[i];
-        if (c == 0) return false;                       // NUL → binary
+        if (c == 0) return false; // NUL → binary
         if (c < 0x09 || (c > 0x0d && c < 0x20)) bad++;
     }
-    return bad * 100 < n * 5;                            // <5% control bytes
+    return bad * 100 < n * 5; // <5% control bytes
 }
 
 std::string strip_html(const std::string& in) {
     std::string out;
     out.reserve(in.size());
-    size_t i = 0, n = in.size();
+    size_t i = 0;
+    size_t n = in.size();
     auto skip_block = [&](const char* close) {
         size_t end = in.find(close, i);
         i = (end == std::string::npos) ? n : end + std::strlen(close);
@@ -329,8 +335,14 @@ std::string strip_html(const std::string& in) {
     while (i < n) {
         if (in[i] == '<') {
             // drop <script>…</script> and <style>…</style> wholesale
-            if (in.compare(i, 7, "<script") == 0) { skip_block("</script>"); continue; }
-            if (in.compare(i, 6, "<style") == 0)  { skip_block("</style>");  continue; }
+            if (in.compare(i, 7, "<script") == 0) {
+                skip_block("</script>");
+                continue;
+            }
+            if (in.compare(i, 6, "<style") == 0) {
+                skip_block("</style>");
+                continue;
+            }
             size_t end = in.find('>', i);
             if (end == std::string::npos) break;
             i = end + 1;
@@ -340,11 +352,15 @@ std::string strip_html(const std::string& in) {
         }
     }
     // decode a handful of common entities
-    struct { const char* e; char c; } ents[] = {
-        {"&amp;", '&'}, {"&lt;", '<'}, {"&gt;", '>'}, {"&quot;", '"'},
-        {"&#39;", '\''}, {"&apos;", '\''}, {"&nbsp;", ' '}};
+    struct {
+        const char* e;
+        char c;
+    } ents[] = {{.e = "&amp;", .c = '&'},  {.e = "&lt;", .c = '<'},   {.e = "&gt;", .c = '>'},
+                {.e = "&quot;", .c = '"'}, {.e = "&#39;", .c = '\''}, {.e = "&apos;", .c = '\''},
+                {.e = "&nbsp;", .c = ' '}};
     for (auto& e : ents) {
-        size_t p = 0, len = std::strlen(e.e);
+        size_t p = 0;
+        size_t len = std::strlen(e.e);
         while ((p = out.find(e.e, p)) != std::string::npos) out.replace(p, len, 1, e.c);
     }
     return out;
@@ -353,8 +369,9 @@ std::string strip_html(const std::string& in) {
 // Append a Unicode code point as UTF-8 (for numeric XML entities).
 void append_utf8(std::string& out, long cp) {
     if (cp < 0 || cp > 0x10FFFF) return;
-    if (cp < 0x80) out.push_back(static_cast<char>(cp));
-    else if (cp < 0x800) {
+    if (cp < 0x80) {
+        out.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
         out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
         out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
     } else if (cp < 0x10000) {
@@ -377,7 +394,8 @@ void append_utf8(std::string& out, long cp) {
 std::string strip_xml(const std::string& in) {
     std::string tagless;
     tagless.reserve(in.size());
-    size_t i = 0, n = in.size();
+    size_t i = 0;
+    size_t n = in.size();
     while (i < n) {
         if (in[i] == '<') {
             size_t end = in.find('>', i);
@@ -395,20 +413,47 @@ std::string strip_xml(const std::string& in) {
             size_t semi = tagless.find(';', j);
             if (semi != std::string::npos && semi - j <= 10) {
                 std::string ent = tagless.substr(j + 1, semi - j - 1);
-                if (ent == "amp") { out.push_back('&'); j = semi + 1; continue; }
-                if (ent == "lt")  { out.push_back('<'); j = semi + 1; continue; }
-                if (ent == "gt")  { out.push_back('>'); j = semi + 1; continue; }
-                if (ent == "quot"){ out.push_back('"'); j = semi + 1; continue; }
-                if (ent == "apos"){ out.push_back('\''); j = semi + 1; continue; }
-                if (ent == "nbsp"){ out.push_back(' '); j = semi + 1; continue; }
+                if (ent == "amp") {
+                    out.push_back('&');
+                    j = semi + 1;
+                    continue;
+                }
+                if (ent == "lt") {
+                    out.push_back('<');
+                    j = semi + 1;
+                    continue;
+                }
+                if (ent == "gt") {
+                    out.push_back('>');
+                    j = semi + 1;
+                    continue;
+                }
+                if (ent == "quot") {
+                    out.push_back('"');
+                    j = semi + 1;
+                    continue;
+                }
+                if (ent == "apos") {
+                    out.push_back('\'');
+                    j = semi + 1;
+                    continue;
+                }
+                if (ent == "nbsp") {
+                    out.push_back(' ');
+                    j = semi + 1;
+                    continue;
+                }
                 if (ent.size() > 1 && ent[0] == '#') {
                     long cp = 0;
                     char* endp = nullptr;
                     if (ent[1] == 'x' || ent[1] == 'X')
                         cp = std::strtol(ent.c_str() + 2, &endp, 16);
-                    else
-                        cp = std::strtol(ent.c_str() + 1, &endp, 10);
-                    if (endp && *endp == '\0') { append_utf8(out, cp); j = semi + 1; continue; }
+                    else cp = std::strtol(ent.c_str() + 1, &endp, 10);
+                    if (endp && *endp == '\0') {
+                        append_utf8(out, cp);
+                        j = semi + 1;
+                        continue;
+                    }
                 }
             }
         }
@@ -422,16 +467,35 @@ std::string strip_xml(const std::string& in) {
 // --------------------------------------------------------------------------
 std::string ext_mime(const std::string& ext) {
     static const std::vector<std::pair<const char*, const char*>> kMap = {
-        {"txt", "text/plain"}, {"md", "text/markdown"}, {"markdown", "text/markdown"},
-        {"rst", "text/plain"}, {"log", "text/plain"}, {"csv", "text/csv"},
-        {"json", "application/json"}, {"xml", "text/xml"}, {"yaml", "text/yaml"},
-        {"yml", "text/yaml"}, {"toml", "text/plain"}, {"ini", "text/plain"},
-        {"conf", "text/plain"}, {"c", "text/x-c"}, {"h", "text/x-c"},
-        {"cpp", "text/x-c++"}, {"cc", "text/x-c++"}, {"hpp", "text/x-c++"},
-        {"py", "text/x-python"}, {"rs", "text/x-rust"}, {"go", "text/x-go"},
-        {"js", "text/javascript"}, {"ts", "text/x-typescript"}, {"sh", "text/x-shellscript"},
-        {"java", "text/x-java"}, {"rb", "text/x-ruby"}, {"lua", "text/x-lua"},
-        {"html", "text/html"}, {"htm", "text/html"},
+        {"txt", "text/plain"},
+        {"md", "text/markdown"},
+        {"markdown", "text/markdown"},
+        {"rst", "text/plain"},
+        {"log", "text/plain"},
+        {"csv", "text/csv"},
+        {"json", "application/json"},
+        {"xml", "text/xml"},
+        {"yaml", "text/yaml"},
+        {"yml", "text/yaml"},
+        {"toml", "text/plain"},
+        {"ini", "text/plain"},
+        {"conf", "text/plain"},
+        {"c", "text/x-c"},
+        {"h", "text/x-c"},
+        {"cpp", "text/x-c++"},
+        {"cc", "text/x-c++"},
+        {"hpp", "text/x-c++"},
+        {"py", "text/x-python"},
+        {"rs", "text/x-rust"},
+        {"go", "text/x-go"},
+        {"js", "text/javascript"},
+        {"ts", "text/x-typescript"},
+        {"sh", "text/x-shellscript"},
+        {"java", "text/x-java"},
+        {"rb", "text/x-ruby"},
+        {"lua", "text/x-lua"},
+        {"html", "text/html"},
+        {"htm", "text/html"},
         {"pdf", "application/pdf"},
         {"docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
         {"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
@@ -439,9 +503,10 @@ std::string ext_mime(const std::string& ext) {
         {"odt", "application/vnd.oasis.opendocument.text"},
         {"ods", "application/vnd.oasis.opendocument.spreadsheet"},
         {"odp", "application/vnd.oasis.opendocument.presentation"},
-        {"rtf", "application/rtf"}, {"epub", "application/epub+zip"},
+        {"rtf", "application/rtf"},
+        {"epub", "application/epub+zip"},
     };
-    for (auto& kv : kMap)
+    for (const auto& kv : kMap)
         if (ext == kv.first) return kv.second;
     return "";
 }
@@ -457,9 +522,9 @@ enum class OfficeZip { None, Ooxml, Odf, Epub };
 // absent ones (it exits non-zero, which is why the caller keys success on
 // non-empty output, not exit code).
 struct OfficePlan {
-    OfficeZip           kind = OfficeZip::None;
-    std::vector<std::string> members;   // unzip -p patterns
-    bool                html = false;    // strip as HTML (epub) vs XML
+    OfficeZip kind = OfficeZip::None;
+    std::vector<std::string> members; // unzip -p patterns
+    bool html = false;                // strip as HTML (epub) vs XML
 };
 
 OfficePlan office_plan(const std::string& ext, const std::string& mime) {
@@ -467,25 +532,26 @@ OfficePlan office_plan(const std::string& ext, const std::string& mime) {
     auto mime_has = [&](const char* s) { return mime.find(s) != std::string::npos; };
 
     if (is("docx") || (ext.empty() && mime_has("wordprocessingml")))
-        return {OfficeZip::Ooxml,
-                {"word/document.xml", "word/header*.xml", "word/footer*.xml",
-                 "word/footnotes.xml", "word/endnotes.xml"}, false};
+        return {.kind = OfficeZip::Ooxml,
+                .members = {"word/document.xml", "word/header*.xml", "word/footer*.xml",
+                            "word/footnotes.xml", "word/endnotes.xml"},
+                .html = false};
     if (is("xlsx") || (ext.empty() && mime_has("spreadsheetml")))
         // Only the shared-string table — the actual cell text. Deliberately NOT
         // the sheets: string cells there store *indices* into sharedStrings
         // (<v>0</v>), plus header/footer font chrome, which would pollute the
         // index with junk tokens. A rare inline-string/numbers-only workbook has
         // no sharedStrings → empty output → pandoc fallback covers it.
-        return {OfficeZip::Ooxml, {"xl/sharedStrings.xml"}, false};
+        return {.kind = OfficeZip::Ooxml, .members = {"xl/sharedStrings.xml"}, .html = false};
     if (is("pptx") || (ext.empty() && mime_has("presentationml")))
-        return {OfficeZip::Ooxml,
-                {"ppt/slides/slide*.xml", "ppt/notesSlides/notesSlide*.xml"}, false};
-    if (is("odt") || is("ods") || is("odp") ||
-        (ext.empty() && mime_has("opendocument")))
-        return {OfficeZip::Odf, {"content.xml"}, false};
+        return {.kind = OfficeZip::Ooxml,
+                .members = {"ppt/slides/slide*.xml", "ppt/notesSlides/notesSlide*.xml"},
+                .html = false};
+    if (is("odt") || is("ods") || is("odp") || (ext.empty() && mime_has("opendocument")))
+        return {.kind = OfficeZip::Odf, .members = {"content.xml"}, .html = false};
     if (is("epub") || (ext.empty() && mime_has("epub")))
         // Reading content only (.xhtml/.html); skip the OPF/NCX metadata XML.
-        return {OfficeZip::Epub, {"*.xhtml", "*.html", "*.htm"}, true};
+        return {.kind = OfficeZip::Epub, .members = {"*.xhtml", "*.html", "*.htm"}, .html = true};
     return {};
 }
 
@@ -523,23 +589,21 @@ Extractor::Extractor(std::vector<std::string> enabled) : enabled_(std::move(enab
 
 std::string Extractor::importer_for(const std::string& mime, const std::string& path) const {
     std::string ext = lower_ext(path);
-    auto on = [&](const char* name) {
-        return std::find(enabled_.begin(), enabled_.end(), name) != enabled_.end();
-    };
+    auto on = [&](const char* name) { return std::ranges::find(enabled_, name) != enabled_.end(); };
     // HTML before generic text (an .html is text/* but wants tag-stripping).
     if (on("html") && (mime == "text/html" || ext == "html" || ext == "htm")) return "html";
     if (on("pdf") && (mime == "application/pdf" || ext == "pdf")) return "pdf";
     if (on("office")) {
-        static const char* office_ext[] = {"docx", "xlsx", "pptx", "odt", "ods",
-                                           "odp", "rtf", "epub"};
-        for (auto* e : office_ext)
+        static const char* office_ext[] = {"docx", "xlsx", "pptx", "odt",
+                                           "ods",  "odp",  "rtf",  "epub"};
+        for (const auto* e : office_ext)
             if (ext == e) return "office";
         if (mime.find("opendocument") != std::string::npos ||
-            mime.find("officedocument") != std::string::npos ||
-            mime == "application/rtf" || mime == "application/epub+zip")
+            mime.find("officedocument") != std::string::npos || mime == "application/rtf" ||
+            mime == "application/epub+zip")
             return "office";
     }
-    if (on("text") && (mime.rfind("text/", 0) == 0 || mime == "application/json" ||
+    if (on("text") && (mime.starts_with("text/") || mime == "application/json" ||
                        mime == "application/xml" || mime == "application/javascript" ||
                        mime == "application/x-shellscript" || !ext_mime(ext).empty()))
         return "text";
@@ -557,17 +621,29 @@ ExtractResult Extractor::extract(const std::string& path, const ExtractOptions& 
 
     if (res.importer == "text") {
         std::string data = read_file_capped(path, opt.max_read_bytes);
-        if (!looks_like_text(data)) { res.status = ExtractStatus::Unsupported; return res; }
+        if (!looks_like_text(data)) {
+            res.status = ExtractStatus::Unsupported;
+            return res;
+        }
         res.text = std::move(data);
     } else if (res.importer == "html") {
         std::string raw = read_file_capped(path, opt.max_read_bytes);
         res.text = strip_html(raw);
     } else if (res.importer == "pdf") {
-        if (!Subprocess::command_exists("pdftotext")) { res.status = ExtractStatus::Unsupported; return res; }
-        Capped c = run_capped({"pdftotext", "-q", "-enc", "UTF-8", "--", path, "-"},
-                              opt, opt.max_text_bytes);
-        if (c.timed_out) { res.status = ExtractStatus::Timeout; return res; }
-        if (!c.ok) { res.status = ExtractStatus::Error; return res; }
+        if (!Subprocess::command_exists("pdftotext")) {
+            res.status = ExtractStatus::Unsupported;
+            return res;
+        }
+        Capped c = run_capped({"pdftotext", "-q", "-enc", "UTF-8", "--", path, "-"}, opt,
+                              opt.max_text_bytes);
+        if (c.timed_out) {
+            res.status = ExtractStatus::Timeout;
+            return res;
+        }
+        if (!c.ok) {
+            res.status = ExtractStatus::Error;
+            return res;
+        }
         res.text = std::move(c.out);
     } else if (res.importer == "office") {
         std::string ext = lower_ext(path);
@@ -580,7 +656,10 @@ ExtractResult Extractor::extract(const std::string& path, const ExtractOptions& 
             std::vector<std::string> argv = {"unzip", "-p", path};
             argv.insert(argv.end(), plan.members.begin(), plan.members.end());
             Capped c = run_capped(argv, opt, opt.max_text_bytes);
-            if (c.timed_out) { res.status = ExtractStatus::Timeout; return res; }
+            if (c.timed_out) {
+                res.status = ExtractStatus::Timeout;
+                return res;
+            }
             // unzip exits non-zero when an optional member glob matches nothing,
             // so success is "we got bytes", not c.ok. Empty ⇒ fall through to
             // pandoc (e.g. a member layout we didn't anticipate).
@@ -603,8 +682,14 @@ ExtractResult Extractor::extract(const std::string& path, const ExtractOptions& 
                 return res;
             }
             Capped c = run_capped(argv, opt, opt.max_text_bytes);
-            if (c.timed_out) { res.status = ExtractStatus::Timeout; return res; }
-            if (!c.ok) { res.status = ExtractStatus::Error; return res; }
+            if (c.timed_out) {
+                res.status = ExtractStatus::Timeout;
+                return res;
+            }
+            if (!c.ok) {
+                res.status = ExtractStatus::Error;
+                return res;
+            }
             res.text = std::move(c.out);
         }
     }

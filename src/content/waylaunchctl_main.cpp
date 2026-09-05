@@ -41,11 +41,12 @@ void print_help() {
 // diagnosable (challenge §5.2) rather than a bare "no index".
 const char* availability_reason(Availability a) {
     switch (a) {
-        case Availability::NoIndex:         return "no index yet (start waylaunchd and let it crawl)";
-        case Availability::VersionMismatch: return "index built by an incompatible version (waylaunchd will rebuild)";
-        case Availability::Corrupt:         return "index is corrupt (waylaunchd will rebuild)";
-        case Availability::Locked:          return "index is locked or unreadable (permissions?)";
-        default:                            return "index unavailable";
+        case Availability::NoIndex: return "no index yet (start waylaunchd and let it crawl)";
+        case Availability::VersionMismatch:
+            return "index built by an incompatible version (waylaunchd will rebuild)";
+        case Availability::Corrupt: return "index is corrupt (waylaunchd will rebuild)";
+        case Availability::Locked: return "index is locked or unreadable (permissions?)";
+        default: return "index unavailable";
     }
 }
 
@@ -54,18 +55,23 @@ const char* availability_reason(Availability a) {
 int do_search(const std::string& config_path, const std::vector<std::string>& terms) {
     std::string q;
     for (const auto& t : terms) q += (q.empty() ? "" : " ") + t;
-    if (q.empty()) { std::fprintf(stderr, "waylaunchctl: search needs a query\n"); return 2; }
+    if (q.empty()) {
+        std::fprintf(stderr, "waylaunchctl: search needs a query\n");
+        return 2;
+    }
     ContentConfig cc = load_content_config(config_path);
     Store store;
-    if (!store.open(ContentConfig::db_path(), {true, cc.match})) {
+    if (!store.open(ContentConfig::db_path(), {.read_only = true, .match = cc.match})) {
         std::fprintf(stderr, "waylaunchctl: %s\n  db: %s\n",
-                     availability_reason(store.availability()),
-                     ContentConfig::db_path().c_str());
+                     availability_reason(store.availability()), ContentConfig::db_path().c_str());
         // NoIndex/VersionMismatch are expected transient states, not hard errors.
         return store.availability() == Availability::NoIndex ? 0 : 1;
     }
     auto hits = store.search(q, cc.max_results);
-    if (hits.empty()) { std::printf("(no content matches for \"%s\")\n", q.c_str()); return 0; }
+    if (hits.empty()) {
+        std::printf("(no content matches for \"%s\")\n", q.c_str());
+        return 0;
+    }
     for (const auto& h : hits) {
         std::printf("%s\n", h.path.c_str());
         if (!h.snippet.empty()) std::printf("    %s\n", h.snippet.c_str());
@@ -81,15 +87,22 @@ int main(int argc, char** argv) {
     std::vector<std::string> args;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
-        if ((a == "-c" || a == "--config") && i + 1 < argc) config_path = argv[++i];
-        else if (a == "-h" || a == "--help") { print_help(); return 0; }
-        else args.push_back(std::move(a));
+        if ((a == "-c" || a == "--config") && i + 1 < argc) {
+            config_path = argv[++i];
+        } else if (a == "-h" || a == "--help") {
+            print_help();
+            return 0;
+        } else {
+            args.push_back(std::move(a));
+        }
     }
-    if (args.empty()) { print_help(); return 2; }
+    if (args.empty()) {
+        print_help();
+        return 2;
+    }
 
     const std::string& cmd = args[0];
-    if (cmd == "search")
-        return do_search(config_path, {args.begin() + 1, args.end()});
+    if (cmd == "search") return do_search(config_path, {args.begin() + 1, args.end()});
 
     std::string line = cmd;
     for (size_t i = 1; i < args.size(); i++) line += " " + args[i];
@@ -98,10 +111,11 @@ int main(int argc, char** argv) {
     if (!reply) {
         std::fprintf(stderr,
                      "waylaunchctl: cannot reach waylaunchd (is it running?)\n"
-                     "  socket: %s\n", ContentConfig::socket_path().c_str());
+                     "  socket: %s\n",
+                     ContentConfig::socket_path().c_str());
         return 1;
     }
     std::fputs(reply->c_str(), stdout);
     // Non-zero exit if the daemon reported an error.
-    return reply->rfind("error:", 0) == 0 ? 1 : 0;
+    return reply->starts_with("error:") ? 1 : 0;
 }

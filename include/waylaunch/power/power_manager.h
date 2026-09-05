@@ -1,8 +1,8 @@
 #pragma once
 
+#include "waylaunch/power/confirm_dialog.h"
 #include "waylaunch/power/power_action.h"
 #include "waylaunch/power/power_action_backend.h"
-#include "waylaunch/power/confirm_dialog.h"
 #include <functional>
 #include <optional>
 #include <vector>
@@ -12,7 +12,7 @@ namespace waylaunch {
 // Selection + visibility + the pending-action handoff (≈ AppSwitcherManager).
 // Depends on IPowerActionBackend only; owns no rendering or input knowledge.
 class PowerManager {
-public:
+  public:
     explicit PowerManager(IPowerActionBackend* backend);
 
     void show();
@@ -33,10 +33,10 @@ public:
     // caller has destroyed the surface (§4.7: never leave the overlay visible
     // over the action).
     void activate_selected();
-    void confirm();   // dialog Return: dialog's action → pending, hide
-    void cancel();    // dialog Esc → back to grid; grid Esc → hide
-    void toggle_dialog_focus();   // ←/→/Tab inside the dialog
-    void set_dialog_focus(ConfirmDialog::Button b);   // pointer hover (absolute)
+    void confirm();             // dialog Return: dialog's action → pending, hide
+    void cancel();              // dialog Esc → back to grid; grid Esc → hide
+    void toggle_dialog_focus(); // ←/→/Tab inside the dialog
+    void set_dialog_focus(ConfirmDialog::Button b); // pointer hover (absolute)
 
     ConfirmDialog& confirm_dialog() { return dialog_; }
     const ConfirmDialog& confirm_dialog() const { return dialog_; }
@@ -46,12 +46,12 @@ public:
     void set_countdown_seconds(int v) { countdown_seconds_ = v > 0 ? v : 0; }
 
     bool has_pending_action() const { return pending_.has_value(); }
-    int execute_pending();   // backend->execute; -1 if nothing pending
+    int execute_pending(); // backend->execute; -1 if nothing pending
 
     using ChangeCallback = std::function<void()>;
     void set_change_callback(ChangeCallback cb) { on_change_ = std::move(cb); }
 
-private:
+  private:
     void notify_change();
 
     IPowerActionBackend* backend_ = nullptr;

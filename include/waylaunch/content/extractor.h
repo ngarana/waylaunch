@@ -6,32 +6,33 @@
 // timeout + resource limits (the mdworker sandbox), so a malformed file can
 // never hang or crash the indexer (NFR6). Trivial text/HTML is read in-process.
 
+#include <cstddef>
 #include <string>
 #include <vector>
-#include <cstddef>
 
 namespace waylaunch::content {
 
 struct ExtractOptions {
-    size_t max_text_bytes = 2 * 1024 * 1024;   // cap extracted text per file (NFR5)
-    size_t max_read_bytes = 32 * 1024 * 1024;  // don't read more than this raw
-    int    timeout_ms     = 10000;             // wall-clock per subprocess extractor
-    int    cpu_seconds    = 15;                // RLIMIT_CPU for subprocess extractors
+    size_t max_text_bytes =
+        static_cast<size_t>(2 * 1024 * 1024); // cap extracted text per file (NFR5)
+    size_t max_read_bytes = static_cast<size_t>(32 * 1024 * 1024); // don't read more than this raw
+    int timeout_ms = 10000; // wall-clock per subprocess extractor
+    int cpu_seconds = 15;   // RLIMIT_CPU for subprocess extractors
     // Memory envelope per extractor (0 = uncapped): enforced as cgroup-v2
     // memory.max when a delegated cgroup is available, plus RLIMIT_DATA as a
     // portable fallback. Neither counts PROT_NONE address-space reservations,
     // so runtimes like GHC (pandoc) work under a real cap.
-    size_t mem_limit_bytes = 512 * 1024 * 1024;
-    int    nice           = 10;                // background priority for extractors
+    size_t mem_limit_bytes = static_cast<size_t>(512 * 1024 * 1024);
+    int nice = 10; // background priority for extractors
 };
 
 enum class ExtractStatus { Ok, Unsupported, Empty, Timeout, Error };
 
 struct ExtractResult {
     ExtractStatus status = ExtractStatus::Unsupported;
-    std::string   text;    // extracted, sanitized, capped
-    std::string   mime;    // detected MIME type
-    std::string   importer;// which importer handled it ("" if none)
+    std::string text;     // extracted, sanitized, capped
+    std::string mime;     // detected MIME type
+    std::string importer; // which importer handled it ("" if none)
 };
 
 // Detect a file's MIME type: libmagic content sniff when available, else an
@@ -39,7 +40,7 @@ struct ExtractResult {
 std::string detect_mime(const std::string& path);
 
 class Extractor {
-public:
+  public:
     // `enabled` selects/orders importers by name: "text","pdf","office","html".
     explicit Extractor(std::vector<std::string> enabled = {"text", "pdf", "office", "html"});
 
@@ -50,7 +51,7 @@ public:
     // Name of the importer that would handle (mime, path), or "" if none/disabled.
     std::string importer_for(const std::string& mime, const std::string& path) const;
 
-private:
+  private:
     std::vector<std::string> enabled_;
 };
 

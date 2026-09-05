@@ -1,17 +1,22 @@
 #include "waylaunch/wayland_core.h"
+#include <algorithm>
+#include <cairo/cairo.h>
 #include <cerrno>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <sys/mman.h>
 #include <unistd.h>
-#include <algorithm>
 #include <vector>
-#include <xkbcommon/xkbcommon.h>
-#include <cairo/cairo.h>
 #include <wayland-cursor.h>
-#include <cstdio>
-#include <cstdlib>
+#include <xkbcommon/xkbcommon.h>
 
-namespace { bool wl_dbg() { static bool v = std::getenv("WAYLAUNCH_DEBUG") != nullptr; return v; } }
+namespace {
+bool wl_dbg() {
+    static bool v = std::getenv("WAYLAUNCH_DEBUG") != nullptr;
+    return v;
+}
+} // namespace
 
 namespace {
 int create_unlinked_shm_file() {
@@ -26,7 +31,7 @@ int create_unlinked_shm_file() {
     }
     return fd;
 }
-}
+} // namespace
 
 extern "C" {
 #include "wlr-layer-shell-client-protocol.h"
@@ -44,27 +49,54 @@ namespace waylaunch {
 Buffer::~Buffer() { destroy(); }
 
 void Buffer::destroy() {
-    if (wl_buf) { wl_buffer_destroy(wl_buf); wl_buf = nullptr; }
-    if (pool) { wl_shm_pool_destroy(pool); pool = nullptr; }
-    if (data && size > 0) { munmap(data, size); data = nullptr; }
-    if (fd >= 0) { close(fd); fd = -1; }
+    if (wl_buf) {
+        wl_buffer_destroy(wl_buf);
+        wl_buf = nullptr;
+    }
+    if (pool) {
+        wl_shm_pool_destroy(pool);
+        pool = nullptr;
+    }
+    if (data && size > 0) {
+        munmap(data, size);
+        data = nullptr;
+    }
+    if (fd >= 0) {
+        close(fd);
+        fd = -1;
+    }
     busy = false;
 }
 
 Buffer::Buffer(Buffer&& o) noexcept
-    : fd(o.fd), data(o.data), wl_buf(o.wl_buf), pool(o.pool),
-      width(o.width), height(o.height), stride(o.stride), size(o.size), busy(o.busy) {
-    o.fd = -1; o.data = nullptr; o.wl_buf = nullptr; o.pool = nullptr;
-    o.width = o.height = o.stride = o.size = 0; o.busy = false;
+    : fd(o.fd), data(o.data), wl_buf(o.wl_buf), pool(o.pool), width(o.width), height(o.height),
+      stride(o.stride), size(o.size), busy(o.busy) {
+    o.fd = -1;
+    o.data = nullptr;
+    o.wl_buf = nullptr;
+    o.pool = nullptr;
+    o.width = o.height = o.stride = o.size = 0;
+    o.busy = false;
 }
 
 Buffer& Buffer::operator=(Buffer&& o) noexcept {
     if (this != &o) {
         destroy();
-        fd = o.fd; data = o.data; wl_buf = o.wl_buf; pool = o.pool;
-        width = o.width; height = o.height; stride = o.stride; size = o.size; busy = o.busy;
-        o.fd = -1; o.data = nullptr; o.wl_buf = nullptr; o.pool = nullptr;
-        o.width = o.height = o.stride = o.size = 0; o.busy = false;
+        fd = o.fd;
+        data = o.data;
+        wl_buf = o.wl_buf;
+        pool = o.pool;
+        width = o.width;
+        height = o.height;
+        stride = o.stride;
+        size = o.size;
+        busy = o.busy;
+        o.fd = -1;
+        o.data = nullptr;
+        o.wl_buf = nullptr;
+        o.pool = nullptr;
+        o.width = o.height = o.stride = o.size = 0;
+        o.busy = false;
     }
     return *this;
 }
@@ -79,26 +111,31 @@ KeyboardState::~KeyboardState() {
 
 // --- Trampolines ---
 
-static void registry_global_cb(void* data, wl_registry* reg, uint32_t name, const char* interface, uint32_t version);
+static void registry_global_cb(void* data, wl_registry* reg, uint32_t name, const char* interface,
+                               uint32_t version);
 static void registry_global_remove_cb(void* data, wl_registry* reg, uint32_t name);
-static const wl_registry_listener registry_listener = { .global = registry_global_cb, .global_remove = registry_global_remove_cb };
+static const wl_registry_listener registry_listener = {.global = registry_global_cb,
+                                                       .global_remove = registry_global_remove_cb};
 
 // Buffer release
 static void wl_buffer_release_cb(void* data, wl_buffer* buf) {
     static_cast<WaylandCore*>(data)->handle_buffer_release(buf);
 }
-static const wl_buffer_listener wl_buffer_listener = { .release = wl_buffer_release_cb };
+static const wl_buffer_listener wl_buffer_listener = {.release = wl_buffer_release_cb};
 
 // Keyboard
-static void keyboard_keymap_cb(void* data, wl_keyboard*, uint32_t format, int32_t fd, uint32_t size) {
+static void keyboard_keymap_cb(void* data, wl_keyboard*, uint32_t format, int32_t fd,
+                               uint32_t size) {
     static_cast<WaylandCore*>(data)->handle_keymap(format, fd, size);
 }
 static void keyboard_enter_cb(void*, wl_keyboard*, uint32_t, wl_surface*, wl_array*) {}
 static void keyboard_leave_cb(void*, wl_keyboard*, uint32_t, wl_surface*) {}
-static void keyboard_key_cb(void* data, wl_keyboard*, uint32_t serial, uint32_t time, uint32_t key, uint32_t state) {
+static void keyboard_key_cb(void* data, wl_keyboard*, uint32_t serial, uint32_t time, uint32_t key,
+                            uint32_t state) {
     static_cast<WaylandCore*>(data)->handle_key(serial, time, key, state);
 }
-static void keyboard_modifiers_cb(void* data, wl_keyboard*, uint32_t, uint32_t md, uint32_t ml, uint32_t mk, uint32_t g) {
+static void keyboard_modifiers_cb(void* data, wl_keyboard*, uint32_t, uint32_t md, uint32_t ml,
+                                  uint32_t mk, uint32_t g) {
     static_cast<WaylandCore*>(data)->handle_modifiers(md, ml, mk, g);
 }
 static void keyboard_repeat_info_cb(void* data, wl_keyboard*, int32_t rate, int32_t delay) {
@@ -116,11 +153,12 @@ static const wl_keyboard_listener keyboard_listener = {
 };
 
 // Pointer
-static void pointer_enter_cb(void* data, wl_pointer*, uint32_t serial, wl_surface*, wl_fixed_t x, wl_fixed_t y) {
+static void pointer_enter_cb(void* data, wl_pointer*, uint32_t serial, wl_surface*, wl_fixed_t x,
+                             wl_fixed_t y) {
     auto* self = static_cast<WaylandCore*>(data);
     self->pointer_x_ = wl_fixed_to_double(x);
     self->pointer_y_ = wl_fixed_to_double(y);
-    self->ensure_cursor(serial);   // paint a visible pointer over our surface
+    self->ensure_cursor(serial); // paint a visible pointer over our surface
     if (self->mouse_move_handler_) self->mouse_move_handler_(self->pointer_x_, self->pointer_y_);
 }
 static void pointer_leave_cb(void*, wl_pointer*, uint32_t, wl_surface*) {}
@@ -130,13 +168,18 @@ static void pointer_motion_cb(void* data, wl_pointer*, uint32_t, wl_fixed_t x, w
     self->pointer_y_ = wl_fixed_to_double(y);
     if (self->mouse_move_handler_) self->mouse_move_handler_(self->pointer_x_, self->pointer_y_);
 }
-static void pointer_button_cb(void* data, wl_pointer*, uint32_t, uint32_t, uint32_t button, uint32_t state) {
+static void pointer_button_cb(void* data, wl_pointer*, uint32_t, uint32_t, uint32_t button,
+                              uint32_t state) {
     auto* self = static_cast<WaylandCore*>(data);
-    if (self->mouse_handler_) self->mouse_handler_(self->pointer_x_, self->pointer_y_, button, state == WL_POINTER_BUTTON_STATE_PRESSED);
+    if (self->mouse_handler_)
+        self->mouse_handler_(self->pointer_x_, self->pointer_y_, button,
+                             state == WL_POINTER_BUTTON_STATE_PRESSED);
 }
 static void pointer_axis_cb(void* data, wl_pointer*, uint32_t, uint32_t axis, wl_fixed_t value) {
     auto* self = static_cast<WaylandCore*>(data);
-    if (self->axis_handler_) self->axis_handler_(self->pointer_x_, self->pointer_y_, axis, wl_fixed_to_double(value));
+    if (self->axis_handler_)
+        self->axis_handler_(self->pointer_x_, self->pointer_y_, static_cast<int32_t>(axis),
+                            wl_fixed_to_double(value));
 }
 static void pointer_frame_cb(void*, wl_pointer*) {}
 static void pointer_axis_source_cb(void*, wl_pointer*, uint32_t) {}
@@ -161,8 +204,9 @@ static const wl_pointer_listener pointer_listener = {
 // Seat
 static void seat_capabilities_cb(void* data, wl_seat* seat, uint32_t caps) {
     auto* self = static_cast<WaylandCore*>(data);
-    if (wl_dbg()) fprintf(stderr, "[wl] seat caps=%u (kbd=%d ptr=%d)\n", caps,
-                          !!(caps & WL_SEAT_CAPABILITY_KEYBOARD), !!(caps & WL_SEAT_CAPABILITY_POINTER));
+    if (wl_dbg())
+        fprintf(stderr, "[wl] seat caps=%u (kbd=%d ptr=%d)\n", caps,
+                !!(caps & WL_SEAT_CAPABILITY_KEYBOARD), !!(caps & WL_SEAT_CAPABILITY_POINTER));
     if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !self->keyboard_) {
         self->keyboard_ = wl_seat_get_keyboard(seat);
         wl_keyboard_add_listener(self->keyboard_, &keyboard_listener, self);
@@ -173,13 +217,16 @@ static void seat_capabilities_cb(void* data, wl_seat* seat, uint32_t caps) {
     }
 }
 static void seat_name_cb(void*, wl_seat*, const char*) {}
-static const wl_seat_listener seat_listener = { .capabilities = seat_capabilities_cb, .name = seat_name_cb };
+static const wl_seat_listener seat_listener = {.capabilities = seat_capabilities_cb,
+                                               .name = seat_name_cb};
 
 // Output
-static void output_geometry_cb(void* data, wl_output*, int32_t x, int32_t y, int32_t w, int32_t h, int32_t, const char*, const char*, int32_t) {
+static void output_geometry_cb(void* data, wl_output*, int32_t x, int32_t y, int32_t w, int32_t h,
+                               int32_t, const char*, const char*, int32_t) {
     static_cast<WaylandCore*>(data)->handle_output_geometry(x, y, w, h, 0, 1);
 }
-static void output_mode_cb(void* data, wl_output*, uint32_t flags, int32_t w, int32_t h, int32_t r) {
+static void output_mode_cb(void* data, wl_output*, uint32_t flags, int32_t w, int32_t h,
+                           int32_t r) {
     static_cast<WaylandCore*>(data)->handle_output_mode(flags, w, h, r);
 }
 static void output_done_cb(void*, wl_output*) {}
@@ -200,26 +247,31 @@ static const wl_output_listener output_listener = {
 };
 
 // Registry
-static void registry_global_cb(void* data, wl_registry* reg, uint32_t name, const char* interface, uint32_t) {
+static void registry_global_cb(void* data, wl_registry* reg, uint32_t name, const char* interface,
+                               uint32_t) {
     auto* self = static_cast<WaylandCore*>(data);
     if (std::strcmp(interface, wl_compositor_interface.name) == 0) {
-        self->compositor_ = static_cast<wl_compositor*>(wl_registry_bind(reg, name, &wl_compositor_interface, 4));
+        self->compositor_ =
+            static_cast<wl_compositor*>(wl_registry_bind(reg, name, &wl_compositor_interface, 4));
     } else if (std::strcmp(interface, wl_shm_interface.name) == 0) {
         self->shm_ = static_cast<wl_shm*>(wl_registry_bind(reg, name, &wl_shm_interface, 1));
     } else if (std::strcmp(interface, wl_seat_interface.name) == 0) {
         self->seat_ = static_cast<wl_seat*>(wl_registry_bind(reg, name, &wl_seat_interface, 1));
         wl_seat_add_listener(self->seat_, &seat_listener, self);
     } else if (std::strcmp(interface, wl_output_interface.name) == 0) {
-        auto* output = static_cast<wl_output*>(wl_registry_bind(reg, name, &wl_output_interface, 4));
-        self->outputs_.push_back({output, 0, 0, 1, ""});
+        auto* output =
+            static_cast<wl_output*>(wl_registry_bind(reg, name, &wl_output_interface, 4));
+        self->outputs_.push_back(
+            {.output = output, .width = 0, .height = 0, .scale = 1, .name = ""});
         wl_output_add_listener(output, &output_listener, self);
-    }
-    else if (std::strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
-        self->layer_shell_ = static_cast<zwlr_layer_shell_v1*>(wl_registry_bind(reg, name, &zwlr_layer_shell_v1_interface, 1));
+    } else if (std::strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
+        self->layer_shell_ = static_cast<zwlr_layer_shell_v1*>(
+            wl_registry_bind(reg, name, &zwlr_layer_shell_v1_interface, 1));
     }
 #ifdef HAS_SCREENCOPY
     else if (std::strcmp(interface, zwlr_screencopy_manager_v1_interface.name) == 0) {
-        self->screencopy_manager_ = static_cast<zwlr_screencopy_manager_v1*>(wl_registry_bind(reg, name, &zwlr_screencopy_manager_v1_interface, 1));
+        self->screencopy_manager_ = static_cast<zwlr_screencopy_manager_v1*>(
+            wl_registry_bind(reg, name, &zwlr_screencopy_manager_v1_interface, 1));
     }
 #endif
 #ifdef HAS_FOREIGN_TOPLEVEL
@@ -288,29 +340,29 @@ bool WaylandCore::init() {
     if (!layer_surface_) return false;
     zwlr_layer_surface_v1_set_keyboard_interactivity(
         layer_surface_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
-    zwlr_layer_surface_v1_set_anchor(layer_surface_,
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+    zwlr_layer_surface_v1_set_anchor(
+        layer_surface_, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
+                            ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
     zwlr_layer_surface_v1_set_size(layer_surface_, 0, 0);
     // -1: render above other exclusive zones (bars).
     zwlr_layer_surface_v1_set_exclusive_zone(layer_surface_, -1);
 
     static const zwlr_layer_surface_v1_listener ls_listener = {
-        .configure = [](void* data, zwlr_layer_surface_v1*, uint32_t serial, int32_t w, int32_t h) {
-            auto* self = static_cast<WaylandCore*>(data);
-            if (w > 0) self->pending_width_ = w;
-            if (h > 0) self->pending_height_ = h;
-            self->configured_ = true;
-            zwlr_layer_surface_v1_ack_configure(self->layer_surface_, serial);
-            if (self->redraw_handler_) self->redraw_handler_();
-        },
-        .closed = [](void* data, zwlr_layer_surface_v1*) {
-            auto* self = static_cast<WaylandCore*>(data);
-            if (self->close_handler_) self->close_handler_();
-            self->running_ = false;
-        },
+        .configure =
+            [](void* data, zwlr_layer_surface_v1*, uint32_t serial, int32_t w, int32_t h) {
+                auto* self = static_cast<WaylandCore*>(data);
+                if (w > 0) self->pending_width_ = w;
+                if (h > 0) self->pending_height_ = h;
+                self->configured_ = true;
+                zwlr_layer_surface_v1_ack_configure(self->layer_surface_, serial);
+                if (self->redraw_handler_) self->redraw_handler_();
+            },
+        .closed =
+            [](void* data, zwlr_layer_surface_v1*) {
+                auto* self = static_cast<WaylandCore*>(data);
+                if (self->close_handler_) self->close_handler_();
+                self->running_ = false;
+            },
     };
     zwlr_layer_surface_v1_add_listener(layer_surface_, &ls_listener, this);
 
@@ -335,10 +387,18 @@ bool WaylandCore::is_configured() const { return configured_; }
 
 OutputInfo& WaylandCore::primary_output() { return outputs_.front(); }
 int32_t WaylandCore::primary_scale() const { return outputs_.empty() ? 1 : outputs_.front().scale; }
-int32_t WaylandCore::output_width() const { return outputs_.empty() ? 1920 : outputs_.front().width; }
-int32_t WaylandCore::output_height() const { return outputs_.empty() ? 1080 : outputs_.front().height; }
-int32_t WaylandCore::surface_width() const { return pending_width_ > 0 ? pending_width_ : output_width(); }
-int32_t WaylandCore::surface_height() const { return pending_height_ > 0 ? pending_height_ : output_height(); }
+int32_t WaylandCore::output_width() const {
+    return outputs_.empty() ? 1920 : outputs_.front().width;
+}
+int32_t WaylandCore::output_height() const {
+    return outputs_.empty() ? 1080 : outputs_.front().height;
+}
+int32_t WaylandCore::surface_width() const {
+    return pending_width_ > 0 ? pending_width_ : output_width();
+}
+int32_t WaylandCore::surface_height() const {
+    return pending_height_ > 0 ? pending_height_ : output_height();
+}
 wl_display* WaylandCore::display() const { return display_; }
 wl_surface* WaylandCore::surface() const { return surface_; }
 wl_seat* WaylandCore::seat() const { return seat_; }
@@ -376,7 +436,8 @@ Buffer* WaylandCore::acquire_buffer() {
         return nullptr;
     }
 
-    buf->data = static_cast<uint8_t*>(mmap(nullptr, buf->size, PROT_READ | PROT_WRITE, MAP_SHARED, buf->fd, 0));
+    buf->data = static_cast<uint8_t*>(
+        mmap(nullptr, buf->size, PROT_READ | PROT_WRITE, MAP_SHARED, buf->fd, 0));
     if (buf->data == MAP_FAILED) {
         buf->data = nullptr;
         buf->destroy();
@@ -388,7 +449,8 @@ Buffer* WaylandCore::acquire_buffer() {
         buf->destroy();
         return nullptr;
     }
-    buf->wl_buf = wl_shm_pool_create_buffer(buf->pool, 0, w, h, buf->stride, WL_SHM_FORMAT_ARGB8888);
+    buf->wl_buf =
+        wl_shm_pool_create_buffer(buf->pool, 0, w, h, buf->stride, WL_SHM_FORMAT_ARGB8888);
     wl_shm_pool_destroy(buf->pool);
     buf->pool = nullptr;
     if (!buf->wl_buf) {
@@ -432,11 +494,9 @@ void WaylandCore::remap_surface() {
     // render attaches the first buffer and thereby maps + regains the keyboard.
     zwlr_layer_surface_v1_set_keyboard_interactivity(
         layer_surface_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
-    zwlr_layer_surface_v1_set_anchor(layer_surface_,
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+    zwlr_layer_surface_v1_set_anchor(
+        layer_surface_, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
+                            ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
     zwlr_layer_surface_v1_set_size(layer_surface_, 0, 0);
     zwlr_layer_surface_v1_set_exclusive_zone(layer_surface_, -1);
     wl_surface_commit(surface_);
@@ -461,18 +521,24 @@ void WaylandCore::ensure_cursor(uint32_t serial) {
 
     if (!cursor_theme_) {
         const char* size_env = std::getenv("XCURSOR_SIZE");
-        int size = size_env ? std::atoi(size_env) : 24;
+        int size = 24;
+        if (size_env) {
+            char* end = nullptr;
+            long parsed = std::strtol(size_env, &end, 10);
+            if (end != size_env) { size = static_cast<int>(parsed); }
+        }
         if (size <= 0) size = 24;
-        const char* theme_env = std::getenv("XCURSOR_THEME");   // nullptr = default theme
+        const char* theme_env = std::getenv("XCURSOR_THEME"); // nullptr = default theme
         cursor_theme_ = wl_cursor_theme_load(theme_env, size, shm_);
         if (cursor_theme_) {
             cursor_ = wl_cursor_theme_get_cursor(cursor_theme_, "default");
             if (!cursor_) cursor_ = wl_cursor_theme_get_cursor(cursor_theme_, "left_ptr");
         }
-        if (!cursor_surface_)
-            cursor_surface_ = wl_compositor_create_surface(compositor_);
-        if (wl_dbg()) fprintf(stderr, "[wl] cursor theme=%p cursor=%p surface=%p\n",
-                              (void*)cursor_theme_, (void*)cursor_, (void*)cursor_surface_);
+        if (!cursor_surface_) cursor_surface_ = wl_compositor_create_surface(compositor_);
+        if (wl_dbg())
+            fprintf(stderr, "[wl] cursor theme=%p cursor=%p surface=%p\n",
+                    reinterpret_cast<void*>(cursor_theme_), reinterpret_cast<void*>(cursor_),
+                    reinterpret_cast<void*>(cursor_surface_));
     }
 
     if (!cursor_ || !cursor_surface_ || cursor_->image_count == 0) {
@@ -483,10 +549,11 @@ void WaylandCore::ensure_cursor(uint32_t serial) {
 
     wl_cursor_image* img = cursor_->images[0];
     wl_buffer* buf = wl_cursor_image_get_buffer(img);
-    wl_pointer_set_cursor(pointer_, serial, cursor_surface_,
-                          img->hotspot_x, img->hotspot_y);
+    wl_pointer_set_cursor(pointer_, serial, cursor_surface_, static_cast<int32_t>(img->hotspot_x),
+                          static_cast<int32_t>(img->hotspot_y));
     wl_surface_attach(cursor_surface_, buf, 0, 0);
-    wl_surface_damage(cursor_surface_, 0, 0, img->width, img->height);
+    wl_surface_damage(cursor_surface_, 0, 0, static_cast<int32_t>(img->width),
+                      static_cast<int32_t>(img->height));
     wl_surface_commit(cursor_surface_);
 }
 
@@ -500,10 +567,14 @@ void WaylandCore::set_redraw_handler(RedrawHandler h) { redraw_handler_ = std::m
 
 void WaylandCore::handle_keymap(uint32_t format, int32_t fd, uint32_t size) {
     if (wl_dbg()) fprintf(stderr, "[wl] keymap format=%u size=%u\n", format, size);
-    if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) { close(fd); return; }
+    if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
+        close(fd);
+        return;
+    }
     char* map = static_cast<char*>(mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0));
     if (kbd_.keymap) xkb_keymap_unref(kbd_.keymap);
-    kbd_.keymap = xkb_keymap_new_from_string(kbd_.xkb_ctx, map, XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    kbd_.keymap = xkb_keymap_new_from_string(kbd_.xkb_ctx, map, XKB_KEYMAP_FORMAT_TEXT_V1,
+                                             XKB_KEYMAP_COMPILE_NO_FLAGS);
     munmap(map, size);
     close(fd);
     if (kbd_.state) xkb_state_unref(kbd_.state);
@@ -511,7 +582,9 @@ void WaylandCore::handle_keymap(uint32_t format, int32_t fd, uint32_t size) {
 }
 
 void WaylandCore::handle_key(uint32_t, uint32_t time, uint32_t key, uint32_t state) {
-    if (wl_dbg()) fprintf(stderr, "[wl] key code=%u state=%u (xkb_state=%p)\n", key, state, (void*)kbd_.state);
+    if (wl_dbg())
+        fprintf(stderr, "[wl] key code=%u state=%u (xkb_state=%p)\n", key, state,
+                reinterpret_cast<void*>(kbd_.state));
     if (!kbd_.state) return;
     xkb_keysym_t keysym = xkb_state_key_get_one_sym(kbd_.state, key + 8);
     uint32_t utf32 = xkb_state_key_get_utf32(kbd_.state, key + 8);
@@ -528,7 +601,7 @@ void WaylandCore::handle_key(uint32_t, uint32_t time, uint32_t key, uint32_t sta
     }
 }
 
-void WaylandCore::handle_modifiers(uint32_t md, uint32_t ml, uint32_t mk, uint32_t g) {
+void WaylandCore::handle_modifiers(uint32_t md, uint32_t ml, uint32_t mk, uint32_t g) const {
     if (!kbd_.state) return;
     xkb_state_update_mask(kbd_.state, md, ml, mk, 0, 0, g);
     if (modifiers_handler_) modifiers_handler_(md);
@@ -555,7 +628,8 @@ void WaylandCore::handle_output_name(const std::string& n) {
 
 // --- Backdrop capture (glassmorphism) ---
 #ifdef HAS_SCREENCOPY
-static void sc_buffer_cb(void* d, zwlr_screencopy_frame_v1*, uint32_t fmt, uint32_t w, uint32_t h, uint32_t stride) {
+static void sc_buffer_cb(void* d, zwlr_screencopy_frame_v1*, uint32_t fmt, uint32_t w, uint32_t h,
+                         uint32_t stride) {
     static_cast<WaylandCore*>(d)->handle_sc_buffer(fmt, w, h, stride);
 }
 static void sc_flags_cb(void* d, zwlr_screencopy_frame_v1*, uint32_t flags) {
@@ -575,30 +649,49 @@ static const zwlr_screencopy_frame_v1_listener sc_frame_listener = {
 };
 
 void WaylandCore::handle_sc_buffer(uint32_t format, uint32_t w, uint32_t h, uint32_t stride) {
-    if (cap_wl_buffer_ || backdrop_failed_) return;   // only handle the first offered format
+    if (cap_wl_buffer_ || backdrop_failed_) return; // only handle the first offered format
     backdrop_format_ = format;
     backdrop_w_ = static_cast<int>(w);
     backdrop_h_ = static_cast<int>(h);
     backdrop_stride_ = static_cast<int>(stride);
     cap_size_ = static_cast<int>(stride * h);
-    if (cap_size_ <= 0) { backdrop_failed_ = true; return; }
+    if (cap_size_ <= 0) {
+        backdrop_failed_ = true;
+        return;
+    }
 
     cap_fd_ = create_unlinked_shm_file();
-    if (cap_fd_ < 0) { backdrop_failed_ = true; return; }
+    if (cap_fd_ < 0) {
+        backdrop_failed_ = true;
+        return;
+    }
     if (ftruncate(cap_fd_, cap_size_) < 0) {
         close(cap_fd_);
         cap_fd_ = -1;
         backdrop_failed_ = true;
         return;
     }
-    cap_data_ = static_cast<uint8_t*>(mmap(nullptr, cap_size_, PROT_READ | PROT_WRITE, MAP_SHARED, cap_fd_, 0));
-    if (cap_data_ == MAP_FAILED) { cap_data_ = nullptr; backdrop_failed_ = true; return; }
+    cap_data_ = static_cast<uint8_t*>(
+        mmap(nullptr, cap_size_, PROT_READ | PROT_WRITE, MAP_SHARED, cap_fd_, 0));
+    if (cap_data_ == MAP_FAILED) {
+        cap_data_ = nullptr;
+        backdrop_failed_ = true;
+        return;
+    }
 
     wl_shm_pool* pool = wl_shm_create_pool(shm_, cap_fd_, cap_size_);
-    if (!pool) { backdrop_failed_ = true; return; }
-    cap_wl_buffer_ = wl_shm_pool_create_buffer(pool, 0, w, h, stride, format);
+    if (!pool) {
+        backdrop_failed_ = true;
+        return;
+    }
+    cap_wl_buffer_ =
+        wl_shm_pool_create_buffer(pool, 0, static_cast<int32_t>(w), static_cast<int32_t>(h),
+                                  static_cast<int32_t>(stride), format);
     wl_shm_pool_destroy(pool);
-    if (!cap_wl_buffer_) { backdrop_failed_ = true; return; }
+    if (!cap_wl_buffer_) {
+        backdrop_failed_ = true;
+        return;
+    }
     zwlr_screencopy_frame_v1_copy(cap_frame_, cap_wl_buffer_);
 }
 
@@ -619,7 +712,10 @@ bool WaylandCore::capture_backdrop() {
     zwlr_screencopy_frame_v1_add_listener(cap_frame_, &sc_frame_listener, this);
 
     while (!backdrop_ready_ && !backdrop_failed_) {
-        if (wl_display_dispatch(display_) < 0) { backdrop_failed_ = true; break; }
+        if (wl_display_dispatch(display_) < 0) {
+            backdrop_failed_ = true;
+            break;
+        }
     }
 
     if (backdrop_ready_ && cap_data_ && cap_size_ > 0) {
@@ -627,15 +723,28 @@ bool WaylandCore::capture_backdrop() {
         has_backdrop_ = true;
     }
 
-    if (cap_frame_) { zwlr_screencopy_frame_v1_destroy(cap_frame_); cap_frame_ = nullptr; }
-    if (cap_wl_buffer_) { wl_buffer_destroy(cap_wl_buffer_); cap_wl_buffer_ = nullptr; }
-    if (cap_data_ && cap_size_ > 0) { munmap(cap_data_, cap_size_); cap_data_ = nullptr; }
-    if (cap_fd_ >= 0) { close(cap_fd_); cap_fd_ = -1; }
+    if (cap_frame_) {
+        zwlr_screencopy_frame_v1_destroy(cap_frame_);
+        cap_frame_ = nullptr;
+    }
+    if (cap_wl_buffer_) {
+        wl_buffer_destroy(cap_wl_buffer_);
+        cap_wl_buffer_ = nullptr;
+    }
+    if (cap_data_ && cap_size_ > 0) {
+        munmap(cap_data_, cap_size_);
+        cap_data_ = nullptr;
+    }
+    if (cap_fd_ >= 0) {
+        close(cap_fd_);
+        cap_fd_ = -1;
+    }
     cap_size_ = 0;
 
-    if (wl_dbg()) fprintf(stderr, "[wl] backdrop ready=%d fail=%d has=%d fmt=%u %dx%d stride=%d yinv=%d\n",
-                          backdrop_ready_, backdrop_failed_, has_backdrop_, backdrop_format_,
-                          backdrop_w_, backdrop_h_, backdrop_stride_, backdrop_y_invert_);
+    if (wl_dbg())
+        fprintf(stderr, "[wl] backdrop ready=%d fail=%d has=%d fmt=%u %dx%d stride=%d yinv=%d\n",
+                backdrop_ready_, backdrop_failed_, has_backdrop_, backdrop_format_, backdrop_w_,
+                backdrop_h_, backdrop_stride_, backdrop_y_invert_);
     return has_backdrop_;
 }
 

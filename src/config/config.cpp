@@ -1,7 +1,7 @@
 #include "waylaunch/config.h"
-#include <fstream>
-#include <filesystem>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 
 namespace waylaunch {
@@ -19,7 +19,8 @@ std::string Config::config_dir() {
 
 std::string Config::default_config_path() { return config_dir() + "/config.toml"; }
 
-static std::string get_str(const toml::table& t, const std::string& key, const std::string& def = "") {
+static std::string get_str(const toml::table& t, const std::string& key,
+                           const std::string& def = "") {
     auto node = t[key];
     if (node) {
         if (auto s = node.value<std::string>()) return *s;
@@ -55,51 +56,72 @@ bool Config::load(const std::string& path) {
     try {
         auto tbl = toml::parse_file(path);
 
-        if (auto general = tbl["general"].as_table()) {
+        if (auto* general = tbl["general"].as_table()) {
             config_.general.app_name = get_str(*general, "name", config_.general.app_name);
             config_.general.version = get_int(*general, "version", config_.general.version);
             config_.general.debug = get_bool(*general, "debug", config_.general.debug);
         }
 
-        if (auto theme = tbl["theme"].as_table()) {
+        if (auto* theme = tbl["theme"].as_table()) {
             config_.theme.name = get_str(*theme, "name", config_.theme.name);
             config_.theme.mode = get_str(*theme, "mode", config_.theme.mode);
             config_.theme.custom_path = get_str(*theme, "custom_path", config_.theme.custom_path);
 
-            if (auto colors = (*theme)["colors"].as_table()) {
-                config_.theme.colors.background = get_str(*colors, "background", config_.theme.colors.background);
-                config_.theme.colors.background_alt = get_str(*colors, "background_alt", config_.theme.colors.background_alt);
-                config_.theme.colors.foreground = get_str(*colors, "foreground", config_.theme.colors.foreground);
-                config_.theme.colors.text_muted = get_str(*colors, "text_muted", config_.theme.colors.text_muted);
-                config_.theme.colors.accent = get_str(*colors, "accent", config_.theme.colors.accent);
-                config_.theme.colors.accent_hover = get_str(*colors, "accent_hover", config_.theme.colors.accent_hover);
+            if (auto* colors = (*theme)["colors"].as_table()) {
+                config_.theme.colors.background =
+                    get_str(*colors, "background", config_.theme.colors.background);
+                config_.theme.colors.background_alt =
+                    get_str(*colors, "background_alt", config_.theme.colors.background_alt);
+                config_.theme.colors.foreground =
+                    get_str(*colors, "foreground", config_.theme.colors.foreground);
+                config_.theme.colors.text_muted =
+                    get_str(*colors, "text_muted", config_.theme.colors.text_muted);
+                config_.theme.colors.accent =
+                    get_str(*colors, "accent", config_.theme.colors.accent);
+                config_.theme.colors.accent_hover =
+                    get_str(*colors, "accent_hover", config_.theme.colors.accent_hover);
                 config_.theme.colors.error = get_str(*colors, "error", config_.theme.colors.error);
-                config_.theme.colors.warning = get_str(*colors, "warning", config_.theme.colors.warning);
-                config_.theme.colors.success = get_str(*colors, "success", config_.theme.colors.success);
-                config_.theme.colors.border = get_str(*colors, "border", config_.theme.colors.border);
-                config_.theme.colors.selection = get_str(*colors, "selection", config_.theme.colors.selection);
+                config_.theme.colors.warning =
+                    get_str(*colors, "warning", config_.theme.colors.warning);
+                config_.theme.colors.success =
+                    get_str(*colors, "success", config_.theme.colors.success);
+                config_.theme.colors.border =
+                    get_str(*colors, "border", config_.theme.colors.border);
+                config_.theme.colors.selection =
+                    get_str(*colors, "selection", config_.theme.colors.selection);
             }
-            if (auto font = (*theme)["input_font"].as_table()) {
-                config_.theme.input_font.family = get_str(*font, "family", config_.theme.input_font.family);
-                config_.theme.input_font.size = get_double(*font, "size", config_.theme.input_font.size);
+            if (auto* font = (*theme)["input_font"].as_table()) {
+                config_.theme.input_font.family =
+                    get_str(*font, "family", config_.theme.input_font.family);
+                config_.theme.input_font.size =
+                    get_double(*font, "size", config_.theme.input_font.size);
             }
-            if (auto font = (*theme)["result_font"].as_table()) {
-                config_.theme.result_font.family = get_str(*font, "family", config_.theme.result_font.family);
-                config_.theme.result_font.size = get_double(*font, "size", config_.theme.result_font.size);
-                config_.theme.result_font.weight = get_str(*font, "weight", config_.theme.result_font.weight);
-                config_.theme.result_font.style = get_str(*font, "style", config_.theme.result_font.style);
+            if (auto* font = (*theme)["result_font"].as_table()) {
+                config_.theme.result_font.family =
+                    get_str(*font, "family", config_.theme.result_font.family);
+                config_.theme.result_font.size =
+                    get_double(*font, "size", config_.theme.result_font.size);
+                config_.theme.result_font.weight =
+                    get_str(*font, "weight", config_.theme.result_font.weight);
+                config_.theme.result_font.style =
+                    get_str(*font, "style", config_.theme.result_font.style);
             }
-            if (auto font = (*theme)["result_detail_font"].as_table()) {
-                config_.theme.result_detail_font.family = get_str(*font, "family", config_.theme.result_detail_font.family);
-                config_.theme.result_detail_font.size = get_double(*font, "size", config_.theme.result_detail_font.size);
-                config_.theme.result_detail_font.weight = get_str(*font, "weight", config_.theme.result_detail_font.weight);
-                config_.theme.result_detail_font.style = get_str(*font, "style", config_.theme.result_detail_font.style);
+            if (auto* font = (*theme)["result_detail_font"].as_table()) {
+                config_.theme.result_detail_font.family =
+                    get_str(*font, "family", config_.theme.result_detail_font.family);
+                config_.theme.result_detail_font.size =
+                    get_double(*font, "size", config_.theme.result_detail_font.size);
+                config_.theme.result_detail_font.weight =
+                    get_str(*font, "weight", config_.theme.result_detail_font.weight);
+                config_.theme.result_detail_font.style =
+                    get_str(*font, "style", config_.theme.result_detail_font.style);
             }
-            config_.theme.corner_radius = get_int(*theme, "corner_radius", config_.theme.corner_radius);
+            config_.theme.corner_radius =
+                get_int(*theme, "corner_radius", config_.theme.corner_radius);
             config_.theme.opacity = get_double(*theme, "opacity", config_.theme.opacity);
         }
 
-        if (auto ap = tbl["appearance"].as_table()) {
+        if (auto* ap = tbl["appearance"].as_table()) {
             auto& a = config_.appearance;
             a.width = get_int(*ap, "width", a.width);
             a.margin_top = get_int(*ap, "margin_top", a.margin_top);
@@ -115,30 +137,36 @@ bool Config::load(const std::string& path) {
             a.backdrop_tint = get_double(*ap, "backdrop_tint", a.backdrop_tint);
         }
 
-        if (auto search = tbl["search"].as_table()) {
-            config_.search.placeholder = get_str(*search, "placeholder", config_.search.placeholder);
+        if (auto* search = tbl["search"].as_table()) {
+            config_.search.placeholder =
+                get_str(*search, "placeholder", config_.search.placeholder);
 
-            config_.search.enable_applications = get_bool(*search, "applications", config_.search.enable_applications);
+            config_.search.enable_applications =
+                get_bool(*search, "applications", config_.search.enable_applications);
             config_.search.enable_files = get_bool(*search, "files", config_.search.enable_files);
-            config_.search.enable_calculator = get_bool(*search, "calculator", config_.search.enable_calculator);
-            config_.search.enable_commands = get_bool(*search, "commands", config_.search.enable_commands);
-            config_.search.file_min_query = get_int(*search, "file_min_query", config_.search.file_min_query);
-            config_.search.max_file_results = get_int(*search, "max_file_results", config_.search.max_file_results);
+            config_.search.enable_calculator =
+                get_bool(*search, "calculator", config_.search.enable_calculator);
+            config_.search.enable_commands =
+                get_bool(*search, "commands", config_.search.enable_commands);
+            config_.search.file_min_query =
+                get_int(*search, "file_min_query", config_.search.file_min_query);
+            config_.search.max_file_results =
+                get_int(*search, "max_file_results", config_.search.max_file_results);
 
-            if (auto roots = (*search)["file_roots"].as_array()) {
+            if (auto* roots = (*search)["file_roots"].as_array()) {
                 config_.search.file_roots.clear();
                 for (auto& e : *roots)
                     if (auto s = e.value<std::string>()) config_.search.file_roots.push_back(*s);
             }
-            if (auto ex = (*search)["file_excludes"].as_array()) {
+            if (auto* ex = (*search)["file_excludes"].as_array()) {
                 config_.search.file_excludes.clear();
                 for (auto& e : *ex)
                     if (auto s = e.value<std::string>()) config_.search.file_excludes.push_back(*s);
             }
 
-            if (auto paths = (*search)["paths"].as_array()) {
+            if (auto* paths = (*search)["paths"].as_array()) {
                 for (auto& entry : *paths) {
-                    if (auto tbl2 = entry.as_table()) {
+                    if (auto* tbl2 = entry.as_table()) {
                         SearchPath sp;
                         sp.path = get_str(*tbl2, "path");
                         sp.type = get_str(*tbl2, "type");
@@ -149,16 +177,16 @@ bool Config::load(const std::string& path) {
             }
         }
 
-        if (auto history = tbl["history"].as_table()) {
+        if (auto* history = tbl["history"].as_table()) {
             auto& h = config_.history;
             h.enabled = get_bool(*history, "enabled", h.enabled);
             h.max_entries = get_int(*history, "max_entries", h.max_entries);
             h.max_age_days = get_int(*history, "max_age_days", h.max_age_days);
-            h.frecency_half_life_days = get_double(*history, "frecency_half_life_days",
-                                                   h.frecency_half_life_days);
+            h.frecency_half_life_days =
+                get_double(*history, "frecency_half_life_days", h.frecency_half_life_days);
         }
 
-        if (auto switcher = tbl["app_switcher"].as_table()) {
+        if (auto* switcher = tbl["app_switcher"].as_table()) {
             auto& sw = config_.app_switcher;
             sw.enabled = get_bool(*switcher, "enabled", sw.enabled);
             sw.modifier = get_str(*switcher, "modifier", sw.modifier);
@@ -171,31 +199,32 @@ bool Config::load(const std::string& path) {
             sw.activate_command = get_str(*switcher, "activate_command", sw.activate_command);
         }
 
-        if (auto power = tbl["power"].as_table()) {
+        if (auto* power = tbl["power"].as_table()) {
             auto& pw = config_.power;
-            pw.confirm_destructive = get_bool(*power, "confirm_destructive", pw.confirm_destructive);
+            pw.confirm_destructive =
+                get_bool(*power, "confirm_destructive", pw.confirm_destructive);
             pw.countdown_seconds = get_int(*power, "countdown_seconds", pw.countdown_seconds);
             pw.font_scale = get_double(*power, "font_scale", pw.font_scale);
             // An explicitly-present empty array disables the overlay, so only
             // replace the defaults when the key exists.
-            if (auto acts = (*power)["enabled_actions"].as_array()) {
+            if (auto* acts = (*power)["enabled_actions"].as_array()) {
                 pw.enabled_actions.clear();
                 for (auto& e : *acts)
                     if (auto s = e.value<std::string>()) pw.enabled_actions.push_back(*s);
             }
-            if (auto cmds = (*power)["commands"].as_table()) {
+            if (auto* cmds = (*power)["commands"].as_table()) {
                 for (auto& [k, v] : *cmds)
                     if (auto s = v.value<std::string>()) pw.commands[std::string(k.str())] = *s;
             }
-            if (auto texts = (*power)["confirm_text"].as_table()) {
+            if (auto* texts = (*power)["confirm_text"].as_table()) {
                 for (auto& [k, v] : *texts)
                     if (auto s = v.value<std::string>()) pw.confirm_text[std::string(k.str())] = *s;
             }
         }
 
-        if (auto commands = tbl["commands"].as_array()) {
+        if (auto* commands = tbl["commands"].as_array()) {
             for (auto& entry : *commands) {
-                if (auto tbl2 = entry.as_table()) {
+                if (auto* tbl2 = entry.as_table()) {
                     Command cmd;
                     cmd.name = get_str(*tbl2, "name");
                     cmd.command = get_str(*tbl2, "command");
@@ -311,7 +340,8 @@ bool Config::save(const std::string& path) const {
         file << "\"" << config_.power.enabled_actions[i] << "\"";
     }
     file << "]\n";
-    file << "confirm_destructive = " << (config_.power.confirm_destructive ? "true" : "false") << "\n";
+    file << "confirm_destructive = " << (config_.power.confirm_destructive ? "true" : "false")
+         << "\n";
     file << "countdown_seconds = " << config_.power.countdown_seconds << "\n";
     file << "font_scale = " << config_.power.font_scale << "\n";
     auto write_map = [&](const std::string& sec, const std::map<std::string, std::string>& m) {

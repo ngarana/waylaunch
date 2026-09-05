@@ -10,10 +10,12 @@ namespace waylaunch {
 
 namespace {
 
-bool power_dbg() { static bool v = std::getenv("WAYLAUNCH_DEBUG") != nullptr; return v; }
+bool power_dbg() {
+    static bool v = std::getenv("WAYLAUNCH_DEBUG") != nullptr;
+    return v;
+}
 
-constexpr const char* kSubtext =
-    "Open apps will be closed. Unsaved work will be lost.";
+constexpr const char* kSubtext = "Open apps will be closed. Unsaved work will be lost.";
 
 // The six built-in actions (§4.1). `confirm_text` here is the localizable
 // phrase; the full headline is composed below so a [power.confirm_text]
@@ -23,8 +25,8 @@ struct ActionDefault {
     const char* name;
     const char* command;
     const char* icon;
-    const char* phrase;        // "" = non-destructive, no dialog
-    bool session_ending;       // subtext + red confirm button
+    const char* phrase;  // "" = non-destructive, no dialog
+    bool session_ending; // subtext + red confirm button
 };
 
 // The four system power verbs live on `systemctl` under systemd but on
@@ -32,12 +34,42 @@ struct ActionDefault {
 // poweroff/hibernate. Default to systemctl (the common case); execute()
 // normalizes to whichever binary actually exists at action time.
 constexpr ActionDefault kDefaults[] = {
-    {"lock",      "Lock",      "loginctl lock-session", "system-lock-screen",       "",                              false},
-    {"restart",   "Restart",   "systemctl reboot",      "system-reboot",            "restart your computer",         true},
-    {"exit",      "Exit",      "wayland-logout",        "system-log-out",           "log out now",                   true},
-    {"hibernate", "Hibernate", "systemctl hibernate",   "system-suspend-hibernate", "hibernate your computer",       false},
-    {"suspend",   "Suspend",   "systemctl suspend",     "system-suspend",           "put your computer to sleep",    false},
-    {"shutdown",  "Shut Down", "systemctl poweroff",    "system-shutdown",          "shut down your computer now",   true},
+    {.id = "lock",
+     .name = "Lock",
+     .command = "loginctl lock-session",
+     .icon = "system-lock-screen",
+     .phrase = "",
+     .session_ending = false},
+    {.id = "restart",
+     .name = "Restart",
+     .command = "systemctl reboot",
+     .icon = "system-reboot",
+     .phrase = "restart your computer",
+     .session_ending = true},
+    {.id = "exit",
+     .name = "Exit",
+     .command = "wayland-logout",
+     .icon = "system-log-out",
+     .phrase = "log out now",
+     .session_ending = true},
+    {.id = "hibernate",
+     .name = "Hibernate",
+     .command = "systemctl hibernate",
+     .icon = "system-suspend-hibernate",
+     .phrase = "hibernate your computer",
+     .session_ending = false},
+    {.id = "suspend",
+     .name = "Suspend",
+     .command = "systemctl suspend",
+     .icon = "system-suspend",
+     .phrase = "put your computer to sleep",
+     .session_ending = false},
+    {.id = "shutdown",
+     .name = "Shut Down",
+     .command = "systemctl poweroff",
+     .icon = "system-shutdown",
+     .phrase = "shut down your computer now",
+     .session_ending = true},
 };
 
 bool is_power_verb(const std::string& v) {
@@ -63,7 +95,11 @@ std::vector<std::string> PowerActionBackend::split_argv(const std::string& comma
             quote = c;
             in_word = true;
         } else if (c == ' ' || c == '\t') {
-            if (in_word) { argv.push_back(cur); cur.clear(); in_word = false; }
+            if (in_word) {
+                argv.push_back(cur);
+                cur.clear();
+                in_word = false;
+            }
         } else {
             cur += c;
             in_word = true;
@@ -76,9 +112,9 @@ std::vector<std::string> PowerActionBackend::split_argv(const std::string& comma
 PowerActionBackend::PowerActionBackend(const PowerConfig& cfg) {
     // enabled_actions drives both filtering and display order (§4.6).
     for (const auto& id : cfg.enabled_actions) {
-        const auto* def = std::find_if(std::begin(kDefaults), std::end(kDefaults),
-                                       [&](const ActionDefault& d) { return id == d.id; });
-        if (def == std::end(kDefaults)) continue;   // unknown id: ignore
+        const auto* def =
+            std::ranges::find_if(kDefaults, [&](const ActionDefault& d) { return id == d.id; });
+        if (def == std::end(kDefaults)) continue; // unknown id: ignore
 
         PowerAction a;
         a.id = def->id;
@@ -92,8 +128,8 @@ PowerActionBackend::PowerActionBackend(const PowerConfig& cfg) {
 
         if (a.destructive) {
             auto phrase = cfg.confirm_text.find(a.id);
-            a.confirm_text = compose_headline(
-                phrase != cfg.confirm_text.end() ? phrase->second : def->phrase);
+            a.confirm_text =
+                compose_headline(phrase != cfg.confirm_text.end() ? phrase->second : def->phrase);
         }
         actions_.push_back(std::move(a));
     }
@@ -106,18 +142,15 @@ std::vector<std::string> PowerActionBackend::resolve_argv(const PowerAction& act
     // hardcoded into config (§4.1): terminate this session, else this user.
     if (action.id == "exit" && !argv.empty() && !Subprocess::command_exists(argv[0])) {
         const char* sid = std::getenv("XDG_SESSION_ID");
-        if (sid && sid[0])
-            argv = {"loginctl", "terminate-session", sid};
-        else
-            argv = {"loginctl", "terminate-user", std::to_string(::getuid())};
+        if (sid && sid[0]) argv = {"loginctl", "terminate-session", sid};
+        else argv = {"loginctl", "terminate-user", std::to_string(::getuid())};
     }
 
     // Same action-time choice for the power verbs: pick the binary that can
     // actually perform them here — systemctl on systemd, loginctl on elogind.
     // Also rescues configs carrying the other init system's spelling.
     if (argv.size() >= 2 && is_power_verb(argv[1])) {
-        if (argv[0] == "loginctl" && Subprocess::command_exists("systemctl"))
-            argv[0] = "systemctl";
+        if (argv[0] == "loginctl" && Subprocess::command_exists("systemctl")) argv[0] = "systemctl";
         else if (argv[0] == "systemctl" && !Subprocess::command_exists("systemctl") &&
                  Subprocess::command_exists("loginctl"))
             argv[0] = "loginctl";
@@ -129,8 +162,7 @@ int PowerActionBackend::execute(const PowerAction& action) {
     std::vector<std::string> argv = resolve_argv(action);
     if (argv.empty()) return -1;
     if (power_dbg()) {
-        fprintf(stderr, "[power] execute id=%s argv0=%s\n",
-                action.id.c_str(), argv[0].c_str());
+        fprintf(stderr, "[power] execute id=%s argv0=%s\n", action.id.c_str(), argv[0].c_str());
     }
 
     ProcessResult res = Subprocess::run(argv);
@@ -139,9 +171,8 @@ int PowerActionBackend::execute(const PowerAction& action) {
         // and why, so a misconfigured command isn't a silent no-op.
         std::string err = res.stderr;
         while (!err.empty() && (err.back() == '\n' || err.back() == '\r')) err.pop_back();
-        fprintf(stderr, "waylaunch: power action '%s' failed (exit %d)%s%s\n",
-                action.id.c_str(), res.exit_code,
-                err.empty() ? "" : ": ", err.c_str());
+        fprintf(stderr, "waylaunch: power action '%s' failed (exit %d)%s%s\n", action.id.c_str(),
+                res.exit_code, err.empty() ? "" : ": ", err.c_str());
     }
     return res.exit_code;
 }
