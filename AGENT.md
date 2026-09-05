@@ -97,6 +97,12 @@ changes in the working tree.
   with `-UNDEBUG` (without it, Release `NDEBUG` silently disables every
   `assert`). Mirror the `power_manager_test` pattern: pure logic behind an
   interface, `FakeBackend` records calls, no I/O in the unit under test.
+- Every assert-based suite must carry `-UNDEBUG` — no exceptions. A local
+  `build/` configured with `RelWithDebInfo`/`Release` once hid a real
+  `Subprocess::run` stdin-direction bug behind a 21/21 "green" run while CI
+  (default build type, asserts live) failed. Distrust any green run you did
+  not verify: check `CMAKE_BUILD_TYPE` in `build/CMakeCache.txt`, and when
+  in doubt rebuild the single test with `-UNDEBUG` and run it directly.
 - New compositor coupling goes behind a seam interface (cf.
   `IToplevelBackend`, `IPlacementBackend`) so the core stays testable without
   a compositor. Keep every IPC/dispatcher string in the backend `.cpp`, none

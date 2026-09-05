@@ -79,11 +79,11 @@ int main() {
 
     FsWatcher watcher({base.string()},
                       [&](const std::string& p) { return indexer.is_excluded(p); });
-    watcher.start(
-        {.on_index = [&](const std::string& p) { indexer.enqueue_index(p); },
-         .on_remove = [&](const std::string& p) { indexer.enqueue_remove(p); },
-         .on_overflow = [&] { indexer.request_reconcile(); },
-         .on_remove_tree = [&](const std::string& p) { indexer.enqueue_remove_tree(p); }});
+    watcher.start({.on_index = [&](const std::string& p) { indexer.enqueue_index(p); },
+                   .on_remove = [&](const std::string& p) { indexer.enqueue_remove(p); },
+                   .on_overflow = [&] { indexer.request_reconcile(); },
+                   .on_remove_tree = [&](const std::string& p) { indexer.enqueue_remove_tree(p); },
+                   .on_watch_limit = [] {}});
     std::this_thread::sleep_for(100ms);
 
     wf(base / "beta.txt", "a brand new file about aardvark");

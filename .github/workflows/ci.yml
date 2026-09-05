@@ -18,6 +18,14 @@ jobs:
           chmod +x llvm.sh
           sudo ./llvm.sh 22
           sudo apt-get install -y clang-format-22 clang-tidy-22
+      - name: Install build dependencies (for compile_commands configure)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake g++ pkg-config wayland-protocols libwayland-dev \
+            libxkbcommon-dev libcairo2-dev libpango1.0-dev \
+            libfontconfig1-dev librsvg2-dev libsqlite3-dev \
+            libzstd-dev libmagic-dev nlohmann-json3-dev libtomlplusplus-dev
       - name: clang-format check
         run: |
           clang-format-22 --dry-run --Werror \

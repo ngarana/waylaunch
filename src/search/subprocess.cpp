@@ -56,14 +56,18 @@ ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::s
         action_error = result;
         return false;
     };
+    // Child plumbing: it reads stdin_pipe[0], writes stdout_pipe[1] and
+    // stderr_pipe[1]; every other pipe end is closed. (An earlier revision
+    // had stdin backwards — duping the write end onto stdin — which surfaced
+    // as `cat: -: Bad file descriptor` wherever asserts were enabled.)
     const bool actions_ready =
-        add_action(posix_spawn_file_actions_addclose(&actions, stdin_pipe[0])) &&
+        add_action(posix_spawn_file_actions_addclose(&actions, stdin_pipe[1])) &&
         add_action(posix_spawn_file_actions_addclose(&actions, stdout_pipe[0])) &&
         add_action(posix_spawn_file_actions_addclose(&actions, stderr_pipe[0])) &&
-        add_action(posix_spawn_file_actions_adddup2(&actions, stdin_pipe[1], STDIN_FILENO)) &&
+        add_action(posix_spawn_file_actions_adddup2(&actions, stdin_pipe[0], STDIN_FILENO)) &&
         add_action(posix_spawn_file_actions_adddup2(&actions, stdout_pipe[1], STDOUT_FILENO)) &&
         add_action(posix_spawn_file_actions_adddup2(&actions, stderr_pipe[1], STDERR_FILENO)) &&
-        add_action(posix_spawn_file_actions_addclose(&actions, stdin_pipe[1])) &&
+        add_action(posix_spawn_file_actions_addclose(&actions, stdin_pipe[0])) &&
         add_action(posix_spawn_file_actions_addclose(&actions, stdout_pipe[1])) &&
         add_action(posix_spawn_file_actions_addclose(&actions, stderr_pipe[1]));
     if (!actions_ready) {
@@ -90,22 +94,22 @@ ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::s
                 .stderr = "Failed to spawn: " + std::string(strerror(ret))};
     }
 
-    close(stdin_pipe[1]);
-    stdin_pipe[1] = -1;
+    close(stdin_pipe[0]); // child's read end; parent keeps the write end
+    stdin_pipe[0] = -1;
     close(stdout_pipe[1]);
     stdout_pipe[1] = -1;
     close(stderr_pipe[1]);
     stderr_pipe[1] = -1;
     if (stdin_data.empty()) {
-        close(stdin_pipe[0]);
-        stdin_pipe[0] = -1;
+        close(stdin_pipe[1]); // child sees EOF immediately
+        stdin_pipe[1] = -1;
     }
 
     std::string stdout_buf;
     std::string stderr_buf;
     std::array<char, 4096> read_buf;
     std::size_t stdin_offset = 0;
-    std::array<pollfd, 3> pfds = {{{.fd = stdin_data.empty() ? -1 : stdin_pipe[0],
+    std::array<pollfd, 3> pfds = {{{.fd = stdin_data.empty() ? -1 : stdin_pipe[1],
                                     .events = static_cast<short>(stdin_data.empty() ? 0 : POLLOUT),
                                     .revents = 0},
                                    {.fd = stdout_pipe[0], .events = POLLIN, .revents = 0},
@@ -180,8 +184,7 @@ ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::s
                 close_stdin();
             } else if (pfds[0].revents & POLLOUT) {
                 const std::size_t remaining = stdin_data.size() - stdin_offset;
-                const std::size_t chunk =
-                    std::min<std::size_t>(remaining, static_cast<const unsigned long>(64 * 1024));
+                const std::size_t chunk = std::min(remaining, static_cast<std::size_t>(64) * 1024);
                 ssize_t n;
                 do {
                     n = write(pfds[0].fd, stdin_data.data() + stdin_offset, chunk);

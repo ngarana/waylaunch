@@ -240,7 +240,9 @@ if(BUILD_TESTING)
               content_freshness_test)
         add_executable(${t} tests/${t}.cpp)
         target_link_libraries(${t} PRIVATE waylaunch_content)
-        target_compile_options(${t} PRIVATE -Wall -Wextra)
+        # -UNDEBUG: assert-based like every other suite below; without it a
+        # Release-family build (NDEBUG) silently passes everything.
+        target_compile_options(${t} PRIVATE -Wall -Wextra -UNDEBUG)
         add_test(NAME ${t} COMMAND ${t})
     endforeach()
 
@@ -348,7 +350,7 @@ if(BUILD_TESTING)
 
     add_executable(subprocess_test tests/subprocess_test.cpp src/search/subprocess.cpp)
     target_include_directories(subprocess_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
-    target_compile_options(subprocess_test PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(subprocess_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
     add_test(NAME subprocess_test COMMAND subprocess_test)
 
     add_executable(history_test tests/history_test.cpp src/ui/history.cpp)
