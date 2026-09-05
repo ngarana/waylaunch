@@ -20,6 +20,7 @@ class HyprlandBackend : public IPlacementBackend {
     explicit HyprlandBackend(std::string slot = "default") : slot_(std::move(slot)) {}
 
     std::optional<WindowInfo> find_window(const std::string& app_id) override;
+    std::optional<WindowInfo> find_by_address(const std::string& address) override;
     std::optional<MonitorInfo> focused_monitor() override;
     bool show(const WindowInfo& window, const Geometry& geometry) override;
     bool hide(const WindowInfo& window) override;

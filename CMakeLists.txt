@@ -169,6 +169,8 @@ set(SOURCES
     src/dropdown/geometry_policy.cpp
     src/dropdown/hyprland_backend.cpp
     src/dropdown/hyprland_json.cpp
+    src/dropdown/hyprland_events.cpp
+    src/dropdown/focus_guard.cpp
     ${PROTOCOL_SOURCES}
 )
 
@@ -324,6 +326,19 @@ if(BUILD_TESTING)
     target_include_directories(hyprland_json_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
     target_compile_options(hyprland_json_test PRIVATE -Wall -Wextra -UNDEBUG)
     add_test(NAME hyprland_json_test COMMAND hyprland_json_test)
+
+    # Dropdown phase 3: event-stream framing + retract policy, no compositor.
+    add_executable(hyprland_events_test tests/hyprland_events_test.cpp
+        src/dropdown/hyprland_events.cpp)
+    target_include_directories(hyprland_events_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_options(hyprland_events_test PRIVATE -Wall -Wextra -UNDEBUG)
+    add_test(NAME hyprland_events_test COMMAND hyprland_events_test)
+
+    add_executable(focus_guard_test tests/focus_guard_test.cpp
+        src/dropdown/focus_guard.cpp)
+    target_include_directories(focus_guard_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_options(focus_guard_test PRIVATE -Wall -Wextra -UNDEBUG)
+    add_test(NAME focus_guard_test COMMAND focus_guard_test)
 
     # Performance harness (NFR1/NFR5) — built but not a pass/fail ctest; run
     # manually with a doc count, e.g. ./content_bench 1000000.

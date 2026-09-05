@@ -1,8 +1,10 @@
 #include "waylaunch/dropdown/dropdown_main.h"
 
 #include "waylaunch/dropdown/dropdown_manager.h"
+#include "waylaunch/dropdown/focus_guard.h"
 #include "waylaunch/dropdown/geometry_policy.h"
 #include "waylaunch/dropdown/hyprland_backend.h"
+#include "waylaunch/dropdown/hyprland_events.h"
 #include "waylaunch/dropdown/session_supervisor.h"
 #include "waylaunch/subprocess.h"
 
@@ -44,7 +46,14 @@ int dropdown_main(const std::string& slot) {
     DropdownManager manager;
     HyprlandBackend backend(slot);
     DropdownConfig config; // defaults (top, 100x40); TOML wiring lands with §6
+    FocusGuard guard;
+    guard.configure(config.hide_on_focus_loss, config.focus_grace_ms);
+    HyprlandEventStream events;
     bool backend_usable = backend.supports_geometry();
+    // Last address the slot window was seen at. closewindow arrives after the
+    // window is already gone from j/clients, so identity must come from here
+    // rather than a fresh lookup.
+    std::string slot_address;
 
     // Block the signals we multiplex through signalfd so they never run as
     // async handlers mid-fork.
@@ -77,13 +86,13 @@ int dropdown_main(const std::string& slot) {
         timer_purpose = purpose;
         arm_timer(timer_fd, delay);
     };
-
     auto spawn = [&]() {
         std::vector<std::string> argv = SessionSupervisor::build_argv("", supervisor.app_id());
         pid_t pid = Subprocess::spawn_tracked(argv);
         auto now = std::chrono::steady_clock::now();
         if (pid > 0) {
             supervisor.note_spawned(pid, now);
+            guard.set_slot(pid, ""); // address resolves once mapped
             // The window takes ~100ms to appear; poll j/clients until it
             // does, then park it on the hidden workspace (initial Hidden).
             appear_attempts = 0;
@@ -97,18 +106,20 @@ int dropdown_main(const std::string& slot) {
 
     // Place the slot window per the recomputed-on-every-show policy (§5.2):
     // geometry derives from the focused monitor, so hotplugged outputs and
-    // resolution changes need no restart.
-    auto place_visible = [&]() {
+    // resolution changes need no restart. Returns the placed window.
+    auto place_visible = [&]() -> std::optional<WindowInfo> {
         auto window = backend.find_window(supervisor.app_id());
         auto monitor = backend.focused_monitor();
-        if (!window.has_value() || !monitor.has_value()) return false;
-        return backend.show(*window, compute_geometry(*monitor, config));
+        if (!window.has_value() || !monitor.has_value()) return std::nullopt;
+        if (!backend.show(*window, compute_geometry(*monitor, config))) return std::nullopt;
+        return window;
     };
 
-    auto park_hidden = [&]() {
+    auto park_hidden = [&]() -> std::optional<WindowInfo> {
         auto window = backend.find_window(supervisor.app_id());
-        if (!window.has_value()) return false;
-        return backend.hide(*window);
+        if (!window.has_value()) return std::nullopt;
+        if (!backend.hide(*window)) return std::nullopt;
+        return window;
     };
 
     // Reconcile manager state with compositor truth. Used on toggle paths;
@@ -125,17 +136,45 @@ int dropdown_main(const std::string& slot) {
         auto before = manager.current_state();
         manager.process_event(DropdownEvent::Toggle);
         if (!backend_usable) return; // degraded: lifecycle only, no placement
+        auto now = std::chrono::steady_clock::now();
         if (before == DropdownState::Absent && manager.current_state() == DropdownState::Spawning) {
             spawn(); // the `exit` → press-again → fresh-terminal case
         } else if (manager.current_state() == DropdownState::Visible) {
-            if (!sync_presence() || !place_visible()) {
+            auto shown = sync_presence() ? place_visible() : std::optional<WindowInfo>{};
+            if (!shown.has_value()) {
                 manager.process_event(DropdownEvent::WindowHidden); // revert
+            } else {
+                slot_address = shown->address;
+                guard.set_slot(supervisor.child_pid(), slot_address);
+                guard.note_shown(now);
             }
         } else if (manager.current_state() == DropdownState::Hidden) {
-            if (sync_presence() && !park_hidden()) {
+            if (sync_presence() && !park_hidden().has_value()) {
                 manager.process_event(DropdownEvent::WindowShown); // revert
             }
         }
+    };
+
+    // Focus-loss retract (§5.3): another window took focus while visible.
+    auto on_focus_event = [&](const std::string& address) {
+        if (manager.current_state() != DropdownState::Visible || !backend_usable) return;
+        auto focused = backend.find_by_address(address);
+        int pid = focused.has_value() ? focused->pid : -1;
+        if (guard.should_retract(std::chrono::steady_clock::now(), address, pid)) {
+            if (park_hidden().has_value()) manager.process_event(DropdownEvent::WindowHidden);
+            // On failure stay Visible; the next focus event retries.
+        }
+    };
+
+    // Death detection: the slot window closed behind our back (the process
+    // may still be alive, so kill it — its SIGCHLD then reaps harmlessly
+    // against the cleared pid and the slot reboots on the next toggle).
+    auto on_close_event = [&](const std::string& address) {
+        if (!backend_usable || slot_address.empty()) return;
+        if (normalize_address(address) != normalize_address(slot_address)) return;
+        slot_address.clear();
+        manager.process_event(DropdownEvent::WindowClosed);
+        if (auto pid = supervisor.take_child(); pid.has_value()) { kill(*pid, SIGTERM); }
     };
 
     // First press appears (gap-3 fix): boot the session on start.
@@ -144,12 +183,15 @@ int dropdown_main(const std::string& slot) {
 
     bool running = true;
     while (running) {
-        pollfd fds[2]{};
+        events.ensure_connected(std::chrono::steady_clock::now());
+        pollfd fds[3]{};
         fds[0].fd = signal_fd;
         fds[0].events = POLLIN;
         fds[1].fd = timer_fd;
         fds[1].events = POLLIN;
-        int n = poll(fds, 2, -1);
+        fds[2].fd = events.poll_fd(); // -1 while disconnected: ignored by poll
+        fds[2].events = POLLIN;
+        int n = poll(fds, 3, -1);
         if (n < 0) {
             if (errno == EINTR) continue;
             break;
@@ -163,8 +205,6 @@ int dropdown_main(const std::string& slot) {
             while (read(signal_fd, &info, sizeof(info)) == static_cast<ssize_t>(sizeof(info))) {
                 if (info.ssi_signo == static_cast<uint32_t>(SIGUSR1)) {
                     on_toggle();
-                    // Visible⇄Hidden placement is above; focus-loss retract
-                    // lands in phase 3's event stream.
                 } else if (info.ssi_signo == static_cast<uint32_t>(SIGCHLD)) {
                     int status = 0;
                     pid_t waited = 0;
@@ -199,9 +239,10 @@ int dropdown_main(const std::string& slot) {
                 // hidden workspace once it appears (initial Hidden).
                 bool placed = false;
                 if (backend_usable) {
-                    auto window = backend.find_window(supervisor.app_id());
-                    if (window.has_value() && park_hidden()) {
+                    if (auto parked = park_hidden(); parked.has_value()) {
                         placed = true;
+                        slot_address = parked->address;
+                        guard.set_slot(supervisor.child_pid(), slot_address);
                         manager.process_event(DropdownEvent::WindowHidden);
                     }
                 } else {
@@ -218,6 +259,18 @@ int dropdown_main(const std::string& slot) {
                 } else {
                     timer_purpose = TimerPurpose::None;
                 }
+            }
+        }
+        if (fds[2].revents & POLLIN) {
+            for (const HyprEvent& event : events.read_available()) {
+                if (event.name == "activewindowv2") {
+                    on_focus_event(event.payload);
+                } else if (event.name == "closewindow") {
+                    on_close_event(event.payload);
+                }
+                // focusedmon: monitor following already happens through the
+                // focused-monitor read on every show; while visible we
+                // deliberately do not chase, so user drags are never fought.
             }
         }
     }

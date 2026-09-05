@@ -25,6 +25,10 @@ struct DropdownConfig {
     // Persisted user resize (phase 4). When set, its w/h replace the computed
     // size (clamped to the usable area); placement still follows `edge`.
     std::optional<Geometry> size_override;
+    // Focus-loss retract (phase 3). TOML wiring lands with §6; until then the
+    // compiled defaults apply.
+    bool hide_on_focus_loss = true;
+    int focus_grace_ms = 150; // ignore focus events this soon after a show
 };
 
 Geometry compute_geometry(const MonitorInfo& monitor, const DropdownConfig& config);

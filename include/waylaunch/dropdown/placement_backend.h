@@ -42,6 +42,9 @@ class IPlacementBackend {
   public:
     virtual ~IPlacementBackend() = default;
     virtual std::optional<WindowInfo> find_window(const std::string& app_id) = 0;
+    // Lookup by compositor address (with or without the `0x` prefix), for
+    // resolving event-stream payloads such as `activewindowv2>>ADDR`.
+    virtual std::optional<WindowInfo> find_by_address(const std::string& address) = 0;
     virtual std::optional<MonitorInfo> focused_monitor() = 0;
     virtual bool show(const WindowInfo& window, const Geometry& geometry) = 0;
     virtual bool hide(const WindowInfo& window) = 0;

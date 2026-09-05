@@ -112,7 +112,8 @@ per action with `window=<address>`, no focus games on hide.
 include/waylaunch/dropdown/
     placement_backend.h     # IPlacementBackend + WindowInfo/MonitorInfo/Geometry
     hyprland_backend.h
-    hyprland_events.h
+    hyprland_events.h       # event-stream fd + line parser (phase 3)
+    focus_guard.h           # retract policy: grace + ancestry (phase 3)
     dropdown_manager.h      # the state machine — pure logic
     geometry_policy.h       # pure function
     session_supervisor.h
@@ -121,6 +122,7 @@ src/dropdown/
     hyprland_backend.cpp
     hyprland_events.cpp
     hyprland_json.cpp       # minimal scanner for j/clients, j/monitors
+    focus_guard.cpp
     dropdown_manager.cpp
     geometry_policy.cpp
     session_supervisor.cpp
@@ -131,6 +133,7 @@ tests/
     geometry_policy_test.cpp
     hyprland_json_test.cpp
     hyprland_events_test.cpp
+    focus_guard_test.cpp
 ```
 
 Register sources in `CMakeLists.txt:136` (`set(SOURCES ...)`) and tests in the
@@ -307,8 +310,10 @@ workspaces.
 inside it → it does *not* retract. The second half is the one that will take the
 debugging.
 
-**Tests:** `hyprland_events_test` parses a recorded event fixture;
-`dropdown_manager_test` gains focus-transition cases against `FakeBackend`.
+**Tests:** `hyprland_events_test` parses a recorded event fixture (whole,
+byte-split, and partial-line); `focus_guard_test` covers grace, own-address,
+descendant suppression (injected kinship), fail-closed unknown pids, the
+`hide_on_focus_loss` flag, and the real `/proc` walk on live pids.
 
 ---
 

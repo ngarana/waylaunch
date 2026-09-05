@@ -30,6 +30,15 @@ class SessionSupervisor {
 
     bool has_child() const { return child_.has_value(); }
     pid_t child_pid() const { return child_.value_or(-1); }
+    // Releases ownership of the tracked pid without touching the backoff
+    // schedule. For closewindow-driven teardown (phase 3): the compositor
+    // reports the window gone while the process may still be alive, and the
+    // owner kills it directly rather than waiting for SIGCHLD.
+    std::optional<pid_t> take_child() {
+        auto taken = child_;
+        child_.reset();
+        return taken;
+    }
 
     void note_spawned(pid_t pid, std::chrono::steady_clock::time_point now);
     // Returns the respawn delay after a death at `now`; nullopt means do not

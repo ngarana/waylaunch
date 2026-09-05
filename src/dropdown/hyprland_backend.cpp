@@ -1,5 +1,6 @@
 #include "waylaunch/dropdown/hyprland_backend.h"
 
+#include "waylaunch/dropdown/focus_guard.h"
 #include "waylaunch/dropdown/hyprland_json.h"
 
 #include <chrono>
@@ -102,6 +103,25 @@ std::optional<WindowInfo> HyprlandBackend::find_window(const std::string& app_id
         WindowInfo info;
         info.address = client.address;
         info.app_id = app_id;
+        info.pid = client.pid;
+        info.geom =
+            Geometry{.x = client.at_x, .y = client.at_y, .w = client.width, .h = client.height};
+        info.workspace = client.workspace_id;
+        info.visible = client.mapped && !client.workspace_name.starts_with("special:");
+        return info;
+    }
+    return std::nullopt;
+}
+
+std::optional<WindowInfo> HyprlandBackend::find_by_address(const std::string& address) {
+    auto reply = request(kClientsCmd);
+    if (!reply.has_value()) return std::nullopt;
+    std::string want = normalize_address(address);
+    for (const HyprClient& client : parse_hypr_clients(*reply)) {
+        if (normalize_address(client.address) != want) continue;
+        WindowInfo info;
+        info.address = client.address;
+        info.app_id = client.klass;
         info.pid = client.pid;
         info.geom =
             Geometry{.x = client.at_x, .y = client.at_y, .w = client.width, .h = client.height};
