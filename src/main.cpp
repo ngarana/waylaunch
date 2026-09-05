@@ -1,4 +1,5 @@
 #include "waylaunch/config.h"
+#include "waylaunch/dropdown/dropdown_main.h"
 #include "waylaunch/launcher_ui.h"
 #include <csignal>
 #include <cstdlib>
@@ -58,6 +59,8 @@ int main(int argc, char* argv[]) {
     bool switcher_mode = false;
     bool switcher_reverse = false;
     bool power_mode = false;
+    bool dropdown_mode = false;
+    std::string dropdown_slot = "default";
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -69,6 +72,14 @@ int main(int argc, char* argv[]) {
             switcher_mode = true;
         } else if (arg == "--power") {
             power_mode = true;
+        } else if (arg == "--dropdown" || arg.starts_with("--dropdown=")) {
+            dropdown_mode = true;
+            if (arg.starts_with("--dropdown=")) {
+                dropdown_slot = arg.substr(sizeof("--dropdown=") - 1);
+                if (dropdown_slot.empty()) dropdown_slot = "default";
+            } else if (i + 1 < argc && argv[i + 1][0] != '-') {
+                dropdown_slot = argv[++i];
+            }
         } else if (arg == "--reverse") {
             switcher_reverse = true; // preselect the far end (Alt+Shift+Tab)
         } else if (arg == "--save") {
@@ -90,6 +101,9 @@ int main(int argc, char* argv[]) {
                       << "  -q, --query <text>   Prefill the search query\n"
                       << "  --switch             Open the app switcher (bind to Alt+Tab)\n"
                       << "  --power              Open the power-actions overlay\n"
+                      << "  --dropdown [slot]    Resident dropdown terminal host\n"
+                      << "                       (default slot \"default\"; second\n"
+                      << "                       invocation toggles via SIGUSR1)\n"
                       << "  --save [path]        Serialize current config to a file\n"
                       << "  --debug              Enable debug output\n"
                       << "  -h, --help           Show this help\n"
@@ -111,6 +125,10 @@ int main(int argc, char* argv[]) {
         std::signal(SIGUSR1, SIG_IGN);
         std::signal(SIGUSR2, SIG_IGN);
     }
+    // Same race for the dropdown host: a rapid second Super+Tab signals
+    // SIGUSR1 (toggle) before dropdown_main installs its signalfd. Ignore
+    // until wired, exactly like the switcher guard above.
+    if (dropdown_mode) std::signal(SIGUSR1, SIG_IGN);
 
     // Single-instance: the search launcher toggles (Super+D opens/closes); the
     // switcher is resident (a repeated Alt+Tab wakes/advances the running instance);
@@ -118,8 +136,14 @@ int main(int argc, char* argv[]) {
     // keeping them on separate locks so opening one never disturbs another. The
     // resident switcher distinguishes direction by signal: SIGUSR1 forward,
     // SIGUSR2 reverse (Alt+Shift+Tab).
+    // The dropdown host follows the switcher contract: per-slot lock file
+    // `waylaunch-dropdown-<slot>.lock`, SIGUSR1 toggles the incumbent.
     int lock_fd = -2;
-    if (power_mode) {
+    std::string dropdown_lock;
+    if (dropdown_mode) {
+        dropdown_lock = "waylaunch-dropdown-" + dropdown_slot + ".lock";
+        lock_fd = acquire_single_instance(dropdown_lock.c_str(), SIGUSR1);
+    } else if (power_mode) {
         lock_fd = acquire_single_instance("waylaunch-power.lock", 0);
     } else if (switcher_mode) {
         lock_fd = acquire_single_instance("waylaunch-switcher.lock",
@@ -129,6 +153,8 @@ int main(int argc, char* argv[]) {
     }
     if (lock_fd == -1) return 0;
     (void) lock_fd; // held open for our lifetime; the OS releases it on exit
+
+    if (dropdown_mode) return waylaunch::dropdown_main(dropdown_slot);
 
     if (config_path.empty()) config_path = waylaunch::Config::default_config_path();
 

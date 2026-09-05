@@ -163,6 +163,9 @@ set(SOURCES
     src/power/confirm_dialog_renderer.cpp
     src/power/power_glyphs.cpp
     src/power/power_layout.cpp
+    src/dropdown/dropdown_manager.cpp
+    src/dropdown/session_supervisor.cpp
+    src/dropdown/dropdown_main.cpp
     ${PROTOCOL_SOURCES}
 )
 
@@ -297,6 +300,14 @@ if(BUILD_TESTING)
         target_compile_options(${t} PRIVATE -Wall -Wextra -UNDEBUG)
         add_test(NAME ${t} COMMAND ${t})
     endforeach()
+
+    # Dropdown host (phase 1): pure-logic manager + supervisor, no compositor.
+    add_executable(dropdown_manager_test tests/dropdown_manager_test.cpp
+        src/dropdown/dropdown_manager.cpp
+        src/dropdown/session_supervisor.cpp)
+    target_include_directories(dropdown_manager_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_options(dropdown_manager_test PRIVATE -Wall -Wextra -UNDEBUG)
+    add_test(NAME dropdown_manager_test COMMAND dropdown_manager_test)
 
     # Performance harness (NFR1/NFR5) — built but not a pass/fail ctest; run
     # manually with a doc count, e.g. ./content_bench 1000000.

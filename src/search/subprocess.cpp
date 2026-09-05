@@ -249,4 +249,21 @@ void Subprocess::spawn_detached(const std::vector<std::string>& argv) {
     }
 }
 
+// Single fork + setsid so the child stays ours for waitpid/SIGCHLD reaping.
+// The caller owns respawn policy; this only forks and execs.
+pid_t Subprocess::spawn_tracked(const std::vector<std::string>& argv) {
+    if (argv.empty()) return -1;
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        std::vector<char*> c_argv;
+        c_argv.reserve(argv.size() + 1);
+        for (const auto& s : argv) c_argv.push_back(const_cast<char*>(s.c_str()));
+        c_argv.push_back(nullptr);
+        execvp(c_argv[0], c_argv.data());
+        _exit(127);
+    }
+    return pid;
+}
+
 } // namespace waylaunch
