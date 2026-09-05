@@ -9,20 +9,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Install lint dependencies
+      # Pinned to the repo toolchain (clang 22, see AGENT.md §3): format and
+      # tidy output drifts between LLVM releases, so the distro default
+      # (v18 on noble) disagrees with developer machines.
+      - name: Install pinned LLVM toolchain
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-format clang-tidy
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y clang-format-22 clang-tidy-22
       - name: clang-format check
         run: |
-          clang-format --dry-run --Werror \
-            $(find src include tests -name '*.cpp' -o -name '*.h')
+          clang-format-22 --dry-run --Werror \
+            $(find src include tests -name '*.cpp' -o -name '*.h' | grep -v "/build/")
       - name: Configure (compile commands for clang-tidy)
         run: cmake -S . -B build -DBUILD_TESTING=ON
       - name: clang-tidy check
         run: |
-          clang-tidy -p build \
-            $(find src include tests -name '*.cpp') \
+          clang-tidy-22 -p build \
+            $(find src include tests -name '*.cpp' | grep -v "/build/") \
             --warnings-as-errors='*'
 
   linux:
