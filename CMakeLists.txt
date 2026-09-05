@@ -166,6 +166,9 @@ set(SOURCES
     src/dropdown/dropdown_manager.cpp
     src/dropdown/session_supervisor.cpp
     src/dropdown/dropdown_main.cpp
+    src/dropdown/geometry_policy.cpp
+    src/dropdown/hyprland_backend.cpp
+    src/dropdown/hyprland_json.cpp
     ${PROTOCOL_SOURCES}
 )
 
@@ -308,6 +311,19 @@ if(BUILD_TESTING)
     target_include_directories(dropdown_manager_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
     target_compile_options(dropdown_manager_test PRIVATE -Wall -Wextra -UNDEBUG)
     add_test(NAME dropdown_manager_test COMMAND dropdown_manager_test)
+
+    # Dropdown phase 2: pure geometry policy + compositor-free JSON scanner.
+    add_executable(geometry_policy_test tests/geometry_policy_test.cpp
+        src/dropdown/geometry_policy.cpp)
+    target_include_directories(geometry_policy_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_options(geometry_policy_test PRIVATE -Wall -Wextra -UNDEBUG)
+    add_test(NAME geometry_policy_test COMMAND geometry_policy_test)
+
+    add_executable(hyprland_json_test tests/hyprland_json_test.cpp
+        src/dropdown/hyprland_json.cpp)
+    target_include_directories(hyprland_json_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_options(hyprland_json_test PRIVATE -Wall -Wextra -UNDEBUG)
+    add_test(NAME hyprland_json_test COMMAND hyprland_json_test)
 
     # Performance harness (NFR1/NFR5) — built but not a pass/fail ctest; run
     # manually with a doc count, e.g. ./content_bench 1000000.

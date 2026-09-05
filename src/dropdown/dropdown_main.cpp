@@ -1,6 +1,8 @@
 #include "waylaunch/dropdown/dropdown_main.h"
 
 #include "waylaunch/dropdown/dropdown_manager.h"
+#include "waylaunch/dropdown/geometry_policy.h"
+#include "waylaunch/dropdown/hyprland_backend.h"
 #include "waylaunch/dropdown/session_supervisor.h"
 #include "waylaunch/subprocess.h"
 
@@ -30,11 +32,19 @@ void disarm_timer(int timer_fd) {
     timerfd_settime(timer_fd, 0, &spec, nullptr);
 }
 
+// How long to wait for a freshly spawned terminal to appear in j/clients:
+// 25 attempts × 200ms ≈ 5s, then assume hidden and let later toggles resync.
+constexpr int kAppearAttempts = 25;
+constexpr std::chrono::milliseconds kAppearRetry{200};
+
 } // namespace
 
 int dropdown_main(const std::string& slot) {
     SessionSupervisor supervisor(slot);
     DropdownManager manager;
+    HyprlandBackend backend(slot);
+    DropdownConfig config; // defaults (top, 100x40); TOML wiring lands with §6
+    bool backend_usable = backend.supports_geometry();
 
     // Block the signals we multiplex through signalfd so they never run as
     // async handlers mid-fork.
@@ -54,24 +64,83 @@ int dropdown_main(const std::string& slot) {
         return 1;
     }
 
-    auto spawn = [&](std::chrono::steady_clock::time_point now) {
+    // What the single timerfd is currently counting down for.
+    enum class TimerPurpose {
+        None,
+        Respawn,    // backoff elapsed after a death: fork again
+        AppearRetry // spawned window not yet in j/clients: look again
+    };
+    TimerPurpose timer_purpose = TimerPurpose::None;
+    int appear_attempts = 0;
+
+    auto arm = [&](TimerPurpose purpose, std::chrono::milliseconds delay) {
+        timer_purpose = purpose;
+        arm_timer(timer_fd, delay);
+    };
+
+    auto spawn = [&]() {
         std::vector<std::string> argv = SessionSupervisor::build_argv("", supervisor.app_id());
         pid_t pid = Subprocess::spawn_tracked(argv);
+        auto now = std::chrono::steady_clock::now();
         if (pid > 0) {
             supervisor.note_spawned(pid, now);
-            // Phase 1 owns the process but not placement yet (phase 2 wires
-            // j/clients observations). Assume hidden until shown.
-            manager.process_event(DropdownEvent::WindowHidden);
+            // The window takes ~100ms to appear; poll j/clients until it
+            // does, then park it on the hidden workspace (initial Hidden).
+            appear_attempts = 0;
+            arm(TimerPurpose::AppearRetry, kAppearRetry);
         } else {
             // Fork failed: retry with backoff rather than hot-looping.
             auto delay = supervisor.note_exited(now);
-            if (delay.has_value()) arm_timer(timer_fd, *delay);
+            if (delay.has_value()) arm(TimerPurpose::Respawn, *delay);
         }
     };
 
-    // First press appears immediately (gap-3 fix): boot the session on start.
+    // Place the slot window per the recomputed-on-every-show policy (§5.2):
+    // geometry derives from the focused monitor, so hotplugged outputs and
+    // resolution changes need no restart.
+    auto place_visible = [&]() {
+        auto window = backend.find_window(supervisor.app_id());
+        auto monitor = backend.focused_monitor();
+        if (!window.has_value() || !monitor.has_value()) return false;
+        return backend.show(*window, compute_geometry(*monitor, config));
+    };
+
+    auto park_hidden = [&]() {
+        auto window = backend.find_window(supervisor.app_id());
+        if (!window.has_value()) return false;
+        return backend.hide(*window);
+    };
+
+    // Reconcile manager state with compositor truth. Used on toggle paths;
+    // returns false when there is no window to act on.
+    auto sync_presence = [&]() {
+        if (backend_usable && backend.find_window(supervisor.app_id()).has_value()) return true;
+        if (!supervisor.has_child() && manager.current_state() != DropdownState::Absent) {
+            manager.process_event(DropdownEvent::WindowClosed);
+        }
+        return false;
+    };
+
+    auto on_toggle = [&]() {
+        auto before = manager.current_state();
+        manager.process_event(DropdownEvent::Toggle);
+        if (!backend_usable) return; // degraded: lifecycle only, no placement
+        if (before == DropdownState::Absent && manager.current_state() == DropdownState::Spawning) {
+            spawn(); // the `exit` → press-again → fresh-terminal case
+        } else if (manager.current_state() == DropdownState::Visible) {
+            if (!sync_presence() || !place_visible()) {
+                manager.process_event(DropdownEvent::WindowHidden); // revert
+            }
+        } else if (manager.current_state() == DropdownState::Hidden) {
+            if (sync_presence() && !park_hidden()) {
+                manager.process_event(DropdownEvent::WindowShown); // revert
+            }
+        }
+    };
+
+    // First press appears (gap-3 fix): boot the session on start.
     manager.process_event(DropdownEvent::Toggle);
-    spawn(std::chrono::steady_clock::now());
+    spawn();
 
     bool running = true;
     while (running) {
@@ -93,15 +162,9 @@ int dropdown_main(const std::string& slot) {
             signalfd_siginfo info{};
             while (read(signal_fd, &info, sizeof(info)) == static_cast<ssize_t>(sizeof(info))) {
                 if (info.ssi_signo == static_cast<uint32_t>(SIGUSR1)) {
-                    auto before = manager.current_state();
-                    manager.process_event(DropdownEvent::Toggle);
-                    // Toggle from absent boots a fresh session (the `exit`
-                    // inside it → press again → new terminal case).
-                    if (before == DropdownState::Absent &&
-                        manager.current_state() == DropdownState::Spawning) {
-                        spawn(std::chrono::steady_clock::now());
-                    }
-                    // Visible⇄Hidden placement lands in phase 2's backend.
+                    on_toggle();
+                    // Visible⇄Hidden placement is above; focus-loss retract
+                    // lands in phase 3's event stream.
                 } else if (info.ssi_signo == static_cast<uint32_t>(SIGCHLD)) {
                     int status = 0;
                     pid_t waited = 0;
@@ -110,7 +173,7 @@ int dropdown_main(const std::string& slot) {
                             auto now = std::chrono::steady_clock::now();
                             manager.process_event(DropdownEvent::ChildExited);
                             auto delay = supervisor.note_exited(now);
-                            if (delay.has_value()) arm_timer(timer_fd, *delay);
+                            if (delay.has_value()) arm(TimerPurpose::Respawn, *delay);
                         }
                     }
                 } else {
@@ -122,14 +185,39 @@ int dropdown_main(const std::string& slot) {
             uint64_t expirations = 0;
             while (read(timer_fd, &expirations, sizeof(expirations)) ==
                    static_cast<ssize_t>(sizeof(expirations))) {}
-            // Backoff elapsed after a death: re-enter Spawning and fork again.
-            if (manager.current_state() == DropdownState::Absent) {
-                manager.process_event(DropdownEvent::Toggle);
-            }
-            if (manager.current_state() == DropdownState::Spawning) {
-                spawn(std::chrono::steady_clock::now());
-            } else {
-                disarm_timer(timer_fd);
+            // Consumed: disarm before branching; each path re-arms as needed.
+            disarm_timer(timer_fd);
+            if (timer_purpose == TimerPurpose::Respawn) {
+                timer_purpose = TimerPurpose::None;
+                // Backoff elapsed after a death: re-enter Spawning and fork.
+                if (manager.current_state() == DropdownState::Absent) {
+                    manager.process_event(DropdownEvent::Toggle);
+                }
+                if (manager.current_state() == DropdownState::Spawning) spawn();
+            } else if (timer_purpose == TimerPurpose::AppearRetry) {
+                // Fresh child not yet in j/clients: hide it onto the slot's
+                // hidden workspace once it appears (initial Hidden).
+                bool placed = false;
+                if (backend_usable) {
+                    auto window = backend.find_window(supervisor.app_id());
+                    if (window.has_value() && park_hidden()) {
+                        placed = true;
+                        manager.process_event(DropdownEvent::WindowHidden);
+                    }
+                } else {
+                    placed = true; // no compositor to observe; assume hidden
+                    manager.process_event(DropdownEvent::WindowHidden);
+                }
+                if (!placed && manager.current_state() == DropdownState::Spawning) {
+                    if (++appear_attempts < kAppearAttempts) {
+                        arm(TimerPurpose::AppearRetry, kAppearRetry);
+                    } else {
+                        timer_purpose = TimerPurpose::None;
+                        manager.process_event(DropdownEvent::WindowHidden);
+                    }
+                } else {
+                    timer_purpose = TimerPurpose::None;
+                }
             }
         }
     }

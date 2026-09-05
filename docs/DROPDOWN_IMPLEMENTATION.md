@@ -179,7 +179,7 @@ Connect, write one command, read until EOF, close. No framing, no handshake.
 | Command | Reply |
 |---|---|
 | `j/clients` | JSON array: `address`, `class`, `pid`, `at`, `size`, `workspace{id,name}`, `monitor`, `floating`, `mapped` |
-| `j/monitors` | JSON array: `name`, `x`, `y`, `width`, `height`, `scale`, `focused`, `activeWorkspace{id}`, `reserved` |
+| `j/monitors` | JSON array: `name`, `x`, `y`, `width`, `height`, `scale`, `focused`, `activeWorkspace{id}`, `reserved` ([left, top, right, bottom] — only the vertical insets feed placement) |
 | `/dispatch <lua>` | `ok` / `error: …` / `warning: …` |
 | `/eval <lua>` | `ok` — **the value is not returned over IPC** |
 
@@ -259,7 +259,10 @@ while spawning, double-toggle idempotence.
   `window=<address>` for `float`, `move` (x/y and workspace), `resize`,
   `center`, `pin`, `set_prop`, plus `alter_zorder({ mode = "top", window })`
   for z-order. Do NOT use `bring_to_top()` for targeting — it takes no
-  window argument and always raises the active window.
+  window argument and always raises the active window. Dispatch order in
+  `show()` is float → workspace → **resize → move** → raise → focus:
+  Hyprland's resize preserves the window center, so moving before resizing
+  drifts the position whenever the size changes (probed live).
 - Hide/show by moving between a per-slot hidden special workspace
   (`special:wl-drop-<slot>`) and the **focused monitor's active workspace**, read
   from `j/monitors`. This is what makes the dropdown follow the monitor instead
