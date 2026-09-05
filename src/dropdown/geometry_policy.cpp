@@ -38,4 +38,16 @@ Geometry compute_geometry(const MonitorInfo& monitor, const DropdownConfig& conf
     return geom;
 }
 
+ResolvedSlot resolve_dropdown_slot(const DropdownConfig& global, const std::string& slot) {
+    ResolvedSlot resolved{.config = global, .command = ""};
+    for (const DropdownSlot& entry : global.slots) {
+        if (entry.name != slot) continue;
+        if (!entry.command.empty()) resolved.command = entry.command;
+        if (entry.width_percent >= 0) resolved.config.width_percent = entry.width_percent;
+        if (entry.height_percent >= 0) resolved.config.height_percent = entry.height_percent;
+        break;
+    }
+    return resolved;
+}
+
 } // namespace waylaunch

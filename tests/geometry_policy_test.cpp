@@ -93,6 +93,25 @@ void test_multi_monitor_offset() {
     std::cout << "[PASS] multi monitor offset\n";
 }
 
+void test_resolve_slot() {
+    DropdownConfig global;
+    global.height_percent = 40;
+    // No slots configured: ad-hoc names yield section defaults untouched.
+    auto implicit = resolve_dropdown_slot(global, "scratch");
+    assert(implicit.command.empty());
+    assert(implicit.config.height_percent == 40);
+    // Named slot: command plus present overrides only (-1 inherits).
+    global.slots.push_back(
+        {.name = "notes", .command = "kitty -e nvim", .width_percent = -1, .height_percent = 60});
+    auto notes = resolve_dropdown_slot(global, "notes");
+    assert(notes.command == "kitty -e nvim");
+    assert(notes.config.height_percent == 60);
+    assert(notes.config.width_percent == global.width_percent);
+    auto other = resolve_dropdown_slot(global, "term");
+    assert(other.command.empty() && other.config.height_percent == 40);
+    std::cout << "[PASS] resolve slot\n";
+}
+
 int main() {
     test_top_default_sits_below_bar();
     test_bottom_anchors_to_usable_base();
@@ -101,6 +120,7 @@ int main() {
     test_reserved_bottom_shrinks_usable_area();
     test_size_override_replaces_computed_size();
     test_multi_monitor_offset();
+    test_resolve_slot();
     std::cout << "geometry_policy_test: all passed\n";
     return 0;
 }

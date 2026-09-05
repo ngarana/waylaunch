@@ -142,6 +142,10 @@ changes in the working tree.
 - `pgrep` without `-f` matches only the 15-char comm name — use
   `ps aux | grep "[p]attern"` to check for running daemons without
   self-matching.
+- Never `pkill -f` with a pattern that appears in your own command line (e.g.
+  `pkill -f "sleep 300"` while the string sits in the invoking shell) — it
+  kills your shell session. Prefer compositor IPC (`window.close`/`kill` by
+  `class:`/`address:`) for stray test windows.
 
 ## 7. Docs map
 

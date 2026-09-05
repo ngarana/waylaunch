@@ -1,8 +1,50 @@
 #include "waylaunch/dropdown/session_supervisor.h"
 
+#include <cctype>
 #include <cstdlib>
 
 namespace waylaunch {
+namespace {
+
+// Whitespace split without shell processing: no globbing, no expansion, no
+// quoting. Slot commands must use absolute paths ($HOME and ~ do not expand).
+std::vector<std::string> split_words(const std::string& command) {
+    std::vector<std::string> words;
+    std::string word;
+    for (char c : command) {
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            if (!word.empty()) words.push_back(std::move(word));
+            word.clear();
+        } else {
+            word.push_back(c);
+        }
+    }
+    if (!word.empty()) words.push_back(std::move(word));
+    return words;
+}
+
+std::vector<std::string> with_class_flags(const std::string& exec_term, const std::string& app_id,
+                                          std::vector<std::string> rest) {
+    // Match on the basename so absolute paths still map, but exec the
+    // original term (it may not be on PATH).
+    std::string base = exec_term.substr(exec_term.find_last_of('/') + 1);
+    // Per-terminal class/app-id flags. Unknown terminals still launch; they
+    // just cannot be matched by app-id until taught here.
+    std::vector<std::string> argv;
+    if (base == "kitty" || base == "alacritty") {
+        argv = {exec_term, "--class", app_id};
+    } else if (base == "foot") {
+        argv = {exec_term, "--app-id", app_id};
+    } else if (base == "wezterm") {
+        argv = {exec_term, "--config", "window_id=" + app_id, "start"};
+    } else {
+        argv = {exec_term};
+    }
+    argv.insert(argv.end(), rest.begin(), rest.end());
+    return argv;
+}
+
+} // namespace
 
 void SessionSupervisor::note_spawned(pid_t pid, std::chrono::steady_clock::time_point now) {
     child_ = pid;
@@ -32,13 +74,16 @@ std::vector<std::string> SessionSupervisor::build_argv(const std::string& termin
     }
     // Probe list when neither config nor $TERMINAL names one.
     if (term.empty()) term = "kitty";
-    // Per-terminal class/app-id flags. Unknown terminals still launch; they
-    // just cannot be matched by app-id until taught here.
-    if (term == "kitty") return {"kitty", "--class", app_id};
-    if (term == "foot") return {"foot", "--app-id", app_id};
-    if (term == "alacritty") return {"alacritty", "--class", app_id};
-    if (term == "wezterm") return {"wezterm", "--config", "window_id=" + app_id, "start"};
-    return {term};
+    return with_class_flags(term, app_id, {});
+}
+
+std::vector<std::string> SessionSupervisor::build_slot_argv(const std::string& command,
+                                                            const std::string& app_id) {
+    std::vector<std::string> words = split_words(command);
+    if (words.empty()) return build_argv("", app_id);
+    std::string term = words.front();
+    words.erase(words.begin());
+    return with_class_flags(term, app_id, std::move(words));
 }
 
 } // namespace waylaunch

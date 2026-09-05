@@ -154,7 +154,7 @@ int main(int argc, char* argv[]) {
     if (lock_fd == -1) return 0;
     (void) lock_fd; // held open for our lifetime; the OS releases it on exit
 
-    if (dropdown_mode) return waylaunch::dropdown_main(dropdown_slot);
+    if (dropdown_mode) return waylaunch::dropdown_main(dropdown_slot, config_path);
 
     if (config_path.empty()) config_path = waylaunch::Config::default_config_path();
 

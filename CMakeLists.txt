@@ -171,6 +171,7 @@ set(SOURCES
     src/dropdown/hyprland_json.cpp
     src/dropdown/hyprland_events.cpp
     src/dropdown/focus_guard.cpp
+    src/dropdown/dropdown_state.cpp
     ${PROTOCOL_SOURCES}
 )
 
@@ -341,6 +342,13 @@ if(BUILD_TESTING)
     target_include_directories(focus_guard_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
     target_compile_options(focus_guard_test PRIVATE -Wall -Wextra -UNDEBUG)
     add_test(NAME focus_guard_test COMMAND focus_guard_test)
+
+    # Dropdown phase 4: persisted per-slot geometry overrides.
+    add_executable(dropdown_state_test tests/dropdown_state_test.cpp
+        src/dropdown/dropdown_state.cpp)
+    target_include_directories(dropdown_state_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_options(dropdown_state_test PRIVATE -Wall -Wextra -UNDEBUG)
+    add_test(NAME dropdown_state_test COMMAND dropdown_state_test)
 
     # Performance harness (NFR1/NFR5) — built but not a pass/fail ctest; run
     # manually with a doc count, e.g. ./content_bench 1000000.

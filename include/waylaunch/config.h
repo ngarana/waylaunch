@@ -1,5 +1,7 @@
 #pragma once
 
+#include "waylaunch/dropdown/geometry_policy.h"
+
 #include <map>
 #include <optional>
 #include <string>
@@ -137,6 +139,7 @@ struct LauncherConfig {
     HistoryConfig history;
     AppSwitcherConfig app_switcher;
     PowerConfig power;
+    DropdownConfig dropdown;
     std::vector<Command> commands;
 };
 

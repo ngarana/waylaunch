@@ -118,6 +118,26 @@ void test_slot_threaded_app_id() {
     std::cout << "[PASS] slot threaded app id\n";
 }
 
+void test_slot_argv() {
+    const std::string id = "waylaunch-drop-notes";
+    // Empty command falls back to the terminal probe.
+    assert(!SessionSupervisor::build_slot_argv("", id).empty());
+    assert(!SessionSupervisor::build_slot_argv("   ", id).empty());
+    // Class flags are injected ahead of the slot's own arguments.
+    auto kitty = SessionSupervisor::build_slot_argv("kitty -e nvim notes.md", id);
+    assert(kitty.size() == 6 && kitty[0] == "kitty" && kitty[1] == "--class" && kitty[2] == id);
+    assert(kitty[3] == "-e" && kitty[4] == "nvim" && kitty[5] == "notes.md");
+    auto foot = SessionSupervisor::build_slot_argv("foot", id);
+    assert(foot.size() == 3 && foot[1] == "--app-id" && foot[2] == id);
+    // Absolute paths map on the basename but exec the original.
+    auto abs = SessionSupervisor::build_slot_argv("/usr/bin/kitty --hold", id);
+    assert(abs[0] == "/usr/bin/kitty" && abs[1] == "--class" && abs[2] == id);
+    // Unknown terminals pass through untouched.
+    auto other = SessionSupervisor::build_slot_argv("xterm -e top", id);
+    assert(other.size() == 3 && other[0] == "xterm" && other[1] == "-e" && other[2] == "top");
+    std::cout << "[PASS] slot argv\n";
+}
+
 int main() {
     test_initial_toggle_spawns();
     test_spawning_observes_hidden_then_toggle_shows();
@@ -127,6 +147,7 @@ int main() {
     test_window_closed_from_any_state();
     test_backoff_grows_and_resets();
     test_slot_threaded_app_id();
+    test_slot_argv();
     std::cout << "dropdown_manager_test: all passed\n";
     return 0;
 }

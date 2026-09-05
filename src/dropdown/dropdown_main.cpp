@@ -1,6 +1,8 @@
 #include "waylaunch/dropdown/dropdown_main.h"
 
+#include "waylaunch/config.h"
 #include "waylaunch/dropdown/dropdown_manager.h"
+#include "waylaunch/dropdown/dropdown_state.h"
 #include "waylaunch/dropdown/focus_guard.h"
 #include "waylaunch/dropdown/geometry_policy.h"
 #include "waylaunch/dropdown/hyprland_backend.h"
@@ -13,6 +15,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <iostream>
 #include <poll.h>
 #include <sys/signalfd.h>
 #include <sys/timerfd.h>
@@ -41,11 +44,32 @@ constexpr std::chrono::milliseconds kAppearRetry{200};
 
 } // namespace
 
-int dropdown_main(const std::string& slot) {
+int dropdown_main(const std::string& slot, const std::string& config_path) {
     SessionSupervisor supervisor(slot);
     DropdownManager manager;
     HyprlandBackend backend(slot);
-    DropdownConfig config; // defaults (top, 100x40); TOML wiring lands with §6
+
+    // Section defaults plus this slot's overrides (§6). Unknown slot names
+    // yield the section untouched, so ad-hoc `--dropdown scratch` works.
+    waylaunch::Config repo_config;
+    const std::string path =
+        config_path.empty() ? waylaunch::Config::default_config_path() : config_path;
+    if (!repo_config.load(path)) {
+        std::cerr << "Warning: Could not load config, using dropdown defaults.\n";
+    }
+    if (!repo_config.get().dropdown.enabled) {
+        std::cout << "waylaunch: dropdown overlay disabled ([dropdown].enabled is false)\n";
+        return 0;
+    }
+    ResolvedSlot resolved = resolve_dropdown_slot(repo_config.get().dropdown, slot);
+    DropdownConfig config = resolved.config;
+    DropdownStateStore state_store;
+    auto states = state_store.load();
+    if (auto it = states.find(slot); it != states.end()) {
+        config.size_override = Geometry{.x = 0, .y = 0, .w = it->second.w, .h = it->second.h};
+    }
+    supervisor.set_respawn_enabled(config.respawn);
+
     FocusGuard guard;
     guard.configure(config.hide_on_focus_loss, config.focus_grace_ms);
     HyprlandEventStream events;
@@ -87,7 +111,12 @@ int dropdown_main(const std::string& slot) {
         arm_timer(timer_fd, delay);
     };
     auto spawn = [&]() {
-        std::vector<std::string> argv = SessionSupervisor::build_argv("", supervisor.app_id());
+        // Slot command wins; otherwise [dropdown].terminal/probe, so the
+        // window always carries the slot app-id for find_window.
+        std::vector<std::string> argv =
+            resolved.command.empty()
+                ? SessionSupervisor::build_argv(config.terminal, supervisor.app_id())
+                : SessionSupervisor::build_slot_argv(resolved.command, supervisor.app_id());
         pid_t pid = Subprocess::spawn_tracked(argv);
         auto now = std::chrono::steady_clock::now();
         if (pid > 0) {

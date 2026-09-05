@@ -236,6 +236,48 @@ bool Config::load(const std::string& path) {
             }
         }
 
+        if (auto* dropdown = tbl["dropdown"].as_table()) {
+            auto& dd = config_.dropdown;
+            dd.enabled = get_bool(*dropdown, "enabled", dd.enabled);
+            dd.terminal = get_str(*dropdown, "terminal", dd.terminal);
+            const std::string edge = get_str(*dropdown, "edge", "");
+            if (edge == "top") {
+                dd.edge = DropdownEdge::Top;
+            } else if (edge == "bottom") {
+                dd.edge = DropdownEdge::Bottom;
+            } else if (edge == "left") {
+                dd.edge = DropdownEdge::Left;
+            } else if (edge == "right") {
+                dd.edge = DropdownEdge::Right;
+            } // unknown values keep the default; never break the host
+            dd.width_percent = get_int(*dropdown, "width_percent", dd.width_percent);
+            dd.height_percent = get_int(*dropdown, "height_percent", dd.height_percent);
+            dd.hide_on_focus_loss =
+                get_bool(*dropdown, "hide_on_focus_loss", dd.hide_on_focus_loss);
+            dd.focus_grace_ms = get_int(*dropdown, "focus_grace_ms", dd.focus_grace_ms);
+            dd.respawn = get_bool(*dropdown, "respawn", dd.respawn);
+            dd.animation = get_str(*dropdown, "animation", dd.animation);
+
+            if (auto* slots = (*dropdown)["slots"].as_array()) {
+                for (auto& entry : *slots) {
+                    if (auto* tbl2 = entry.as_table()) {
+                        DropdownSlot slot;
+                        slot.name = get_str(*tbl2, "name");
+                        slot.command = get_str(*tbl2, "command", slot.command);
+                        if ((*tbl2)["width_percent"]) {
+                            slot.width_percent =
+                                get_int(*tbl2, "width_percent", slot.width_percent);
+                        }
+                        if ((*tbl2)["height_percent"]) {
+                            slot.height_percent =
+                                get_int(*tbl2, "height_percent", slot.height_percent);
+                        }
+                        if (!slot.name.empty()) dd.slots.push_back(std::move(slot));
+                    }
+                }
+            }
+        }
+
         return true;
     } catch (const toml::parse_error& err) {
         std::cerr << "Config parse error: " << err.what() << "\n";
@@ -351,6 +393,35 @@ bool Config::save(const std::string& path) const {
     };
     write_map("commands", config_.power.commands);
     write_map("confirm_text", config_.power.confirm_text);
+
+    file << "\n[dropdown]\n";
+    file << "enabled = " << (config_.dropdown.enabled ? "true" : "false") << "\n";
+    file << "terminal = \"" << config_.dropdown.terminal << "\"\n";
+    const auto edge_name = [](DropdownEdge edge) {
+        switch (edge) {
+            case DropdownEdge::Top: return "top";
+            case DropdownEdge::Bottom: return "bottom";
+            case DropdownEdge::Left: return "left";
+            case DropdownEdge::Right: return "right";
+        }
+        return "top";
+    };
+    file << "edge = \"" << edge_name(config_.dropdown.edge) << "\"\n";
+    file << "width_percent = " << config_.dropdown.width_percent << "\n";
+    file << "height_percent = " << config_.dropdown.height_percent << "\n";
+    file << "hide_on_focus_loss = " << (config_.dropdown.hide_on_focus_loss ? "true" : "false")
+         << "\n";
+    file << "focus_grace_ms = " << config_.dropdown.focus_grace_ms << "\n";
+    file << "respawn = " << (config_.dropdown.respawn ? "true" : "false") << "\n";
+    file << "animation = \"" << config_.dropdown.animation << "\"\n";
+
+    for (const auto& slot : config_.dropdown.slots) {
+        file << "\n[[dropdown.slots]]\n";
+        file << "name = \"" << slot.name << "\"\n";
+        file << "command = \"" << slot.command << "\"\n";
+        if (slot.width_percent >= 0) file << "width_percent = " << slot.width_percent << "\n";
+        if (slot.height_percent >= 0) file << "height_percent = " << slot.height_percent << "\n";
+    }
 
     for (const auto& cmd : config_.commands) {
         file << "\n[[commands]]\n";

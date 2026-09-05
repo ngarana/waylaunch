@@ -51,6 +51,12 @@ class SessionSupervisor {
     // means $TERMINAL, then kitty/foot/alacritty/wezterm/gnome-terminal.
     static std::vector<std::string> build_argv(const std::string& terminal,
                                                const std::string& app_id);
+    // Build argv from a `[[dropdown.slots]]` command string (phase 4).
+    // Whitespace-split without shell processing; the terminal's class flags
+    // are injected so the window stays findable by app-id. Empty falls back
+    // to the probe list.
+    static std::vector<std::string> build_slot_argv(const std::string& command,
+                                                    const std::string& app_id);
 
   private:
     std::string slot_;
