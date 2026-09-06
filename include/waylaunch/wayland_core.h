@@ -82,6 +82,42 @@ using AxisHandler = std::function<void(double x, double y, int32_t axis, double 
 using CloseHandler = std::function<void()>;
 using RedrawHandler = std::function<void()>;
 
+// Layer-shell placement for the surface. Values match the
+// zwlr_layer_surface_v1 anchor/keyboard-interactivity enums so the .cpp can
+// static_assert the mapping instead of translating.
+enum class LayerAnchor : uint32_t {
+    Top = 1,
+    Bottom = 2,
+    Left = 4,
+    Right = 8,
+};
+
+enum class LayerKeyboardMode : uint32_t {
+    None = 0,
+    Exclusive = 1,
+    OnDemand = 2,
+};
+
+struct LayerSurfaceConfig {
+    // Edges the surface anchors to; opposite pairs stretch (0 in that
+    // dimension), a single edge takes the explicit size.
+    uint32_t anchors =
+        static_cast<uint32_t>(LayerAnchor::Top) | static_cast<uint32_t>(LayerAnchor::Bottom) |
+        static_cast<uint32_t>(LayerAnchor::Left) | static_cast<uint32_t>(LayerAnchor::Right);
+    int32_t width = 0;  // 0 = span the output in this dimension
+    int32_t height = 0; // 0 = span the output in this dimension
+    // Offset from the anchored edge(s). The dropdown tab strip anchors
+    // TOP|LEFT with explicit size and margins placing it flush above its
+    // terminal instead of under the bar at the output edge.
+    int32_t margin_top = 0;
+    int32_t margin_right = 0;
+    int32_t margin_bottom = 0;
+    int32_t margin_left = 0;
+    LayerKeyboardMode keyboard = LayerKeyboardMode::Exclusive;
+    int32_t exclusive_zone = -1; // -1: render above other exclusive zones
+    const char* layer_namespace = "waylaunch";
+};
+
 class WaylandCore {
   public:
     WaylandCore();
@@ -91,6 +127,11 @@ class WaylandCore {
     void run();
     void set_running(bool v); // begin/stop the external dispatch loop
     void quit();
+
+    // Layer placement for the surface. Call before init() for the initial
+    // map, and/or before remap_surface() to resize/reposition on re-show.
+    // Default reproduces the historical fullscreen overlay exactly.
+    void set_layer_surface_config(const LayerSurfaceConfig& config);
 
     Buffer* acquire_buffer();
     void submit_buffer(Buffer* buf, int x = 0, int y = 0);
@@ -222,12 +263,14 @@ class WaylandCore {
 #endif
 
   private:
+    void apply_layer_config() const; // shared by init() and remap_surface()
     wl_display* display_ = nullptr;
     wl_registry* registry_ = nullptr;
     wl_surface* surface_ = nullptr;
 
     bool running_ = false;
     bool want_backdrop_ = true;
+    LayerSurfaceConfig layer_config_;
     int32_t pending_width_ = 0;
     int32_t pending_height_ = 0;
     bool configured_ = false;

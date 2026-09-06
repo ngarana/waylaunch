@@ -257,6 +257,7 @@ bool Config::load(const std::string& path) {
             dd.focus_grace_ms = get_int(*dropdown, "focus_grace_ms", dd.focus_grace_ms);
             dd.respawn = get_bool(*dropdown, "respawn", dd.respawn);
             dd.animation = get_str(*dropdown, "animation", dd.animation);
+            dd.tab_strip = get_bool(*dropdown, "tab_strip", dd.tab_strip);
 
             if (auto* slots = (*dropdown)["slots"].as_array()) {
                 for (auto& entry : *slots) {
@@ -414,6 +415,7 @@ bool Config::save(const std::string& path) const {
     file << "focus_grace_ms = " << config_.dropdown.focus_grace_ms << "\n";
     file << "respawn = " << (config_.dropdown.respawn ? "true" : "false") << "\n";
     file << "animation = \"" << config_.dropdown.animation << "\"\n";
+    file << "tab_strip = " << (config_.dropdown.tab_strip ? "true" : "false") << "\n";
 
     for (const auto& slot : config_.dropdown.slots) {
         file << "\n[[dropdown.slots]]\n";

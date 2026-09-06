@@ -146,6 +146,12 @@ changes in the working tree.
   `pkill -f "sleep 300"` while the string sits in the invoking shell) — it
   kills your shell session. Prefer compositor IPC (`window.close`/`kill` by
   `class:`/`address:`) for stray test windows.
+- `hyprctl repl "cmd"` with no stdin redirection drops into interactive REPL
+  and hangs the command: always feed it `</dev/null` or pipe through `head`.
+- When click-testing, confirm the compositor's button mapping first: user
+  configs like `left_handed = true` swap BTN_LEFT/BTN_RIGHT compositor-side,
+  so an injector must send the swapped code and `hyprctl cursorpos` verifies
+  motion independently of button delivery.
 
 ## 7. Docs map
 

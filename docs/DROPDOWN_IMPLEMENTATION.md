@@ -114,6 +114,7 @@ include/waylaunch/dropdown/
     hyprland_backend.h
     hyprland_events.h       # event-stream fd + line parser (phase 3)
     focus_guard.h           # retract policy: grace + ancestry (phase 3)
+    tab_strip.h             # owned tab strip: layout/hit-test/render (phase 5)
     dropdown_manager.h      # the state machine — pure logic
     geometry_policy.h       # pure function
     session_supervisor.h
@@ -123,6 +124,7 @@ src/dropdown/
     hyprland_events.cpp
     hyprland_json.cpp       # minimal scanner for j/clients, j/monitors
     focus_guard.cpp
+    tab_strip.cpp
     dropdown_manager.cpp
     geometry_policy.cpp
     session_supervisor.cpp
@@ -134,6 +136,7 @@ tests/
     hyprland_json_test.cpp
     hyprland_events_test.cpp
     focus_guard_test.cpp
+    tab_strip_test.cpp
 ```
 
 Register sources in `CMakeLists.txt:136` (`set(SOURCES ...)`) and tests in the
@@ -371,6 +374,7 @@ hide_on_focus_loss = true
 focus_grace_ms     = 150       # phase 3 debounce
 respawn            = true
 animation          = "slide"
+tab_strip          = true      # phase 5 owned tab strip
 
 [[dropdown.slots]]             # phase 4; omitting it yields one default slot
 name    = "term"
@@ -426,3 +430,33 @@ the daily friction and are a weekend against infrastructure that already exists.
   correctly" from "retracts annoyingly".
 - **Scope creep toward a terminal.** Once a tab strip exists, "just add splits"
   is one step away. The no-pty boundary is the guardrail.
+
+### Known limitations (as built, phases 1–5)
+
+1. **Multi-monitor strip placement.** The terminal follows the *focused*
+   monitor (geometry recomputed on every show), but the tab strip surface is
+   created with a null output and follows the *cursor* output. On multi-head
+   setups the two can diverge. Fixing it needs per-show output selection
+   (`wl_output` matching by focused monitor name) plus surface recreation in
+   `WaylandCore`, which currently creates the layer surface once in `init()`.
+2. **Same-class intruders.** Matching is by app-id/class string, so a
+   manually spawned same-class window (a) appears as a tab, (b) counts for
+   focus-loss (focusing it retracts the dropdown — fail-safe, arguably
+   correct), and (c) makes show/hide act on the first `j/clients` match,
+   which may not be the supervised child. Prefer unique slot classes.
+3. **No cover over fullscreen** (gap 2, unchanged): `alter_zorder(top)` raises
+   above floats only. Client-owned above-everything needs the layer-shell
+   terminal from Option D.
+4. **No resize affordance yet.** `dropdown.tsv` loads persisted per-slot
+   geometry overrides, but nothing writes them — the draggable edge / slider
+   (gap 5 remainder) is still open.
+5. **Compositor restart.** The event stream reconnects with backoff and IPC
+   placement recovers on next toggle, but a poisoned Wayland connection sheds
+   the tab strip for the rest of the daemon's life (deliberate: a deaf
+   daemon is worse than a strip-less one). Restart the daemon for tabs back.
+6. **Strip needs foreign-toplevel.** Without the protocol (`HAS_FOREIGN_TOPLEVEL`
+   unset) the strip stays off; lifecycle and placement are unaffected.
+7. **Open manual checks.** Descendant suppression (file picker keeping the
+   dropdown open) is unit-tested plus `/proc`-walk-tested but not yet staged
+   live; same for multi-monitor following. Both need a quiet desktop and a
+   cooperative dialog.

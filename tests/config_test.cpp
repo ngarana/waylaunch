@@ -29,6 +29,7 @@ int main() {
              << "focus_grace_ms = 300\n"
              << "respawn = false\n"
              << "animation = \"fade\"\n"
+             << "tab_strip = false\n"
              << "\n[[dropdown.slots]]\n"
              << "name = \"notes\"\n"
              << "command = \"kitty -e nvim\"\n"
@@ -50,6 +51,7 @@ int main() {
     assert(dropdown.focus_grace_ms == 300);
     assert(!dropdown.respawn);
     assert(dropdown.animation == "fade");
+    assert(!dropdown.tab_strip);
     assert(dropdown.slots.size() == 1);
     assert(dropdown.slots[0].name == "notes");
     assert(dropdown.slots[0].command == "kitty -e nvim");
@@ -69,6 +71,7 @@ int main() {
     assert(dd.width_percent == 90 && dd.height_percent == 50);
     assert(!dd.hide_on_focus_loss && dd.focus_grace_ms == 300);
     assert(!dd.respawn && dd.animation == "fade");
+    assert(!dd.tab_strip);
     assert(dd.slots.size() == 1 && dd.slots[0].name == "notes");
     assert(dd.slots[0].command == "kitty -e nvim");
     assert(dd.slots[0].width_percent == -1 && dd.slots[0].height_percent == 60);

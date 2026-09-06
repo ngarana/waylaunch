@@ -44,6 +44,8 @@ struct DropdownConfig {
     int focus_grace_ms = 150; // ignore focus events this soon after a show
     bool respawn = true;
     std::string animation = "slide"; // compositor-side tuning hint (phase 6)
+    // Owned tab strip (phase 5): thin layer surface above the terminal.
+    bool tab_strip = true;
     // Named slots (phase 4). Empty → one implicit default slot.
     std::vector<DropdownSlot> slots;
 };

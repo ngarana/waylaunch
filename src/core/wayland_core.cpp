@@ -332,20 +332,15 @@ bool WaylandCore::init() {
         return false;
     }
 
-    // Full-output transparent overlay. The panel is drawn near the top and the
+    // Layer surface over the output. With the default config this is a
+    // full-output transparent overlay: the panel is drawn near the top and the
     // rest of the surface remains transparent so clicks outside it can dismiss
     // the launcher while the layer owns the keyboard exclusively.
-    layer_surface_ = zwlr_layer_shell_v1_get_layer_surface(
-        layer_shell_, surface_, nullptr, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "waylaunch");
+    layer_surface_ = zwlr_layer_shell_v1_get_layer_surface(layer_shell_, surface_, nullptr,
+                                                           ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
+                                                           layer_config_.layer_namespace);
     if (!layer_surface_) return false;
-    zwlr_layer_surface_v1_set_keyboard_interactivity(
-        layer_surface_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
-    zwlr_layer_surface_v1_set_anchor(
-        layer_surface_, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
-                            ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-    zwlr_layer_surface_v1_set_size(layer_surface_, 0, 0);
-    // -1: render above other exclusive zones (bars).
-    zwlr_layer_surface_v1_set_exclusive_zone(layer_surface_, -1);
+    apply_layer_config();
 
     static const zwlr_layer_surface_v1_listener ls_listener = {
         .configure =
@@ -492,14 +487,43 @@ void WaylandCore::remap_surface() {
     // values as init()), then commit WITHOUT a buffer. The compositor answers
     // with a configure; its handler acks and fires the redraw handler, whose
     // render attaches the first buffer and thereby maps + regains the keyboard.
-    zwlr_layer_surface_v1_set_keyboard_interactivity(
-        layer_surface_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
-    zwlr_layer_surface_v1_set_anchor(
-        layer_surface_, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
-                            ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-    zwlr_layer_surface_v1_set_size(layer_surface_, 0, 0);
-    zwlr_layer_surface_v1_set_exclusive_zone(layer_surface_, -1);
+    apply_layer_config();
     wl_surface_commit(surface_);
+}
+
+void WaylandCore::set_layer_surface_config(const LayerSurfaceConfig& config) {
+    layer_config_ = config;
+    if (layer_config_.layer_namespace == nullptr) layer_config_.layer_namespace = "waylaunch";
+}
+
+void WaylandCore::apply_layer_config() const {
+    // LayerSurfaceConfig mirrors these enums by value; fail the build rather
+    // than misplace a surface if the protocol ever renumbers them.
+    static_assert(static_cast<uint32_t>(LayerAnchor::Top) == ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP);
+    static_assert(static_cast<uint32_t>(LayerAnchor::Bottom) ==
+                  ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM);
+    static_assert(static_cast<uint32_t>(LayerAnchor::Left) == ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT);
+    static_assert(static_cast<uint32_t>(LayerAnchor::Right) == ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+    static_assert(static_cast<uint32_t>(LayerKeyboardMode::None) ==
+                  ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
+    static_assert(static_cast<uint32_t>(LayerKeyboardMode::Exclusive) ==
+                  ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
+    static_assert(static_cast<uint32_t>(LayerKeyboardMode::OnDemand) ==
+                  ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND);
+    uint32_t interactivity = ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE;
+    if (layer_config_.keyboard == LayerKeyboardMode::None) {
+        interactivity = ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE;
+    } else if (layer_config_.keyboard == LayerKeyboardMode::OnDemand) {
+        interactivity = ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND;
+    }
+    zwlr_layer_surface_v1_set_keyboard_interactivity(layer_surface_, interactivity);
+    zwlr_layer_surface_v1_set_anchor(layer_surface_, layer_config_.anchors);
+    zwlr_layer_surface_v1_set_size(layer_surface_, layer_config_.width, layer_config_.height);
+    zwlr_layer_surface_v1_set_margin(layer_surface_, layer_config_.margin_top,
+                                     layer_config_.margin_right, layer_config_.margin_bottom,
+                                     layer_config_.margin_left);
+    // -1: render above other exclusive zones (bars).
+    zwlr_layer_surface_v1_set_exclusive_zone(layer_surface_, layer_config_.exclusive_zone);
 }
 
 void WaylandCore::handle_buffer_release(wl_buffer* wl_buf) {

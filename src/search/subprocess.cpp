@@ -8,8 +8,10 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <poll.h>
+#include <sched.h>
 #include <spawn.h>
 #include <sstream>
+#include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -51,6 +53,24 @@ ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::s
                 .stdout = "",
                 .stderr = "Failed to prepare spawn: " + std::string(strerror(action_error))};
     }
+    // Fresh signal mask for the child: our processes block signals for
+    // signalfd multiplexing, and an inherited blocked mask would make the
+    // child undeaf to SIGTERM/SIGINT. Dispositions stay inherited (all
+    // default/ignored here, never custom handlers).
+    posix_spawnattr_t attrs;
+    bool attrs_ready = posix_spawnattr_init(&attrs) == 0;
+    if (attrs_ready) {
+        sigset_t empty;
+        sigemptyset(&empty);
+        attrs_ready = posix_spawnattr_setsigmask(&attrs, &empty) == 0 &&
+                      posix_spawnattr_setflags(&attrs, POSIX_SPAWN_SETSIGMASK) == 0;
+        if (!attrs_ready) posix_spawnattr_destroy(&attrs);
+    }
+    if (!attrs_ready) {
+        posix_spawn_file_actions_destroy(&actions);
+        close_all();
+        return {.exit_code = -1, .stdout = "", .stderr = "Failed to prepare spawn attrs"};
+    }
     auto add_action = [&](int result) {
         if (result == 0) return true;
         action_error = result;
@@ -72,6 +92,7 @@ ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::s
         add_action(posix_spawn_file_actions_addclose(&actions, stderr_pipe[1]));
     if (!actions_ready) {
         posix_spawn_file_actions_destroy(&actions);
+        posix_spawnattr_destroy(&attrs);
         close_all();
         return {.exit_code = -1,
                 .stdout = "",
@@ -84,8 +105,9 @@ ProcessResult Subprocess::run(const std::vector<std::string>& argv, const std::s
     c_argv.push_back(nullptr);
 
     pid_t pid;
-    int ret = posix_spawnp(&pid, argv[0].c_str(), &actions, nullptr, c_argv.data(), environ);
+    int ret = posix_spawnp(&pid, argv[0].c_str(), &actions, &attrs, c_argv.data(), environ);
     posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&attrs);
 
     if (ret != 0) {
         close_all();
@@ -252,20 +274,74 @@ void Subprocess::spawn_detached(const std::vector<std::string>& argv) {
     }
 }
 
-// Single fork + setsid so the child stays ours for waitpid/SIGCHLD reaping.
-// The caller owns respawn policy; this only forks and execs.
+// Single supervised child (new session) that stays ours for waitpid/SIGCHLD
+// reaping. The caller owns respawn policy; this only spawns and execs.
+//
+// Implemented with a raw vfork-clone rather than fork(), deliberately: fork()
+// runs pthread_atfork handlers, and forking while a worker thread (e.g.
+// fontconfig, pulled in by tab-strip rendering) holds a lock wedged daemons
+// mid-spawn with all signals blocked for signalfd — observed live as a deaf
+// futex-parked process. The clone child touches nothing but the exec (no
+// atfork handlers run, no lock state is cloned), then execve replaces it.
+//
+// The child also starts with an empty signal mask: our daemons block signals
+// for signalfd multiplexing, and an inherited blocked mask would leave the
+// child undeaf to SIGTERM/SIGINT (observed live as unkillable terminals).
+namespace {
+
+struct TrackedSpawn {
+    char* const* argv;
+    const char* path;
+    char* const* env;
+};
+
+int tracked_child(void* raw) {
+    auto* args = static_cast<TrackedSpawn*>(raw);
+    sigset_t empty;
+    sigemptyset(&empty);
+    sigprocmask(SIG_SETMASK, &empty, nullptr);
+    setsid();
+    execve(args->path, args->argv, args->env);
+    _exit(127);
+}
+
+// execvp-equivalent resolution in the parent (the vfork child may not
+// allocate): absolute/relative paths pass through, bare names search PATH.
+std::string resolve_exec(const std::string& name) {
+    if (name.find('/') != std::string::npos) return name;
+    const char* path_env = getenv("PATH");
+    std::string paths = (path_env != nullptr) ? path_env : "/usr/bin:/bin";
+    size_t start = 0;
+    while (true) {
+        size_t end = paths.find(':', start);
+        std::string candidate = paths.substr(start, end - start);
+        if (!candidate.empty()) candidate += '/';
+        candidate += name;
+        if (access(candidate.c_str(), X_OK) == 0) return candidate;
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return name; // let execve fail with ENOENT, same exit code as execvp would
+}
+
+} // namespace
+
 pid_t Subprocess::spawn_tracked(const std::vector<std::string>& argv) {
     if (argv.empty()) return -1;
-    pid_t pid = fork();
-    if (pid == 0) {
-        setsid();
-        std::vector<char*> c_argv;
-        c_argv.reserve(argv.size() + 1);
-        for (const auto& s : argv) c_argv.push_back(const_cast<char*>(s.c_str()));
-        c_argv.push_back(nullptr);
-        execvp(c_argv[0], c_argv.data());
-        _exit(127);
-    }
+    std::string path = resolve_exec(argv[0]);
+    std::vector<char*> c_argv;
+    c_argv.reserve(argv.size() + 1);
+    for (const auto& s : argv) c_argv.push_back(const_cast<char*>(s.c_str()));
+    c_argv.push_back(nullptr);
+    TrackedSpawn args{.argv = c_argv.data(), .path = path.c_str(), .env = environ};
+    // 1 MiB child stack; the vfork child suspends us until execve/_exit.
+    constexpr size_t kStackSize = static_cast<size_t>(1024) * 1024;
+    void* stack =
+        mmap(nullptr, kStackSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (stack == MAP_FAILED) return -1;
+    pid_t pid = clone(tracked_child, static_cast<char*>(stack) + kStackSize,
+                      CLONE_VFORK | CLONE_VM | SIGCHLD, &args);
+    munmap(stack, kStackSize);
     return pid;
 }
 

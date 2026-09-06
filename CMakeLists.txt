@@ -172,6 +172,7 @@ set(SOURCES
     src/dropdown/hyprland_events.cpp
     src/dropdown/focus_guard.cpp
     src/dropdown/dropdown_state.cpp
+    src/dropdown/tab_strip.cpp
     ${PROTOCOL_SOURCES}
 )
 
@@ -409,6 +410,27 @@ if(BUILD_TESTING)
     )
     target_compile_options(renderer_golden_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
     add_test(NAME renderer_golden_test COMMAND renderer_golden_test)
+
+    # Dropdown phase 5: tab strip layout/hit-testing (render glue shares the
+    # golden test's cairo/pango linkage).
+    add_executable(tab_strip_test tests/tab_strip_test.cpp
+        src/dropdown/tab_strip.cpp
+        src/ui/renderer.cpp)
+    target_include_directories(tab_strip_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CAIRO_INCLUDE_DIRS}
+        ${PANGO_INCLUDE_DIRS}
+        ${FONTCONFIG_INCLUDE_DIRS}
+        ${LIBRSVG_INCLUDE_DIRS}
+    )
+    target_link_libraries(tab_strip_test PRIVATE
+        ${CAIRO_LIBRARIES}
+        ${PANGO_LIBRARIES}
+        ${FONTCONFIG_LIBRARIES}
+        ${LIBRSVG_LIBRARIES}
+    )
+    target_compile_options(tab_strip_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    add_test(NAME tab_strip_test COMMAND tab_strip_test)
 endif()
 
 # Install
