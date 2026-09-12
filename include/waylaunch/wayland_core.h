@@ -116,6 +116,12 @@ struct LayerSurfaceConfig {
     LayerKeyboardMode keyboard = LayerKeyboardMode::Exclusive;
     int32_t exclusive_zone = -1; // -1: render above other exclusive zones
     const char* layer_namespace = "waylaunch";
+    // Output to map on, by wl_output name (`eDP-1`, `DP-2`). Empty leaves the
+    // choice to the compositor, which picks the one with the pointer — fine
+    // for a fullscreen overlay, wrong for a surface that must sit flush above
+    // a window placed on the *focused* monitor. The output is fixed when the
+    // layer surface is created, so changing this recreates it (remap_surface).
+    std::string output_name;
 };
 
 class WaylandCore {
@@ -187,11 +193,17 @@ class WaylandCore {
     void handle_keymap(uint32_t format, int32_t fd, uint32_t size);
     void handle_key(uint32_t serial, uint32_t time, uint32_t key, uint32_t state);
     void handle_modifiers(uint32_t md, uint32_t ml, uint32_t mk, uint32_t group) const;
-    void handle_output_geometry(int32_t x, int32_t y, int32_t w, int32_t h, int32_t transform,
-                                int32_t factor);
-    void handle_output_mode(uint32_t flags, int32_t width, int32_t height, int32_t refresh);
-    void handle_output_scale(int32_t factor);
-    void handle_output_name(const std::string& name);
+    void handle_output_geometry(wl_output* out, int32_t x, int32_t y, int32_t w, int32_t h,
+                                int32_t transform, int32_t factor);
+    void handle_output_mode(wl_output* out, uint32_t flags, int32_t width, int32_t height,
+                            int32_t refresh);
+    void handle_output_scale(wl_output* out, int32_t factor);
+    void handle_output_name(wl_output* out, const std::string& name);
+    // OutputInfo owning `out`, or nullptr. Public only because the C listener
+    // trampolines above route through it.
+    OutputInfo* output_for(wl_output* out);
+    // Bound wl_output whose name matches, or nullptr (also for an empty name).
+    wl_output* output_by_name(const std::string& name);
     void handle_buffer_release(wl_buffer* buf);
 
     // C-ABI glue: these are written by the free-function wl_listener trampolines
@@ -227,6 +239,10 @@ class WaylandCore {
 
     zwlr_layer_shell_v1* layer_shell_ = nullptr;
     zwlr_layer_surface_v1* layer_surface_ = nullptr;
+    // Output name the live layer_surface_ was created against, so
+    // remap_surface() can tell when it has to be rebuilt on another monitor.
+    std::string layer_output_name_;
+    bool create_layer_surface();
 
 #ifdef HAS_FOREIGN_TOPLEVEL
     zwlr_foreign_toplevel_manager_v1* foreign_toplevel_manager_ = nullptr;

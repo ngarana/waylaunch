@@ -112,7 +112,56 @@ void test_resolve_slot() {
     std::cout << "[PASS] resolve slot\n";
 }
 
+// Gap-5 remainder: a manual resize is learned on hide, jitter is not.
+void test_learn_resize() {
+    Geometry placed{.x = 0, .y = 36, .w = 1920, .h = 444};
+
+    // Untouched: exactly what we placed.
+    assert(!learn_resize(placed, placed, 36, 8, true).has_value());
+
+    // Compositor rounding stays under the epsilon.
+    Geometry jitter{.x = 0, .y = 36, .w = 1918, .h = 441};
+    assert(!learn_resize(placed, jitter, 36, 8, true).has_value());
+
+    // A real drag is learned, with the strip band added back so the stored
+    // size describes the whole dropdown.
+    Geometry dragged{.x = 0, .y = 36, .w = 1920, .h = 700};
+    auto learned = learn_resize(placed, dragged, 36, 8, true);
+    assert(learned.has_value());
+    assert(learned->w == 1920);
+    assert(learned->h == 736);
+
+    // With no strip the terminal is the whole dropdown.
+    auto no_strip = learn_resize(placed, dragged, 0, 8, true);
+    assert(no_strip.has_value() && no_strip->h == 700);
+
+    // Width-only changes count too.
+    Geometry narrowed{.x = 0, .y = 36, .w = 1200, .h = 444};
+    assert(learn_resize(placed, narrowed, 36, 8, true).has_value());
+
+    // Degenerate readings are ignored rather than persisted.
+    assert(
+        !learn_resize(placed, Geometry{.x = 0, .y = 0, .w = 0, .h = 0}, 36, 8, true).has_value());
+    assert(!learn_resize(Geometry{}, dragged, 36, 8, true).has_value());
+
+    // A tiled (or otherwise externally reshaped) window is the compositor's
+    // doing, never a manual resize — learning it would pin layout geometry
+    // over the configured size on every future show.
+    Geometry tiled{.x = 16, .y = 85, .w = 1898, .h = 1145};
+    assert(!learn_resize(placed, tiled, 36, 8, false).has_value());
+
+    // A learned size round-trips through the policy as the override.
+    DropdownConfig config;
+    config.size_override = learned;
+    MonitorInfo monitor{.name = "eDP-1", .x = 0, .y = 0, .w = 1920, .h = 1200, .scale = 1.0};
+    Geometry applied = compute_geometry(monitor, config);
+    assert(applied.w == 1920 && applied.h == 736);
+
+    std::cout << "[PASS] learn resize\n";
+}
+
 int main() {
+    test_learn_resize();
     test_top_default_sits_below_bar();
     test_bottom_anchors_to_usable_base();
     test_side_edges_anchor_horizontally();

@@ -38,13 +38,13 @@ std::vector<TabStrip::Rect> TabStrip::layout(int total_width) const {
     return rects;
 }
 
-uintptr_t TabStrip::hit_test(int x, int y, int total_width) const {
-    if (y < 0 || y >= kHeight) return 0;
+std::string TabStrip::hit_test(int x, int y, int total_width) const {
+    if (y < 0 || y >= kHeight) return {};
     std::vector<Rect> rects = layout(total_width);
     for (size_t i = 0; i < tabs_.size() && i < rects.size(); ++i) {
-        if (rects[i].contains(x, y)) return tabs_[i].handle_id;
+        if (rects[i].contains(x, y)) return tabs_[i].address;
     }
-    return 0;
+    return {};
 }
 
 void TabStrip::render(Renderer& renderer, int total_width, const Colors& colors,

@@ -2,7 +2,6 @@
 
 #include "waylaunch/renderer.h"
 
-#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -13,14 +12,21 @@ namespace waylaunch {
 // `keyboard_interactivity: NONE`, so it takes pointer clicks without stealing
 // the keyboard. Layout and hit-testing are pure (unit-tested); render reuses
 // the existing text-and-rects Renderer, which is exactly what a dozen tabs
-// need. Tab switching itself goes through IToplevelBackend::activate, already
-// used by the switcher.
+// need.
+//
+// Tabs are keyed by compositor address and sourced from `j/clients`, the same
+// place placement reads from. That is deliberate: it makes tab membership
+// obey the slot's pid-ownership rule (so a hand-spawned same-class window is
+// not a tab), and it drops the foreign-toplevel dependency the strip used to
+// carry — the protocol reports no pid, so it could not tell the two apart.
+// Switching is IPlacementBackend::focus, and window open/close/title/focus
+// events already arrive on the event stream the daemon polls.
 class TabStrip {
   public:
     static constexpr int kHeight = 36;
 
     struct Tab {
-        uintptr_t handle_id = 0;
+        std::string address;
         std::string title;
         bool is_active = false;
     };
@@ -46,8 +52,8 @@ class TabStrip {
 
     // Equal-width tabs spanning [0, total_width). Empty when no tabs.
     std::vector<Rect> layout(int total_width) const;
-    // Handle id under (x, y), or 0 for a miss (including empty strip).
-    uintptr_t hit_test(int x, int y, int total_width) const;
+    // Address under (x, y), or empty for a miss (including empty strip).
+    std::string hit_test(int x, int y, int total_width) const;
 
     void render(Renderer& renderer, int total_width, const Colors& colors,
                 const RenderFontConfig& font) const;

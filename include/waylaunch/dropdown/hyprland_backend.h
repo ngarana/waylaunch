@@ -3,6 +3,7 @@
 #include "waylaunch/dropdown/placement_backend.h"
 
 #include <string>
+#include <vector>
 
 namespace waylaunch {
 
@@ -19,7 +20,8 @@ class HyprlandBackend : public IPlacementBackend {
   public:
     explicit HyprlandBackend(std::string slot = "default") : slot_(std::move(slot)) {}
 
-    std::optional<WindowInfo> find_window(const std::string& app_id) override;
+    std::optional<WindowInfo> find_window(const std::string& app_id, int owner_pid = -1) override;
+    std::vector<WindowInfo> find_owned_windows(const std::string& app_id, int owner_pid) override;
     std::optional<WindowInfo> find_by_address(const std::string& address) override;
     std::optional<MonitorInfo> focused_monitor() override;
     bool show(const WindowInfo& window, const Geometry& geometry) override;

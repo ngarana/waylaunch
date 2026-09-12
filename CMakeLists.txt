@@ -167,6 +167,7 @@ set(SOURCES
     src/dropdown/session_supervisor.cpp
     src/dropdown/dropdown_main.cpp
     src/dropdown/geometry_policy.cpp
+    src/dropdown/window_ownership.cpp
     src/dropdown/hyprland_backend.cpp
     src/dropdown/hyprland_json.cpp
     src/dropdown/hyprland_events.cpp
@@ -324,6 +325,13 @@ if(BUILD_TESTING)
     target_include_directories(geometry_policy_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
     target_compile_options(geometry_policy_test PRIVATE -Wall -Wextra -UNDEBUG)
     add_test(NAME geometry_policy_test COMMAND geometry_policy_test)
+
+    # Slot window identity: which same-class window actually belongs to us.
+    add_executable(window_ownership_test tests/window_ownership_test.cpp
+        src/dropdown/window_ownership.cpp)
+    target_include_directories(window_ownership_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_options(window_ownership_test PRIVATE -Wall -Wextra -UNDEBUG)
+    add_test(NAME window_ownership_test COMMAND window_ownership_test)
 
     add_executable(hyprland_json_test tests/hyprland_json_test.cpp
         src/dropdown/hyprland_json.cpp)

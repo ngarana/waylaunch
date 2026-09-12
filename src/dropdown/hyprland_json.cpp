@@ -32,9 +32,39 @@ struct Cursor {
     }
 };
 
-// Parses a JSON string including \" \\ \/ \b \f \n \r \t and \uXXXX
-// (non-ASCII escapes degrade to '?'; titles are never matched on, only
-// skipped, so fidelity beyond ASCII is unnecessary).
+// Reads 4 hex digits as a code unit; -1 when fewer than 4 remain.
+int parse_hex4(Cursor& cur) {
+    int value = 0;
+    for (int i = 0; i < 4; ++i) {
+        if (cur.p >= cur.end || !std::isxdigit(static_cast<unsigned char>(*cur.p))) return -1;
+        char c = *cur.p++;
+        int digit = (c <= '9') ? (c - '0') : ((c | 0x20) - 'a' + 10);
+        value = (value << 4) | digit;
+    }
+    return value;
+}
+
+void append_utf8(std::string& out, unsigned int cp) {
+    if (cp < 0x80) {
+        out.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+        out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+        out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+}
+
+// Parses a JSON string including \" \\ \/ \b \f \n \r \t and \uXXXX.
+// Escapes decode to real UTF-8 (surrogate pairs included): titles are drawn
+// in the tab strip, so a terminal titled with non-ASCII must survive intact.
 bool parse_string(Cursor& cur, std::string& out) {
     cur.skip_ws();
     if (cur.empty() || *cur.p != '"') return false;
@@ -58,15 +88,32 @@ bool parse_string(Cursor& cur, std::string& out) {
             case 'n': out.push_back('\n'); break;
             case 'r': out.push_back('\r'); break;
             case 't': out.push_back('\t'); break;
-            case 'u':
-                for (int i = 0; i < 4; ++i) {
-                    if (cur.p >= cur.end || !std::isxdigit(static_cast<unsigned char>(*cur.p))) {
-                        return false;
+            case 'u': {
+                int unit = parse_hex4(cur);
+                if (unit < 0) return false;
+                unsigned int cp = static_cast<unsigned int>(unit);
+                // A high surrogate must be followed by \uDC00-\uDFFF; anything
+                // else is emitted as U+FFFD rather than a malformed sequence.
+                if (cp >= 0xD800 && cp <= 0xDBFF) {
+                    int low = -1;
+                    if (cur.end - cur.p >= 2 && cur.p[0] == '\\' && cur.p[1] == 'u') {
+                        const char* save = cur.p;
+                        cur.p += 2;
+                        low = parse_hex4(cur);
+                        if (low < 0xDC00 || low > 0xDFFF) {
+                            cur.p = save;
+                            low = -1;
+                        }
                     }
-                    ++cur.p;
+                    cp = (low < 0) ? 0xFFFDU
+                                   : 0x10000U + ((cp - 0xD800U) << 10) +
+                                         (static_cast<unsigned int>(low) - 0xDC00U);
+                } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+                    cp = 0xFFFD; // lone low surrogate
                 }
-                out.push_back('?');
+                append_utf8(out, cp);
                 break;
+            }
             default: return false;
         }
     }
@@ -208,6 +255,12 @@ std::vector<HyprClient> parse_hypr_clients(const std::string& json) {
                 ok = parse_string(cur, client.address);
             } else if (key == "class") {
                 ok = parse_string(cur, client.klass);
+            } else if (key == "title") {
+                ok = parse_string(cur, client.title);
+            } else if (key == "focusHistoryID") {
+                double value = 0;
+                ok = parse_number(cur, value);
+                client.focus_history_id = static_cast<int>(value);
             } else if (key == "pid") {
                 double value = 0;
                 ok = parse_number(cur, value);

@@ -221,20 +221,20 @@ static const wl_seat_listener seat_listener = {.capabilities = seat_capabilities
                                                .name = seat_name_cb};
 
 // Output
-static void output_geometry_cb(void* data, wl_output*, int32_t x, int32_t y, int32_t w, int32_t h,
-                               int32_t, const char*, const char*, int32_t) {
-    static_cast<WaylandCore*>(data)->handle_output_geometry(x, y, w, h, 0, 1);
+static void output_geometry_cb(void* data, wl_output* out, int32_t x, int32_t y, int32_t w,
+                               int32_t h, int32_t, const char*, const char*, int32_t) {
+    static_cast<WaylandCore*>(data)->handle_output_geometry(out, x, y, w, h, 0, 1);
 }
-static void output_mode_cb(void* data, wl_output*, uint32_t flags, int32_t w, int32_t h,
+static void output_mode_cb(void* data, wl_output* out, uint32_t flags, int32_t w, int32_t h,
                            int32_t r) {
-    static_cast<WaylandCore*>(data)->handle_output_mode(flags, w, h, r);
+    static_cast<WaylandCore*>(data)->handle_output_mode(out, flags, w, h, r);
 }
 static void output_done_cb(void*, wl_output*) {}
-static void output_scale_cb(void* data, wl_output*, int32_t f) {
-    static_cast<WaylandCore*>(data)->handle_output_scale(f);
+static void output_scale_cb(void* data, wl_output* out, int32_t f) {
+    static_cast<WaylandCore*>(data)->handle_output_scale(out, f);
 }
-static void output_name_cb(void* data, wl_output*, const char* n) {
-    static_cast<WaylandCore*>(data)->handle_output_name(n ? n : "");
+static void output_name_cb(void* data, wl_output* out, const char* n) {
+    static_cast<WaylandCore*>(data)->handle_output_name(out, n ? n : "");
 }
 static void output_description_cb(void*, wl_output*, const char*) {}
 static const wl_output_listener output_listener = {
@@ -336,30 +336,7 @@ bool WaylandCore::init() {
     // full-output transparent overlay: the panel is drawn near the top and the
     // rest of the surface remains transparent so clicks outside it can dismiss
     // the launcher while the layer owns the keyboard exclusively.
-    layer_surface_ = zwlr_layer_shell_v1_get_layer_surface(layer_shell_, surface_, nullptr,
-                                                           ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
-                                                           layer_config_.layer_namespace);
-    if (!layer_surface_) return false;
-    apply_layer_config();
-
-    static const zwlr_layer_surface_v1_listener ls_listener = {
-        .configure =
-            [](void* data, zwlr_layer_surface_v1*, uint32_t serial, int32_t w, int32_t h) {
-                auto* self = static_cast<WaylandCore*>(data);
-                if (w > 0) self->pending_width_ = w;
-                if (h > 0) self->pending_height_ = h;
-                self->configured_ = true;
-                zwlr_layer_surface_v1_ack_configure(self->layer_surface_, serial);
-                if (self->redraw_handler_) self->redraw_handler_();
-            },
-        .closed =
-            [](void* data, zwlr_layer_surface_v1*) {
-                auto* self = static_cast<WaylandCore*>(data);
-                if (self->close_handler_) self->close_handler_();
-                self->running_ = false;
-            },
-    };
-    zwlr_layer_surface_v1_add_listener(layer_surface_, &ls_listener, this);
+    if (!create_layer_surface()) return false;
 
     pending_width_ = output_width();
     pending_height_ = output_height();
@@ -480,8 +457,58 @@ void WaylandCore::unmap_surface() {
     configured_ = false;
 }
 
+// Creates (or recreates) the layer surface for layer_config_.output_name.
+// The output is immutable once zwlr_layer_shell_v1.get_layer_surface has been
+// called, so following the focused monitor means destroying this object and
+// making a new one — legal here because the wl_surface carries no buffer at
+// this point (fresh, or just unmapped).
+bool WaylandCore::create_layer_surface() {
+    if (!layer_shell_ || !surface_) return false;
+    static const zwlr_layer_surface_v1_listener ls_listener = {
+        .configure =
+            [](void* data, zwlr_layer_surface_v1*, uint32_t serial, int32_t w, int32_t h) {
+                auto* self = static_cast<WaylandCore*>(data);
+                if (w > 0) self->pending_width_ = w;
+                if (h > 0) self->pending_height_ = h;
+                self->configured_ = true;
+                zwlr_layer_surface_v1_ack_configure(self->layer_surface_, serial);
+                if (self->redraw_handler_) self->redraw_handler_();
+            },
+        .closed =
+            [](void* data, zwlr_layer_surface_v1*) {
+                auto* self = static_cast<WaylandCore*>(data);
+                if (self->close_handler_) self->close_handler_();
+                self->running_ = false;
+            },
+    };
+    if (layer_surface_ != nullptr) {
+        zwlr_layer_surface_v1_destroy(layer_surface_);
+        layer_surface_ = nullptr;
+        configured_ = false;
+    }
+    // An unknown name yields nullptr, i.e. the compositor's choice — better a
+    // surface on the wrong monitor than no surface at all.
+    wl_output* target = output_by_name(layer_config_.output_name);
+    layer_surface_ = zwlr_layer_shell_v1_get_layer_surface(layer_shell_, surface_, target,
+                                                           ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
+                                                           layer_config_.layer_namespace);
+    if (!layer_surface_) return false;
+    layer_output_name_ = layer_config_.output_name;
+    zwlr_layer_surface_v1_add_listener(layer_surface_, &ls_listener, this);
+    apply_layer_config();
+    return true;
+}
+
 void WaylandCore::remap_surface() {
     if (!surface_ || !layer_surface_) return;
+    // A different target output than the live layer surface was created on:
+    // rebuild it before re-applying state, otherwise the strip stays on the
+    // monitor it first mapped to while the terminal moves.
+    if (layer_config_.output_name != layer_output_name_) {
+        if (!create_layer_surface()) return;
+        wl_surface_commit(surface_);
+        return;
+    }
     // Re-mapping after an unmap = the initial-commit handshake all over again:
     // the unmap discarded anchor/size/interactivity, so re-apply them (same
     // values as init()), then commit WITHOUT a buffer. The compositor answers
@@ -631,23 +658,44 @@ void WaylandCore::handle_modifiers(uint32_t md, uint32_t ml, uint32_t mk, uint32
     if (modifiers_handler_) modifiers_handler_(md);
 }
 
-void WaylandCore::handle_output_geometry(int32_t, int32_t, int32_t w, int32_t h, int32_t, int32_t) {
-    if (!outputs_.empty()) {
-        outputs_.back().width = w;
-        outputs_.back().height = h;
+// Each wl_output's events must land on ITS OutputInfo, not on whichever was
+// bound last. The registry advertises every global before any of their events
+// arrive, so with two monitors the old `outputs_.back()` wrote both outputs'
+// names and modes onto the second entry — invisible on a single head, wrong
+// on every multi-head. The callbacks already carry the wl_output; match on it.
+OutputInfo* WaylandCore::output_for(wl_output* out) {
+    for (OutputInfo& info : outputs_) {
+        if (info.output == out) return &info;
+    }
+    return nullptr;
+}
+
+void WaylandCore::handle_output_geometry(wl_output* out, int32_t, int32_t, int32_t w, int32_t h,
+                                         int32_t, int32_t) {
+    if (OutputInfo* info = output_for(out); info != nullptr) {
+        info->width = w;
+        info->height = h;
     }
 }
-void WaylandCore::handle_output_mode(uint32_t, int32_t w, int32_t h, int32_t) {
-    if (!outputs_.empty()) {
-        outputs_.back().width = w;
-        outputs_.back().height = h;
+void WaylandCore::handle_output_mode(wl_output* out, uint32_t, int32_t w, int32_t h, int32_t) {
+    if (OutputInfo* info = output_for(out); info != nullptr) {
+        info->width = w;
+        info->height = h;
     }
 }
-void WaylandCore::handle_output_scale(int32_t f) {
-    if (!outputs_.empty()) outputs_.back().scale = f;
+void WaylandCore::handle_output_scale(wl_output* out, int32_t f) {
+    if (OutputInfo* info = output_for(out); info != nullptr) info->scale = f;
 }
-void WaylandCore::handle_output_name(const std::string& n) {
-    if (!outputs_.empty()) outputs_.back().name = n;
+void WaylandCore::handle_output_name(wl_output* out, const std::string& n) {
+    if (OutputInfo* info = output_for(out); info != nullptr) info->name = n;
+}
+
+wl_output* WaylandCore::output_by_name(const std::string& name) {
+    if (name.empty()) return nullptr;
+    for (OutputInfo& info : outputs_) {
+        if (info.name == name) return info.output;
+    }
+    return nullptr;
 }
 
 // --- Backdrop capture (glassmorphism) ---

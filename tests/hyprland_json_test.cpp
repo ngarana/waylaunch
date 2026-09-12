@@ -82,7 +82,41 @@ void test_missing_fields_default() {
     std::cout << "[PASS] missing fields default\n";
 }
 
+// Tabs render titles now, so titles must survive parsing intact —
+// including the \uXXXX escapes Hyprland emits for non-ASCII.
+void test_title_and_focus_history() {
+    const std::string json = R"([{
+        "address": "0x1", "class": "term", "pid": 42,
+        "title": "arch@host: ~/code", "focusHistoryID": 0
+    },{
+        "address": "0x2", "class": "term", "pid": 43,
+        "title": "\u25d1 build \u2014 done", "focusHistoryID": 3
+    }])";
+    auto clients = parse_hypr_clients(json);
+    assert(clients.size() == 2);
+    assert(clients[0].title == "arch@host: ~/code");
+    assert(clients[0].focus_history_id == 0); // 0 == focused
+    // U+25D1 and U+2014 as real UTF-8, not '?'.
+    assert(clients[1].title == "\xe2\x97\x91 build \xe2\x80\x94 done");
+    assert(clients[1].focus_history_id == 3);
+    // Absent field keeps the -1 default.
+    auto bare = parse_hypr_clients(R"([{"address":"0x3","class":"term"}])");
+    assert(bare.size() == 1 && bare[0].focus_history_id == -1 && bare[0].title.empty());
+    std::cout << "[PASS] title and focus history\n";
+}
+
+// Emoji arrive as surrogate pairs; a lone surrogate must not corrupt the rest.
+void test_surrogate_pairs() {
+    auto ok = parse_hypr_clients(R"([{"address":"0x1","class":"t","title":"\ud83d\ude80 ship"}])");
+    assert(ok.size() == 1 && ok[0].title == "\xf0\x9f\x9a\x80 ship");
+    auto lone = parse_hypr_clients(R"([{"address":"0x1","class":"t","title":"\ud83d ok"}])");
+    assert(lone.size() == 1 && lone[0].title == "\xef\xbf\xbd ok"); // U+FFFD
+    std::cout << "[PASS] surrogate pairs\n";
+}
+
 int main() {
+    test_title_and_focus_history();
+    test_surrogate_pairs();
     test_clients_shape();
     test_monitors_shape();
     test_empty_and_malformed();

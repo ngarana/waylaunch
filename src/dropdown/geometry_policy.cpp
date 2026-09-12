@@ -50,4 +50,15 @@ ResolvedSlot resolve_dropdown_slot(const DropdownConfig& global, const std::stri
     return resolved;
 }
 
+std::optional<Geometry> learn_resize(const Geometry& placed, const Geometry& observed,
+                                     int strip_band, int epsilon, bool observed_floating) {
+    if (!observed_floating) return std::nullopt;
+    if (observed.w <= 0 || observed.h <= 0) return std::nullopt;
+    if (placed.w <= 0 || placed.h <= 0) return std::nullopt;
+    int dw = std::abs(observed.w - placed.w);
+    int dh = std::abs(observed.h - placed.h);
+    if (dw < epsilon && dh < epsilon) return std::nullopt;
+    return Geometry{.x = 0, .y = 0, .w = observed.w, .h = observed.h + strip_band};
+}
+
 } // namespace waylaunch

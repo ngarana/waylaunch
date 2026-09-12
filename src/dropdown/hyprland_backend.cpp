@@ -2,6 +2,7 @@
 
 #include "waylaunch/dropdown/focus_guard.h"
 #include "waylaunch/dropdown/hyprland_json.h"
+#include "waylaunch/dropdown/window_ownership.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -89,28 +90,56 @@ std::string lua_escape(const std::string& selector) {
 
 std::string window_selector(const WindowInfo& window) { return "address:" + window.address; }
 
+WindowInfo to_window(const HyprClient& client) {
+    WindowInfo info;
+    info.address = client.address;
+    info.app_id = client.klass;
+    info.title = client.title;
+    info.pid = client.pid;
+    info.geom = Geometry{.x = client.at_x, .y = client.at_y, .w = client.width, .h = client.height};
+    info.workspace = client.workspace_id;
+    info.visible = client.mapped && !client.workspace_name.starts_with("special:");
+    info.active = client.focus_history_id == 0;
+    info.floating = client.floating;
+    return info;
+}
+
+// The live ancestry walk; window_ownership.h owns the tier rules so they can
+// be exercised without /proc.
+const AncestryFn& proc_ancestry() {
+    static const AncestryFn fn = [](int pid, int ancestor) {
+        return is_descendant_process(pid, ancestor);
+    };
+    return fn;
+}
+
 std::string quoted(const WindowInfo& window) {
     return "\"" + lua_escape(window_selector(window)) + "\"";
 }
 
 } // namespace
 
-std::optional<WindowInfo> HyprlandBackend::find_window(const std::string& app_id) {
+std::optional<WindowInfo> HyprlandBackend::find_window(const std::string& app_id, int owner_pid) {
     auto reply = request(kClientsCmd);
     if (!reply.has_value()) return std::nullopt;
-    for (const HyprClient& client : parse_hypr_clients(*reply)) {
-        if (client.klass != app_id) continue;
-        WindowInfo info;
-        info.address = client.address;
-        info.app_id = app_id;
-        info.pid = client.pid;
-        info.geom =
-            Geometry{.x = client.at_x, .y = client.at_y, .w = client.width, .h = client.height};
-        info.workspace = client.workspace_id;
-        info.visible = client.mapped && !client.workspace_name.starts_with("special:");
-        return info;
+    // Best ownership tier wins, so a hand-spawned same-class window can never
+    // be placed, hidden, or resized in the slot's stead.
+    std::vector<HyprClient> clients = parse_hypr_clients(*reply);
+    size_t pick = select_owned(clients, app_id, owner_pid, proc_ancestry());
+    if (pick == std::string::npos) return std::nullopt;
+    return to_window(clients[pick]);
+}
+
+std::vector<WindowInfo> HyprlandBackend::find_owned_windows(const std::string& app_id,
+                                                            int owner_pid) {
+    std::vector<WindowInfo> windows;
+    auto reply = request(kClientsCmd);
+    if (!reply.has_value()) return windows;
+    std::vector<HyprClient> clients = parse_hypr_clients(*reply);
+    for (size_t index : filter_owned(clients, app_id, owner_pid, proc_ancestry())) {
+        windows.push_back(to_window(clients[index]));
     }
-    return std::nullopt;
+    return windows;
 }
 
 std::optional<WindowInfo> HyprlandBackend::find_by_address(const std::string& address) {
@@ -119,15 +148,7 @@ std::optional<WindowInfo> HyprlandBackend::find_by_address(const std::string& ad
     std::string want = normalize_address(address);
     for (const HyprClient& client : parse_hypr_clients(*reply)) {
         if (normalize_address(client.address) != want) continue;
-        WindowInfo info;
-        info.address = client.address;
-        info.app_id = client.klass;
-        info.pid = client.pid;
-        info.geom =
-            Geometry{.x = client.at_x, .y = client.at_y, .w = client.width, .h = client.height};
-        info.workspace = client.workspace_id;
-        info.visible = client.mapped && !client.workspace_name.starts_with("special:");
-        return info;
+        return to_window(client);
     }
     return std::nullopt;
 }
@@ -181,6 +202,12 @@ bool HyprlandBackend::show(const WindowInfo& window, const Geometry& geometry) {
                   ", y=" + std::to_string(geometry.y) + "})")) {
         return false;
     }
+    // Load-bearing beyond "raise above other floats": this is what puts the
+    // dropdown over a FULLSCREEN window — internal and client-side alike
+    // (verified live on 0.56.2 with screenshots). It is the whole of gap 2, so
+    // the bring_to_top() ban in the header is not a style note: that call
+    // ignores its window argument and would raise the active window over the
+    // fullscreen app instead of ours.
     if (!dispatch("hl.dsp.window.alter_zorder({window=" + target + ", mode=\"top\"})")) {
         return false;
     }

@@ -11,8 +11,6 @@
 #include "waylaunch/dropdown/tab_strip.h"
 #include "waylaunch/renderer.h"
 #include "waylaunch/subprocess.h"
-#include "waylaunch/switcher/toplevel_backend.h"
-#include "waylaunch/switcher/wlr_toplevel_backend.h"
 #include "waylaunch/wayland_core.h"
 
 #include <algorithm>
@@ -21,6 +19,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <poll.h>
@@ -51,6 +50,15 @@ constexpr int kAppearAttempts = 25;
 constexpr std::chrono::milliseconds kAppearRetry{200};
 
 constexpr uint32_t kBtnLeft = 0x110;
+
+// Cooldown before rebuilding the strip's Wayland connection after it fails or
+// dies, so a compositor that is restarting is not re-probed on every toggle.
+constexpr int kWaylandRetrySec = 5;
+
+// Ignore sub-threshold geometry drift when learning a user resize: compositor
+// rounding and border/gap arithmetic move the reported size by a pixel or two
+// without the user having touched anything.
+constexpr int kResizeEpsilonPx = 8;
 
 void sync_done(void* data, wl_callback*, uint32_t) { *static_cast<bool*>(data) = true; }
 
@@ -100,19 +108,6 @@ bool display_roundtrip_bounded(wl_display* dpy, int timeout_ms) {
     return done;
 }
 
-// Pokes the strip render flag whenever the toplevel set changes, so tabs
-// track window open/close without polling. Owned by dropdown_main's frame.
-class StripObserver : public IToplevelObserver {
-  public:
-    explicit StripObserver(bool& dirty) : dirty_(dirty) {}
-    void on_window_created(const ToplevelWindow&) override { dirty_ = true; }
-    void on_window_updated(const ToplevelWindow&) override { dirty_ = true; }
-    void on_window_closed(uintptr_t) override { dirty_ = true; }
-
-  private:
-    bool& dirty_;
-};
-
 } // namespace
 
 int dropdown_main(const std::string& slot, const std::string& config_path) {
@@ -122,27 +117,18 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
 
     // Section defaults plus this slot's overrides (§6). Unknown slot names
     // yield the section untouched, so ad-hoc `--dropdown scratch` works.
+    // Reloadable (§6.1): kept in mutable locals refreshed by maybe_reload()
+    // so edits apply without restarting the daemon.
     waylaunch::Config repo_config;
     const std::string path =
         config_path.empty() ? waylaunch::Config::default_config_path() : config_path;
-    if (!repo_config.load(path)) {
-        std::cerr << "Warning: Could not load config, using dropdown defaults.\n";
-    }
-    if (!repo_config.get().dropdown.enabled) {
-        std::cout << "waylaunch: dropdown overlay disabled ([dropdown].enabled is false)\n";
-        return 0;
-    }
-    ResolvedSlot resolved = resolve_dropdown_slot(repo_config.get().dropdown, slot);
-    DropdownConfig config = resolved.config;
+    DropdownConfig config;
+    std::string slot_command;
+    bool dropdown_enabled = true;
+    std::optional<std::filesystem::file_time_type> config_mtime;
     DropdownStateStore state_store;
-    auto states = state_store.load();
-    if (auto it = states.find(slot); it != states.end()) {
-        config.size_override = Geometry{.x = 0, .y = 0, .w = it->second.w, .h = it->second.h};
-    }
-    supervisor.set_respawn_enabled(config.respawn);
 
     FocusGuard guard;
-    guard.configure(config.hide_on_focus_loss, config.focus_grace_ms);
     HyprlandEventStream events;
     bool backend_usable = backend.supports_geometry();
     // Last address the slot window was seen at. closewindow arrives after the
@@ -153,17 +139,17 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
     // Phase 5 tab strip: first Wayland in this daemon. Lazily initialized on
     // first show so lifecycle-only (and non-Wayland) environments never pay
     // for it; dormant (unmapped) while hidden.
-    WaylandCore wayland;
+    // Rebuildable so a protocol error costs the strip only until the next
+    // show, not for the daemon's life.
+    std::unique_ptr<WaylandCore> wayland;
     Renderer strip_renderer;
     TabStrip tab_strip;
-#ifdef HAS_FOREIGN_TOPLEVEL
-    std::unique_ptr<WlrForeignToplevelBackend> toplevel;
-#endif
     bool strip_ready = false;
     bool strip_needs_render = false;
-    bool wayland_dead = false;    // protocol error: strip off for the session
     int strip_rendered_width = 0; // last painted width; hit-testing coordinate space
-    StripObserver strip_observer(strip_needs_render);
+    // Earliest retry after a Wayland teardown; keeps a compositor that is
+    // still coming back from being hammered once per toggle.
+    std::chrono::steady_clock::time_point wayland_retry_after{};
 
     // Block the signals we multiplex through signalfd so they never run as
     // async handlers mid-fork.
@@ -197,29 +183,26 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
         arm_timer(timer_fd, delay);
     };
 
-    // This slot's toplevels, for the strip. App-id comes from the
-    // foreign-toplevel manager; `kitty --class` sets it to the slot app-id.
+    // This slot's windows, for the strip — read from j/clients, the same
+    // source placement uses, so tab membership obeys the pid-ownership rule
+    // and a hand-spawned same-class window never shows up as a tab.
     auto collect_tabs = [&]() {
         std::vector<TabStrip::Tab> tabs;
-#ifdef HAS_FOREIGN_TOPLEVEL
-        if (toplevel) {
-            for (const ToplevelWindow& window : toplevel->windows()) {
-                if (window.app_id == supervisor.app_id()) {
-                    tabs.push_back({.handle_id = window.handle_id,
-                                    .title = window.title,
-                                    .is_active = window.is_active});
-                }
+        if (backend_usable) {
+            for (const WindowInfo& window :
+                 backend.find_owned_windows(supervisor.app_id(), supervisor.child_pid())) {
+                tabs.push_back(
+                    {.address = window.address, .title = window.title, .is_active = window.active});
             }
         }
-#endif
         tab_strip.update(std::move(tabs));
     };
 
     auto render_strip = [&]() {
-        if (!strip_ready || !wayland.is_configured()) return;
+        if (!strip_ready || !wayland || !wayland->is_configured()) return;
         if (manager.current_state() != DropdownState::Visible) return;
         collect_tabs();
-        Buffer* buf = wayland.acquire_buffer();
+        Buffer* buf = wayland->acquire_buffer();
         if (buf == nullptr) return;
         TabStrip::Colors colors{
             .background = Color::from_hex(repo_config.get().theme.colors.background),
@@ -233,57 +216,51 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
         tab_strip.render(strip_renderer, buf->width, colors, font);
         strip_renderer.end();
         strip_rendered_width = buf->width;
-        wayland.submit_buffer(buf, 0, 0);
+        wayland->submit_buffer(buf, 0, 0);
     };
 
     auto ensure_strip = [&]() -> bool {
-        if (!config.tab_strip || !backend_usable || wayland_dead) return false;
-#ifdef HAS_FOREIGN_TOPLEVEL
+        if (!config.tab_strip || !backend_usable) return false;
         if (strip_ready) return true;
-        toplevel = std::make_unique<WlrForeignToplevelBackend>();
-        // Listener BEFORE init(): the manager global binds during init's
-        // roundtrip and immediately emits existing toplevels; registering
-        // late would miss every already-open window (switcher pattern).
-        // Namespace is fixed at surface creation, so seed it here too —
-        // remap_surface() only re-applies anchor/size/interactivity/zone.
+        if (std::chrono::steady_clock::now() < wayland_retry_after) return false;
+        wayland = std::make_unique<WaylandCore>();
+        // Namespace and output are fixed at surface creation, so seed the
+        // config before init(); remap_surface() only re-applies
+        // anchor/size/margins/interactivity/zone (and rebuilds the surface
+        // when the target output changes).
         // NOTE: this pre-seed must stay protocol-legal on its own (Hyprland
         // kills surfaces committed with a zero size on a partial anchor
         // set), so it keeps all four anchors with a zero span.
-        wayland.set_want_backdrop(false);
+        wayland->set_want_backdrop(false);
         {
             LayerSurfaceConfig initial;
             initial.keyboard = LayerKeyboardMode::None;
             initial.exclusive_zone = 0;
             initial.layer_namespace = "waylaunch-dropdown-tabs";
-            wayland.set_layer_surface_config(initial);
+            wayland->set_layer_surface_config(initial);
         }
-        wayland.set_foreign_toplevel_listener([&](zwlr_foreign_toplevel_manager_v1* mgr) {
-            if (toplevel) toplevel->bind_manager(mgr);
-        });
-        if (!wayland.init()) {
-            toplevel.reset();
+        if (!wayland->init()) {
+            wayland.reset();
+            // Back off before the next attempt so a compositor that is down
+            // is not re-probed on every toggle.
+            wayland_retry_after =
+                std::chrono::steady_clock::now() + std::chrono::seconds(kWaylandRetrySec);
             return false;
         }
-        if (wayland.foreign_toplevel_manager() != nullptr) {
-            toplevel->bind_manager(wayland.foreign_toplevel_manager());
-        }
-        toplevel->add_observer(&strip_observer);
-        wayland.set_mouse_handler([&](double x, double y, uint32_t button, bool pressed) {
+        wayland->set_mouse_handler([&](double x, double y, uint32_t button, bool pressed) {
             if (!pressed || button != kBtnLeft) return;
             if (manager.current_state() != DropdownState::Visible || !strip_ready) return;
-            uintptr_t target =
+            std::string target =
                 tab_strip.hit_test(static_cast<int>(x), static_cast<int>(y), strip_rendered_width);
-            if (target != 0 && toplevel && wayland.seat() != nullptr) {
-                toplevel->activate(target, wayland.seat());
+            if (target.empty()) return;
+            if (auto window = backend.find_by_address(target); window.has_value()) {
+                backend.focus(*window);
             }
         });
-        wayland.set_redraw_handler([&]() { strip_needs_render = true; });
-        wayland.set_close_handler([&]() { strip_ready = false; });
+        wayland->set_redraw_handler([&]() { strip_needs_render = true; });
+        wayland->set_close_handler([&]() { strip_ready = false; });
         strip_ready = true;
         return true;
-#else
-        return false;
-#endif
     };
 
     // Map the strip flush above the placed terminal and paint it.
@@ -291,7 +268,8 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
     // past other exclusive zones like the bar), NOT to the output origin —
     // verified live: a margin of reserved_top landed the strip a full bar
     // height too low. working_top/left anchor the computation.
-    auto show_strip = [&](const Geometry& rect, int working_top, int working_left) {
+    auto show_strip = [&](const Geometry& rect, int working_top, int working_left,
+                          const std::string& output_name) {
         if (!ensure_strip()) return;
         LayerSurfaceConfig layer;
         layer.anchors =
@@ -303,12 +281,16 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
         layer.keyboard = LayerKeyboardMode::None;
         layer.exclusive_zone = 0; // terminal is placed manually; don't shift tiling
         layer.layer_namespace = "waylaunch-dropdown-tabs";
-        wayland.set_layer_surface_config(layer);
-        wayland.remap_surface();
+        // Pin the strip to the same monitor the terminal was just placed on.
+        // Without this the compositor picks the output under the pointer, and
+        // on multi-head the strip and its terminal drift apart.
+        layer.output_name = output_name;
+        wayland->set_layer_surface_config(layer);
+        wayland->remap_surface();
         // Collect the configure synchronously (the switcher's map-NOW pattern):
         // without this the first show would wait for the next event. Bounded:
         // an unanswered sync must degrade to a later paint, never wedge us.
-        wl_display* dpy = wayland.display();
+        wl_display* dpy = wayland->display();
         if (dpy != nullptr) display_roundtrip_bounded(dpy, 1000);
         strip_needs_render = true;
         render_strip();
@@ -318,9 +300,9 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
         // Slot command wins; otherwise [dropdown].terminal/probe, so the
         // window always carries the slot app-id for find_window.
         std::vector<std::string> argv =
-            resolved.command.empty()
+            slot_command.empty()
                 ? SessionSupervisor::build_argv(config.terminal, supervisor.app_id())
-                : SessionSupervisor::build_slot_argv(resolved.command, supervisor.app_id());
+                : SessionSupervisor::build_slot_argv(slot_command, supervisor.app_id());
         pid_t pid = Subprocess::spawn_tracked(argv);
         auto now = std::chrono::steady_clock::now();
         if (pid > 0) {
@@ -342,8 +324,29 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
     // resolution changes need no restart. With the tab strip on, the terminal
     // yields its top kHeight px; the strip takes that band. Returns the placed
     // window.
+    // Size we last asked the terminal to take, and the band the strip stole
+    // from it, so a user resize can be told apart from our own placement.
+    std::optional<Geometry> placed_size;
+    int placed_strip_band = 0;
+
+    // Persist a user's manual resize so the next show honours it (gap 5's
+    // remaining half). The compositor is the source of truth: whatever the
+    // window measures when we take it off-screen becomes the new override,
+    // with the strip's band added back so the stored size is the whole
+    // dropdown rather than just the terminal beneath it.
+    auto note_resize = [&](const WindowInfo& window) {
+        if (!placed_size.has_value()) return;
+        auto learned = learn_resize(*placed_size, window.geom, placed_strip_band, kResizeEpsilonPx,
+                                    window.floating);
+        if (!learned.has_value()) return;
+        config.size_override = learned;
+        state_store.save_slot(slot, DropdownSlotState{.w = learned->w, .h = learned->h});
+        // Re-baseline so the same resize is not re-learned on the next hide.
+        placed_size = Geometry{.x = 0, .y = 0, .w = window.geom.w, .h = window.geom.h};
+    };
+
     auto place_visible = [&]() -> std::optional<WindowInfo> {
-        auto window = backend.find_window(supervisor.app_id());
+        auto window = backend.find_window(supervisor.app_id(), supervisor.child_pid());
         auto monitor = backend.focused_monitor();
         if (!window.has_value() || !monitor.has_value()) return std::nullopt;
         Geometry base = compute_geometry(*monitor, config);
@@ -354,16 +357,26 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
             term.h = std::max(1, term.h - TabStrip::kHeight);
         }
         if (!backend.show(*window, term)) return std::nullopt;
+        placed_size = Geometry{.x = 0, .y = 0, .w = term.w, .h = term.h};
+        placed_strip_band = strip ? TabStrip::kHeight : 0;
         if (strip) {
             show_strip(Geometry{.x = base.x, .y = base.y, .w = term.w, .h = TabStrip::kHeight},
-                       monitor->y + monitor->reserved_top, monitor->x);
+                       monitor->y + monitor->reserved_top, monitor->x, monitor->name);
         }
         return window;
     };
 
     auto park_hidden = [&]() -> std::optional<WindowInfo> {
-        auto window = backend.find_window(supervisor.app_id());
+        auto window = backend.find_window(supervisor.app_id(), supervisor.child_pid());
         if (!window.has_value()) return std::nullopt;
+        // Measure before hiding: once the window is on the special workspace
+        // its reported geometry is no longer what the user shaped. Gate on the
+        // window's own visibility, not the manager's — on_toggle() advances
+        // the state machine before calling this, while the focus-retract path
+        // advances it after, and only the compositor's view is true on both.
+        // A freshly spawned window is visible here too, but it has no
+        // placement to compare against, so note_resize() no-ops on it.
+        if (window->visible) note_resize(*window);
         if (!backend.hide(*window)) return std::nullopt;
         return window;
     };
@@ -371,7 +384,10 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
     // Reconcile manager state with compositor truth. Used on toggle paths;
     // returns false when there is no window to act on.
     auto sync_presence = [&]() {
-        if (backend_usable && backend.find_window(supervisor.app_id()).has_value()) return true;
+        if (backend_usable &&
+            backend.find_window(supervisor.app_id(), supervisor.child_pid()).has_value()) {
+            return true;
+        }
         if (!supervisor.has_child() && manager.current_state() != DropdownState::Absent) {
             manager.process_event(DropdownEvent::WindowClosed);
         }
@@ -379,10 +395,73 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
     };
 
     auto hide_strip = [&]() {
-        if (strip_ready) wayland.unmap_surface();
+        if (strip_ready && wayland) wayland->unmap_surface();
+    };
+
+    // Drop the strip's Wayland connection entirely and schedule a rebuild.
+    // Used when the display is poisoned by a protocol error or the compositor
+    // goes away: the next show reconnects instead of the strip staying off
+    // for the life of the daemon.
+    auto shed_wayland = [&](const char* why) {
+        std::fprintf(stderr, "waylaunch-dropdown: %s, rebuilding tab strip in %ds\n", why,
+                     kWaylandRetrySec);
+        strip_ready = false;
+        strip_needs_render = false;
+        wayland.reset();
+        wayland_retry_after =
+            std::chrono::steady_clock::now() + std::chrono::seconds(kWaylandRetrySec);
+    };
+
+    // Hot-reload (§6.1): re-read the config file when its mtime moves and
+    // apply without restarting. Parse failures and unreadable files keep the
+    // running config — never set_defaults() over live state. Geometry keys
+    // re-place immediately when visible; terminal/command apply to the next
+    // spawn (a live process cannot be re-executed).
+    auto reload_config = [&](bool force) {
+        std::error_code ec;
+        auto mtime = std::filesystem::last_write_time(path, ec);
+        if (ec) return; // unreadable (yet): keep running config
+        if (!force && config_mtime.has_value() && *config_mtime == mtime) return;
+        config_mtime = mtime;
+        waylaunch::Config fresh;
+        if (!fresh.load(path)) {
+            if (force) std::cerr << "Warning: Could not load config, using dropdown defaults.\n";
+            return;
+        }
+        repo_config = fresh; // copy: Config declares ctor/dtor, so no move assign
+        const DropdownConfig& section = repo_config.get().dropdown;
+        bool was_enabled = dropdown_enabled;
+        dropdown_enabled = section.enabled;
+        if (!dropdown_enabled) {
+            if (was_enabled && manager.current_state() == DropdownState::Visible &&
+                park_hidden().has_value()) {
+                manager.process_event(DropdownEvent::WindowHidden);
+                hide_strip();
+            }
+            return;
+        }
+        ResolvedSlot resolved = resolve_dropdown_slot(section, slot);
+        config = resolved.config;
+        slot_command = resolved.command;
+        auto states = state_store.load();
+        if (auto it = states.find(slot); it != states.end()) {
+            config.size_override = Geometry{.x = 0, .y = 0, .w = it->second.w, .h = it->second.h};
+        }
+        supervisor.set_respawn_enabled(config.respawn);
+        guard.configure(config.hide_on_focus_loss, config.focus_grace_ms);
+        if (manager.current_state() == DropdownState::Visible && backend_usable) {
+            if (auto shown = place_visible(); shown.has_value()) {
+                slot_address = shown->address;
+                guard.set_slot(supervisor.child_pid(), slot_address);
+                guard.note_shown(std::chrono::steady_clock::now());
+            }
+            // On failure the stale geometry simply survives until the next
+            // toggle; never hide a visible dropdown over a reload.
+        }
     };
 
     auto on_toggle = [&]() {
+        if (!dropdown_enabled) return; // off switch: idle until re-enabled
         auto before = manager.current_state();
         manager.process_event(DropdownEvent::Toggle);
         if (!backend_usable) return; // degraded: lifecycle only, no placement
@@ -436,29 +515,41 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
     };
 
     // First press appears (gap-3 fix): boot the session on start.
+    reload_config(true);
+    if (!dropdown_enabled) {
+        std::cout << "waylaunch: dropdown overlay disabled ([dropdown].enabled is false)\n";
+        return 0;
+    }
     manager.process_event(DropdownEvent::Toggle);
     spawn();
 
     bool running = true;
     while (running) {
+        reload_config(false);
         events.ensure_connected(std::chrono::steady_clock::now());
         // Wayland dispatch around poll (launcher pattern): prepare before
         // blocking, read-or-cancel after. Only while the strip is up.
-        wl_display* wl_dpy = (!wayland_dead && strip_ready) ? wayland.display() : nullptr;
+        wl_display* wl_dpy = (wayland && strip_ready) ? wayland->display() : nullptr;
         if (wl_dpy != nullptr && wl_display_get_error(wl_dpy) != 0) {
             // A protocol error poisons the connection: prepare_read would
             // spin forever and signals would never be serviced (all blocked
-            // for signalfd). Shed the strip; lifecycle/placement continue.
-            std::fprintf(stderr, "waylaunch-dropdown: wayland protocol error, tab strip off\n");
-            wayland_dead = true;
-            strip_ready = false;
+            // for signalfd). Drop it and schedule a rebuild — lifecycle and
+            // placement never depended on Wayland, and the next show past the
+            // cooldown reconnects, so a compositor restart costs the strip
+            // one toggle rather than the rest of the session.
+            shed_wayland("wayland protocol error");
             wl_dpy = nullptr;
         }
+        bool reading = false;
         if (wl_dpy != nullptr) {
             // Bounded: a never-draining queue must still reach poll() so
             // signals stay serviced.
-            for (int i = 0; i < 100 && wl_display_prepare_read(wl_dpy) != 0; ++i) {
-                wl_display_dispatch_pending(wl_dpy);
+            for (int i = 0; i < 100; ++i) {
+                if (wl_display_prepare_read(wl_dpy) == 0) {
+                    reading = true;
+                    break;
+                }
+                if (wl_display_dispatch_pending(wl_dpy) < 0) break;
             }
             wl_display_flush(wl_dpy);
         }
@@ -471,7 +562,33 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
         fds[2].events = POLLIN;
         fds[3].fd = (wl_dpy != nullptr) ? wl_display_get_fd(wl_dpy) : -1;
         fds[3].events = POLLIN;
-        int n = poll(fds, 4, -1);
+        // Bounded wait so the config mtime is rechecked while idle; all
+        // event sources remain level-triggered so nothing is lost.
+        int n = poll(fds, 4, 500);
+        // Close the read window HERE, before any handler runs. libwayland's
+        // prepare_read/read_events pair is a reader lock: a second
+        // prepare_read on the same thread makes read_events wait for a peer
+        // that does not exist, and the daemon parks in futex forever. The
+        // handlers below re-enter libwayland — show_strip() round-trips to
+        // collect the strip's configure — so holding the read across them
+        // wedged the daemon on the second show, deaf to SIGUSR1 and SIGTERM
+        // alike. Everything Wayland-facing now happens outside the window.
+        bool wayland_lost = false;
+        if (reading) {
+            if (n > 0 && (fds[3].revents & POLLIN) != 0) {
+                // A dead socket means the compositor went away. That is the
+                // strip's problem alone: shedding beats taking the daemon
+                // down and losing the session with it.
+                if (wl_display_read_events(wl_dpy) < 0) wayland_lost = true;
+            } else {
+                wl_display_cancel_read(wl_dpy);
+            }
+            if (!wayland_lost && wl_display_dispatch_pending(wl_dpy) < 0) wayland_lost = true;
+        }
+        if (wayland_lost) {
+            shed_wayland("wayland connection lost");
+            wl_dpy = nullptr;
+        }
         if (n < 0) {
             if (errno == EINTR) continue;
             break;
@@ -545,25 +662,28 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
             for (const HyprEvent& event : events.read_available()) {
                 if (event.name == "activewindowv2") {
                     on_focus_event(event.payload);
+                    // The active tab's pill moves with focus.
+                    strip_needs_render |= strip_ready;
                 } else if (event.name == "closewindow") {
                     on_close_event(event.payload);
+                    strip_needs_render |= strip_ready;
+                } else if (event.name == "openwindow" || event.name == "windowtitlev2" ||
+                           event.name == "movewindowv2") {
+                    // Tabs come from j/clients now, so membership and titles
+                    // have to be re-read when the window set changes; these
+                    // are the events that say it did.
+                    strip_needs_render |= strip_ready;
                 }
                 // focusedmon: monitor following already happens through the
                 // focused-monitor read on every show; while visible we
                 // deliberately do not chase, so user drags are never fought.
             }
         }
-        if (wl_dpy != nullptr) {
-            if ((fds[3].revents & POLLIN) != 0) {
-                if (wl_display_read_events(wl_dpy) < 0) running = false;
-            } else {
-                wl_display_cancel_read(wl_dpy);
-            }
-            wl_display_dispatch_pending(wl_dpy);
-            if (strip_needs_render) {
-                strip_needs_render = false;
-                render_strip();
-            }
+        // Painting is safe here: the read window closed above, and a handler
+        // may have shed the connection in the meantime.
+        if (wayland && strip_ready && strip_needs_render) {
+            strip_needs_render = false;
+            render_strip();
         }
     }
 

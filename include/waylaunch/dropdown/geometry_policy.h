@@ -62,4 +62,21 @@ struct ResolvedSlot {
 
 ResolvedSlot resolve_dropdown_slot(const DropdownConfig& global, const std::string& slot);
 
+// Gap-5 remainder: learn a manual resize instead of shipping a drag handle.
+// The user reshapes the dropdown with the compositor's own bindings; the next
+// hide compares what the window measures against what we last placed, and any
+// real difference becomes the persisted override.
+//
+// `placed` is the terminal geometry we asked for and `observed` what it now
+// measures. `strip_band` is the height the tab strip took off the top, added
+// back so the stored size describes the whole dropdown rather than only the
+// terminal beneath it. Differences under `epsilon` are compositor rounding
+// and gap arithmetic, not intent. `observed_floating` must be true: a tiled
+// (or otherwise externally reshaped) window is the compositor's doing, never
+// evidence of a manual resize — learning it would permanently override the
+// configured size with layout geometry. Returns nullopt when nothing was
+// learned.
+std::optional<Geometry> learn_resize(const Geometry& placed, const Geometry& observed,
+                                     int strip_band, int epsilon, bool observed_floating);
+
 } // namespace waylaunch

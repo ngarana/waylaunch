@@ -14,7 +14,10 @@ namespace waylaunch {
 struct HyprClient {
     std::string address;
     std::string klass;
+    std::string title;
     int pid = -1;
+    // Hyprland's MRU rank: 0 is the focused window. -1 when absent.
+    int focus_history_id = -1;
     int at_x = 0;
     int at_y = 0;
     int width = 0;
