@@ -37,7 +37,8 @@ Ordered by how much they hurt in daily use.
    biggest "it doesn't feel like a dropdown" gap.
 2. **Not above everything.** The terminal is an ordinary window on an ordinary
    (if special) workspace, so a fullscreen window covers it. Yakuake is an
-   always-on-top overlay.
+   always-on-top overlay. (Closed in the build: a targeted `alter_zorder` raise
+   clears fullscreen windows too — see the limitation review.)
 3. **Fragile lifecycle.** The kitty instance is spawned once at login. Type
    `exit` and `SUPER+Tab` silently does nothing until you respawn it by hand.
    Yakuake owns its sessions and recreates them.
@@ -109,10 +110,14 @@ What has to be written is small and ordinary:
 - **Multiple named slots** — `--dropdown notes`, one lock file and one binding
   each. Fixes 10.
 
-Gaps 2 (above-fullscreen) and 7 (true slide) are compositor-controlled: they
-improve to "as good as Hyprland allows" — a floating window pinned to the top
-layer with a `layerrule`/`windowrule` animation — but do not become fully
-client-owned. That is the honest ceiling of this option.
+Gap 7 (true slide) is compositor-controlled: it improves to "as good as
+Hyprland allows" — a `layerrule`/`windowrule` animation — but does not become
+fully client-owned. That is the honest ceiling of this option.
+
+Gap 2 (above-fullscreen) was expected to share that ceiling and does **not**:
+`alter_zorder({mode="top"})` on a floating window puts it over a fullscreen
+window, internal or client-side, verified live on 0.56.2. See the limitation
+review in [`DROPDOWN_IMPLEMENTATION.md`](DROPDOWN_IMPLEMENTATION.md).
 
 **Cost:** roughly 700–1000 LOC across a `src/dropdown/` module plus config and
 docs. Fits the existing testing pattern — the session manager and placement

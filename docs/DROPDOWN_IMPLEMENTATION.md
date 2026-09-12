@@ -116,7 +116,8 @@ include/waylaunch/dropdown/
     focus_guard.h           # retract policy: grace + ancestry (phase 3)
     tab_strip.h             # owned tab strip: layout/hit-test/render (phase 5)
     dropdown_manager.h      # the state machine — pure logic
-    geometry_policy.h       # pure function
+    geometry_policy.h       # pure function (placement + learned resize)
+    window_ownership.h      # which same-class window is actually the slot's
     session_supervisor.h
     dropdown_state.h        # persisted geometry override
 src/dropdown/
@@ -127,6 +128,7 @@ src/dropdown/
     tab_strip.cpp
     dropdown_manager.cpp
     geometry_policy.cpp
+    window_ownership.cpp
     session_supervisor.cpp
     dropdown_state.cpp
     dropdown_main.cpp       # the poll loop
@@ -137,6 +139,7 @@ tests/
     hyprland_events_test.cpp
     focus_guard_test.cpp
     tab_strip_test.cpp
+    window_ownership_test.cpp
 ```
 
 Register sources in `CMakeLists.txt:136` (`set(SOURCES ...)`) and tests in the
@@ -158,7 +161,12 @@ struct WindowInfo  { std::string address; std::string app_id; int pid;
 class IPlacementBackend {
 public:
     virtual ~IPlacementBackend() = default;
-    virtual std::optional<WindowInfo> find_window(const std::string& app_id) = 0;
+    // owner_pid anchors identity: a window owned by the supervised process
+    // (or a descendant) beats a bare app-id match. See window_ownership.h.
+    virtual std::optional<WindowInfo> find_window(const std::string& app_id,
+                                                  int owner_pid = -1) = 0;
+    virtual std::vector<WindowInfo> find_owned_windows(const std::string& app_id,
+                                                       int owner_pid) = 0;
     virtual std::optional<MonitorInfo> focused_monitor() = 0;
     virtual bool show(const WindowInfo&, const Geometry&) = 0;
     virtual bool hide(const WindowInfo&) = 0;
@@ -254,7 +262,7 @@ while spawning, double-toggle idempotence.
 
 ---
 
-### Phase 2 — placement policy · closes gaps 2 (partial), 5, 6, 8
+### Phase 2 — placement policy · closes gaps 2, 5, 6, 8
 
 **Deliverables**
 
@@ -277,9 +285,9 @@ while spawning, double-toggle idempotence.
   resolution needs no restart.
 
 **Note on gap 2:** `alter_zorder({ mode = "top" })` raises the window above
-other floats, but a fullscreen client can still cover it. Truly-above-everything is
-layer-shell territory and stays out of reach in Option C. Say so in the README
-rather than implying parity.
+other floats **and above fullscreen windows** — internal and client-side alike
+— which was verified live and is stronger than this document originally
+claimed. See the limitation review below; gap 2 is closed, not partial.
 
 **Also here:** deleting the `fix-dropterm-spawn` workaround
 (`rules.lua:60`). Because the terminal now lives on the active workspace rather
@@ -336,8 +344,11 @@ it is nearly free then and invasive later.
 The first phase that needs Wayland. A thin layer surface with
 `keyboard_interactivity: NONE` (so it takes pointer clicks without stealing the
 keyboard), rendered above the terminal, listing the slot's windows as tabs.
-Switching activates the corresponding toplevel through `IToplevelBackend`
-(`toplevel_backend.h:39`) — already vendored, already used by the switcher.
+Tabs are read from `j/clients` and switching goes through
+`IPlacementBackend::focus`. The first cut used `wlr-foreign-toplevel` (as the
+switcher does), but that protocol reports no pid, so it could not tell the
+slot's own windows from a same-class one the user started by hand — see the
+limitation review below.
 
 Reuses `Renderer` and the theme palette as-is: a tab strip is text and rects,
 which is exactly what the existing renderer is good at. (The renderer's
@@ -392,6 +403,22 @@ Parse in `config.cpp`, serialize in `Config::save()` — the repo treats
 advertised-but-unparsed keys as a bug (`DESIGN.md` §1.2), so wire both directions
 in the same commit.
 
+### 6.1 Hot reload
+
+The daemon watches the config file's mtime (checked each poll-loop wake, plus
+a 500 ms cadence while idle) and applies edits without restarting:
+
+- Geometry, edge, slots, retract policy, and respawn apply immediately; a
+  visible dropdown is re-placed on the spot, a hidden one picks them up on
+  the next show.
+- `terminal` / slot `command` apply to the next spawn — a live process
+  cannot be re-executed.
+- Unreadable files and TOML parse errors keep the running config; a broken
+  edit never blanks live state (it applies on the next mtime change after
+  the fix).
+- `enabled = false` parks the window and idles the daemon — toggles are
+  ignored until re-enabled. No restart dance to try a value.
+
 ---
 
 ## 7. Sizing
@@ -431,32 +458,125 @@ the daily friction and are a weekend against infrastructure that already exists.
 - **Scope creep toward a terminal.** Once a tab strip exists, "just add splits"
   is one step away. The no-pty boundary is the guardrail.
 
-### Known limitations (as built, phases 1–5)
+### Known limitations — reviewed and closed
 
-1. **Multi-monitor strip placement.** The terminal follows the *focused*
-   monitor (geometry recomputed on every show), but the tab strip surface is
-   created with a null output and follows the *cursor* output. On multi-head
-   setups the two can diverge. Fixing it needs per-show output selection
-   (`wl_output` matching by focused monitor name) plus surface recreation in
-   `WaylandCore`, which currently creates the layer surface once in `init()`.
-2. **Same-class intruders.** Matching is by app-id/class string, so a
-   manually spawned same-class window (a) appears as a tab, (b) counts for
-   focus-loss (focusing it retracts the dropdown — fail-safe, arguably
-   correct), and (c) makes show/hide act on the first `j/clients` match,
-   which may not be the supervised child. Prefer unique slot classes.
-3. **No cover over fullscreen** (gap 2, unchanged): `alter_zorder(top)` raises
-   above floats only. Client-owned above-everything needs the layer-shell
-   terminal from Option D.
-4. **No resize affordance yet.** `dropdown.tsv` loads persisted per-slot
-   geometry overrides, but nothing writes them — the draggable edge / slider
-   (gap 5 remainder) is still open.
-5. **Compositor restart.** The event stream reconnects with backoff and IPC
-   placement recovers on next toggle, but a poisoned Wayland connection sheds
-   the tab strip for the rest of the daemon's life (deliberate: a deaf
-   daemon is worse than a strip-less one). Restart the daemon for tabs back.
-6. **Strip needs foreign-toplevel.** Without the protocol (`HAS_FOREIGN_TOPLEVEL`
-   unset) the strip stays off; lifecycle and placement are unaffected.
-7. **Open manual checks.** Descendant suppression (file picker keeping the
-   dropdown open) is unit-tested plus `/proc`-walk-tested but not yet staged
-   live; same for multi-monitor following. Both need a quiet desktop and a
-   cooperative dialog.
+Reviewed against a live Hyprland 0.56.2 session. Five of the seven are closed;
+the two that remain are recorded with what is actually true rather than what
+was assumed.
+
+**Closed**
+
+1. **Multi-monitor strip placement.** `WaylandCore` now takes a target output
+   (`LayerSurfaceConfig::output_name`) and rebuilds the layer surface when it
+   changes — the output is immutable once `get_layer_surface` has been called,
+   so following the focused monitor means recreating the object, which is legal
+   because the surface carries no buffer between unmap and remap. `show_strip`
+   passes the same monitor placement just used, so the strip and its terminal
+   can no longer land on different heads.
+
+   Fixed alongside it: every `wl_output` event was being applied to
+   `outputs_.back()`. The registry advertises all globals before any of their
+   events arrive, so with two monitors both outputs' names and modes landed on
+   the second entry — invisible on one head, wrong on every multi-head, and it
+   would have broken the name matching above. Events now route by `wl_output*`.
+
+2. **Same-class intruders.** Slot identity is pid-anchored, in a new pure
+   module (`window_ownership.h`) used by every lookup. A class match owned by
+   the supervised pid, or a descendant of it, beats a bare class match; with a
+   known owner, class-only matches are excluded from the tab strip entirely.
+   The app-id fallback survives for `owner_pid <= 0`, so a restarted daemon
+   still adopts the window it left behind.
+
+   Verified live: with a hand-spawned `waylaunch-drop-claudetest` window
+   present, placement moved and resized only the supervised terminal (the
+   intruder kept its own geometry), and the strip drew one tab, not two.
+
+4. **No resize affordance.** No drag handle: the user reshapes the dropdown
+   with the compositor's own bindings and the next hide learns it.
+   `learn_resize` (in `geometry_policy`, pure and unit-tested) compares what
+   the window measures against what was last placed, adds the strip band back
+   so the stored size describes the whole dropdown, and ignores sub-epsilon
+   drift from compositor rounding. Persisted through the existing
+   `DropdownStateStore`.
+
+   Verified live: placed 426 → user resized to 700 → `dropdown.tsv` recorded
+   `1920 736` → reshow and a cold daemon start both returned 700.
+
+5. **Compositor restart.** `WaylandCore` is now a `unique_ptr` the daemon can
+   drop and rebuild. A protocol error or a lost connection sheds the strip and
+   schedules a retry (5 s cooldown) instead of disabling it for the process
+   lifetime; the next show past the cooldown reconnects. Lifecycle and
+   placement never depended on Wayland and are unaffected either way.
+
+6. **Strip needs foreign-toplevel.** Gone: tabs come from `j/clients`, the same
+   source placement reads. This was the enabling change for limitation 2's tab
+   half — `wlr-foreign-toplevel` reports no pid, so it *could not* tell the
+   slot's windows from a same-class intruder. Dropping it also removed a
+   protocol dependency, so the strip now works wherever the rest of the host
+   does. Window open/close/title/focus all already arrive on the event stream
+   the daemon polls, so tabs stay live without the protocol's push updates.
+
+**Also closed — it already worked**
+
+3. **Cover over fullscreen** (gap 2). The limitation was simply false: the
+   shipped `show()` already does this, and no `pin` is involved. Staged live on
+   0.56.2 with a colour-coded occluder and screenshot verification:
+
+   - A floating window with `alter_zorder({mode="top"})` renders **over** a
+     fullscreen window, with `pinned = false`.
+   - Confirmed for both fullscreen kinds: compositor-internal (`fullscreen: 2`)
+     and client-side (`fullscreenClient: 2`) — the video-player case.
+   - Confirmed through the real daemon, not just a hand-driven analog: with a
+     client-side fullscreen window up and the dropdown parked hidden, one
+     SIGUSR1 put **both** the terminal and the tab strip on top of it.
+   - `alter_zorder` is the lever, isolated by negative control: `mode="bottom"`
+     puts the fullscreen window back in front (sampled pixel flips from the
+     dropdown's colour to the occluder's), `mode="top"` puts the dropdown in
+     front again.
+
+   So `alter_zorder({mode="top", window})` in `HyprlandBackend::show()` is doing
+   more work than its comment claimed — it is not merely "raises above other
+   floats". Keep it; the §2 footgun note about never substituting
+   `bring_to_top()` matters more than it appeared, because that call ignores its
+   window argument and would raise the wrong window over a fullscreen app.
+
+   `pin` was the hypothesis going in and turned out to be unnecessary — it
+   shows a window on *all workspaces*, which is wrong for a dropdown anyway.
+
+**Still open**
+
+7. **Open manual checks.** Narrowed to two. Staged live across this pass:
+   repeated show/hide cycles, placement geometry against a bar-reserved
+   monitor, focus-loss retract, strip rendering and unmapping
+   (screenshot-verified), intruder exclusion, resize learning, persistence
+   across a daemon restart, and coverage over both kinds of fullscreen. Still
+   unstaged: **multi-monitor** following (needs a second head) and the
+   **descendant-suppression** case where a file picker spawned *by* the terminal
+   must not retract it — unit-tested with injected kinship and against real
+   `/proc` pids, but not with a real dialog.
+
+### Bugs found by running it
+
+Neither was in the limitation list; both were found staging phases 1–5 live and
+are fixed here.
+
+1. **The daemon deadlocked on the second show.** `libwayland`'s
+   `prepare_read`/`read_events` pair is a reader lock, and the poll loop held it
+   across every handler. `show_strip()` round-trips to collect the strip's
+   configure, so the second show called `prepare_read` again on the same thread;
+   `read_events` then waited for a peer that does not exist. The daemon parked
+   in `futex_do_wait` — deaf to SIGUSR1 *and* SIGTERM, needing SIGKILL. It only
+   reproduced from the second show, because the first runs before `strip_ready`
+   makes the loop take the read at all. The read window now closes immediately
+   after `poll()`, before any handler runs.
+
+2. **The dropdown re-tiled itself on every even-numbered show.**
+   `hl.dsp.window.float` was dispatched with `action="set"`, which is not a
+   valid action — and `float` silently accepts *any* unrecognised action string
+   and falls through to toggling, replying `ok` either way. So the window
+   floated on odd shows and re-tiled on even ones. Probed live: `on`/`off` are
+   idempotent, everything else toggles. Fixed to `action="on"`.
+
+   The general hazard is worth keeping in mind next to the `bring_to_top`
+   footgun in §2: an `ok` reply from a Hyprland dispatcher does not mean the
+   arguments were understood.
