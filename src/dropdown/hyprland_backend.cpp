@@ -163,7 +163,12 @@ bool HyprlandBackend::show(const WindowInfo& window, const Geometry& geometry) {
     // BEFORE the final move — Hyprland's resize preserves the window center,
     // so moving first and resizing after drifts the position whenever the
     // size changes (verified live). Raise and explicit focus close any race.
-    if (!dispatch("hl.dsp.window.float({window=" + target + ", action=\"set\"})")) return false;
+    // action="on", never "set": `float` silently accepts ANY unrecognised
+    // action string and falls through to toggling, so "set" floated the
+    // window on odd shows and re-tiled it on even ones. Probed live on
+    // 0.56.2 — on/off are idempotent, everything else toggles. The reply is
+    // `ok` either way, so nothing catches this but the window's own state.
+    if (!dispatch("hl.dsp.window.float({window=" + target + ", action=\"on\"})")) return false;
     std::string workspace = std::to_string(monitor->active_workspace);
     if (!dispatch("hl.dsp.window.move({window=" + target + ", workspace=\"" + workspace + "\"})")) {
         return false;
