@@ -379,13 +379,13 @@ Scope this as tuning, not engineering.
 enabled            = true
 terminal           = ""        # empty → $TERMINAL, then a probe list
 edge               = "top"     # top | bottom | left | right
-height_percent     = 40
-width_percent      = 100
+height_percent     = 40        # of the usable height (minus bar insets)
+width_percent      = 100       # anything under 100 is centred on the edge
 hide_on_focus_loss = true
 focus_grace_ms     = 150       # phase 3 debounce
 respawn            = true
 animation          = "slide"
-tab_strip          = true      # phase 5 owned tab strip
+tab_strip          = true      # phase 5 owned tab strip; shown from 2 tabs up
 
 [[dropdown.slots]]             # phase 4; omitting it yields one default slot
 name    = "term"

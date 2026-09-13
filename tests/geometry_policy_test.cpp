@@ -42,7 +42,9 @@ void test_side_edges_anchor_horizontally() {
     left.edge = DropdownEdge::Left;
     left.width_percent = 50;
     Geometry l = compute_geometry(test_monitor(), left);
-    assert(l.x == 0 && l.y == 44 && l.w == 960);
+    // Vertical is the free axis for a side edge, so it centres: 40% of 1156
+    // is 462, leaving 347 above.
+    assert(l.x == 0 && l.y == 44 + 347 && l.w == 960);
 
     DropdownConfig right;
     right.edge = DropdownEdge::Right;
@@ -50,6 +52,18 @@ void test_side_edges_anchor_horizontally() {
     Geometry r = compute_geometry(test_monitor(), right);
     assert(r.x + r.w == 1920 && r.w == 960);
     std::cout << "[PASS] side edges anchor horizontally\n";
+}
+
+void test_partial_width_centres_on_the_free_axis() {
+    DropdownConfig config;
+    config.width_percent = 67;
+    config.height_percent = 32;
+    Geometry geom = compute_geometry(test_monitor(), config);
+    assert(geom.w == 1286);              // 67% of 1920 = 1286.4 → 1286
+    assert(geom.h == 369);               // 32% of 1156 = 369.9 → 369
+    assert(geom.x == (1920 - 1286) / 2); // centred, not flush left
+    assert(geom.y == 44);                // still pinned under the bar
+    std::cout << "[PASS] partial width centres on the free axis\n";
 }
 
 void test_percents_clamp() {
@@ -80,7 +94,8 @@ void test_size_override_replaces_computed_size() {
     config.size_override = Geometry{.x = 0, .y = 0, .w = 800, .h = 600};
     Geometry geom = compute_geometry(test_monitor(), config);
     assert(geom.w == 800 && geom.h == 600);
-    assert(geom.x == 0 && geom.y == 44); // placement still follows the edge
+    // Placement still follows the edge: pinned under the bar, centred across.
+    assert(geom.x == (1920 - 800) / 2 && geom.y == 44);
     std::cout << "[PASS] size override replaces computed size\n";
 }
 
@@ -165,6 +180,7 @@ int main() {
     test_top_default_sits_below_bar();
     test_bottom_anchors_to_usable_base();
     test_side_edges_anchor_horizontally();
+    test_partial_width_centres_on_the_free_axis();
     test_percents_clamp();
     test_reserved_bottom_shrinks_usable_area();
     test_size_override_replaces_computed_size();

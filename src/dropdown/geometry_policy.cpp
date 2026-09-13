@@ -28,11 +28,18 @@ Geometry compute_geometry(const MonitorInfo& monitor, const DropdownConfig& conf
         h = std::clamp(config.size_override->h, 1, usable_h);
     }
 
-    Geometry geom{.x = usable_x, .y = usable_y, .w = w, .h = h};
+    // The edge pins one axis; the other is centred. A sub-full-width top
+    // dropdown left hugging the screen corner is what "placement seems off"
+    // means in practice — yakuake and guake both centre the free axis. Every
+    // path above bounds w/h by the usable area (percents clamp to 100, the
+    // override clamps outright), so neither offset can go negative.
+    int center_x = usable_x + ((usable_w - w) / 2);
+    int center_y = usable_y + ((usable_h - h) / 2);
+    Geometry geom{.x = center_x, .y = center_y, .w = w, .h = h};
     switch (config.edge) {
-        case DropdownEdge::Top: break;
+        case DropdownEdge::Top: geom.y = usable_y; break;
         case DropdownEdge::Bottom: geom.y = usable_y + usable_h - h; break;
-        case DropdownEdge::Left: break;
+        case DropdownEdge::Left: geom.x = usable_x; break;
         case DropdownEdge::Right: geom.x = usable_x + usable_w - w; break;
     }
     return geom;

@@ -381,16 +381,32 @@ bool WaylandCore::modifier_active(const char* xkb_mod_name) const {
 }
 
 Buffer* WaylandCore::acquire_buffer() {
-    for (auto& buf : buffers_) {
-        if (!buf->busy) {
-            buf->busy = true;
-            return buf.get();
+    int w = pending_width_ > 0 ? pending_width_ : 800;
+    int h = pending_height_ > 0 ? pending_height_ : 500;
+
+    // Only a buffer of the CURRENT configured size may be reused. A surface
+    // displays whatever size its last attached buffer had, so handing back a
+    // stale-size one pins the old geometry no matter how many times
+    // set_size() is re-applied — the dropdown tab strip kept its
+    // placement-time width across every resize because of this. Free buffers
+    // of the wrong size are reclaimed on the way past rather than left to
+    // accumulate one dead mapping per resize; busy ones belong to the
+    // compositor until it releases them, and are pruned on a later pass.
+    for (auto it = buffers_.begin(); it != buffers_.end();) {
+        Buffer* buf = it->get();
+        if (buf->busy) {
+            ++it;
+            continue;
         }
+        if (buf->width == w && buf->height == h) {
+            buf->busy = true;
+            return buf;
+        }
+        buf->destroy();
+        it = buffers_.erase(it);
     }
 
     // Allocate new buffer
-    int w = pending_width_ > 0 ? pending_width_ : 800;
-    int h = pending_height_ > 0 ? pending_height_ : 500;
 
     auto buf = std::make_unique<Buffer>();
     buf->width = w;

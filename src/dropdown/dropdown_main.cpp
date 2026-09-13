@@ -51,6 +51,22 @@ constexpr std::chrono::milliseconds kAppearRetry{200};
 
 constexpr uint32_t kBtnLeft = 0x110;
 
+// Hyprland announces nothing when a window is resized or moved — socket2 is
+// silent through a whole drag (verified live on 0.56.2) — so the strip cannot
+// be event-driven onto the terminal it belongs to. It samples instead: this is
+// the poll timeout while the dropdown is on screen, fast enough to look
+// attached during a drag and costing one j/clients read per tick. While hidden
+// the loop idles on the slower config-mtime cadence.
+constexpr int kVisiblePollMs = 120;
+constexpr int kIdlePollMs = 500;
+
+// A tab bar showing one tab says nothing: the active-tab highlight fills the
+// whole strip because it has no siblings to contrast against, which reads as a
+// solid accent-coloured slab rather than a tab. Below this count the strip
+// stays down and the terminal takes the band back — the same rule yakuake and
+// kitty use.
+constexpr size_t kMinTabsForStrip = 2;
+
 // Cooldown before rebuilding the strip's Wayland connection after it fails or
 // dies, so a compositor that is restarting is not re-probed on every toggle.
 constexpr int kWaylandRetrySec = 5;
@@ -147,6 +163,13 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
     bool strip_ready = false;
     bool strip_needs_render = false;
     int strip_rendered_width = 0; // last painted width; hit-testing coordinate space
+    // The rect the strip is currently mapped to, and the working-area origin
+    // its margins were computed against. Compared each visible tick against
+    // where the terminal actually is, so a live resize drags the strip along
+    // instead of stranding it at the placement-time geometry.
+    std::optional<Geometry> strip_rect;
+    int strip_working_top = 0;
+    int strip_working_left = 0;
     // Earliest retry after a Wayland teardown; keeps a compositor that is
     // still coming back from being hammered once per toggle.
     std::chrono::steady_clock::time_point wayland_retry_after{};
@@ -258,7 +281,10 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
             }
         });
         wayland->set_redraw_handler([&]() { strip_needs_render = true; });
-        wayland->set_close_handler([&]() { strip_ready = false; });
+        wayland->set_close_handler([&]() {
+            strip_ready = false;
+            strip_rect.reset();
+        });
         strip_ready = true;
         return true;
     };
@@ -285,6 +311,9 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
         // Without this the compositor picks the output under the pointer, and
         // on multi-head the strip and its terminal drift apart.
         layer.output_name = output_name;
+        strip_rect = rect;
+        strip_working_top = working_top;
+        strip_working_left = working_left;
         wayland->set_layer_surface_config(layer);
         wayland->remap_surface();
         // Collect the configure synchronously (the switcher's map-NOW pattern):
@@ -294,6 +323,11 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
         if (dpy != nullptr) display_roundtrip_bounded(dpy, 1000);
         strip_needs_render = true;
         render_strip();
+    };
+
+    auto hide_strip = [&]() {
+        strip_rect.reset();
+        if (strip_ready && wayland) wayland->unmap_surface();
     };
 
     auto spawn = [&]() {
@@ -328,6 +362,11 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
     // from it, so a user resize can be told apart from our own placement.
     std::optional<Geometry> placed_size;
     int placed_strip_band = 0;
+    // Owned-window count as of the last placement. Compared against the live
+    // count so that crossing the one-tab threshold re-places the terminal
+    // (the band appears or is handed back), while a Wayland outage that keeps
+    // the strip down never looks like a crossing and so never re-places.
+    size_t placed_tab_count = 0;
 
     // Persist a user's manual resize so the next show honours it (gap 5's
     // remaining half). The compositor is the source of truth: whatever the
@@ -351,19 +390,84 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
         if (!window.has_value() || !monitor.has_value()) return std::nullopt;
         Geometry base = compute_geometry(*monitor, config);
         Geometry term = base;
-        bool strip = config.tab_strip && backend_usable && ensure_strip();
+        // The strip earns its band only once there is a second tab to choose
+        // between; below that the terminal gets the full dropdown height.
+        size_t tab_count =
+            backend.find_owned_windows(supervisor.app_id(), supervisor.child_pid()).size();
+        bool strip =
+            config.tab_strip && backend_usable && tab_count >= kMinTabsForStrip && ensure_strip();
         if (strip) {
             term.y += TabStrip::kHeight;
             term.h = std::max(1, term.h - TabStrip::kHeight);
+        } else {
+            // Covers both "never had one" and "just dropped to a single tab".
+            hide_strip();
         }
         if (!backend.show(*window, term)) return std::nullopt;
         placed_size = Geometry{.x = 0, .y = 0, .w = term.w, .h = term.h};
         placed_strip_band = strip ? TabStrip::kHeight : 0;
+        placed_tab_count = tab_count;
         if (strip) {
             show_strip(Geometry{.x = base.x, .y = base.y, .w = term.w, .h = TabStrip::kHeight},
                        monitor->y + monitor->reserved_top, monitor->x, monitor->name);
         }
         return window;
+    };
+
+    // Keep the strip glued to the terminal after placement. Hyprland emits no
+    // event for a resize or a move, so the only way to notice the user
+    // reshaping the dropdown is to look: each visible tick compares where the
+    // terminal actually is against where the strip was last mapped, and
+    // re-maps only on a real difference (so a steady dropdown costs one
+    // j/clients read per tick and no Wayland traffic at all). Without this the
+    // strip stays frozen at its placement-time width and hangs off the side of
+    // a narrowed terminal until the next toggle.
+    //
+    // The same tick also watches the tab count, because gaining or losing the
+    // strip changes how much height the terminal gets and so is a full
+    // re-placement rather than a strip tweak.
+    auto sync_strip_to_window = [&]() {
+        if (manager.current_state() != DropdownState::Visible || !backend_usable) return;
+        // One read serves both jobs: the count decides whether the strip
+        // belongs on screen at all, and the matching entry carries the live
+        // geometry to glue it to.
+        std::vector<WindowInfo> owned =
+            backend.find_owned_windows(supervisor.app_id(), supervisor.child_pid());
+        if ((owned.size() >= kMinTabsForStrip) != (placed_tab_count >= kMinTabsForStrip)) {
+            if (auto shown = place_visible(); shown.has_value()) {
+                slot_address = shown->address;
+                guard.set_slot(supervisor.child_pid(), slot_address);
+                // show() refocuses, so restart the grace window rather than
+                // let our own focus event read as the user leaving.
+                guard.note_shown(std::chrono::steady_clock::now());
+            }
+            return;
+        }
+        if (!config.tab_strip || !strip_ready) return;
+        if (!strip_rect.has_value()) return; // never mapped; place_visible owns the first map
+        const WindowInfo* window = nullptr;
+        for (const WindowInfo& candidate : owned) {
+            if (!candidate.visible) continue;
+            if (window == nullptr) window = &candidate;
+            if (!slot_address.empty() &&
+                normalize_address(candidate.address) == normalize_address(slot_address)) {
+                window = &candidate;
+                break;
+            }
+        }
+        if (window == nullptr) return;
+        // The strip sits in the band immediately above the terminal, clamped
+        // to the working area: dragged to the very top there is nowhere left
+        // to put it, and overlapping the terminal's first row beats covering
+        // the bar.
+        Geometry want{.x = window->geom.x,
+                      .y = std::max(strip_working_top, window->geom.y - TabStrip::kHeight),
+                      .w = window->geom.w,
+                      .h = TabStrip::kHeight};
+        if (want.x == strip_rect->x && want.y == strip_rect->y && want.w == strip_rect->w) return;
+        auto monitor = backend.focused_monitor();
+        if (!monitor.has_value()) return;
+        show_strip(want, monitor->y + monitor->reserved_top, monitor->x, monitor->name);
     };
 
     auto park_hidden = [&]() -> std::optional<WindowInfo> {
@@ -394,10 +498,6 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
         return false;
     };
 
-    auto hide_strip = [&]() {
-        if (strip_ready && wayland) wayland->unmap_surface();
-    };
-
     // Drop the strip's Wayland connection entirely and schedule a rebuild.
     // Used when the display is poisoned by a protocol error or the compositor
     // goes away: the next show reconnects instead of the strip staying off
@@ -407,6 +507,7 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
                      kWaylandRetrySec);
         strip_ready = false;
         strip_needs_render = false;
+        strip_rect.reset();
         wayland.reset();
         wayland_retry_after =
             std::chrono::steady_clock::now() + std::chrono::seconds(kWaylandRetrySec);
@@ -562,9 +663,11 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
         fds[2].events = POLLIN;
         fds[3].fd = (wl_dpy != nullptr) ? wl_display_get_fd(wl_dpy) : -1;
         fds[3].events = POLLIN;
-        // Bounded wait so the config mtime is rechecked while idle; all
-        // event sources remain level-triggered so nothing is lost.
-        int n = poll(fds, 4, 500);
+        // Bounded wait so the config mtime is rechecked while idle and the
+        // strip can sample the terminal's geometry while visible; all event
+        // sources remain level-triggered so nothing is lost.
+        bool visible = manager.current_state() == DropdownState::Visible;
+        int n = poll(fds, 4, visible ? kVisiblePollMs : kIdlePollMs);
         // Close the read window HERE, before any handler runs. libwayland's
         // prepare_read/read_events pair is a reader lock: a second
         // prepare_read on the same thread makes read_events wait for a peer
@@ -679,6 +782,11 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
                 // deliberately do not chase, so user drags are never fought.
             }
         }
+        // Sample after the handlers, so a toggle in this same tick settles
+        // first and the strip is never re-mapped onto a window that is on its
+        // way out. Safe here for the same reason painting is: the read window
+        // closed above.
+        sync_strip_to_window();
         // Painting is safe here: the read window closed above, and a handler
         // may have shed the connection in the meantime.
         if (wayland && strip_ready && strip_needs_render) {
