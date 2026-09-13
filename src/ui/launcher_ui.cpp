@@ -38,6 +38,7 @@
 #include <sys/stat.h>
 #include <sys/eventfd.h>
 #include <poll.h>
+#include <chrono>
 
 namespace waylaunch {
 
@@ -76,6 +77,68 @@ void on_switcher_reverse_signal(int) {
         ssize_t w = write(g_switcher_reverse_fd, &one, sizeof(one));
         (void)w;
     }
+}
+
+// wl_display_sync() completion, tracked on the heap so a timed-out roundtrip
+// (below) can walk away from it safely: the callback may still arrive late,
+// and it must find valid state to finish tearing itself down against.
+struct SyncState {
+    bool done = false;
+    bool abandoned = false;
+};
+void sync_done_cb(void* data, wl_callback* cb, uint32_t) {
+    auto* st = static_cast<SyncState*>(data);
+    st->done = true;
+    wl_callback_destroy(cb);
+    if (st->abandoned) delete st;
+}
+const wl_callback_listener sync_done_listener = { .done = sync_done_cb };
+
+// Bounded stand-in for wl_display_roundtrip(): waits up to timeout_ms for the
+// compositor to process everything queued so far, but — unlike a plain
+// roundtrip — gives up instead of blocking forever. Needed anywhere a
+// roundtrip runs while the process still holds the layer surface's exclusive
+// keyboard grab: a slow/unresponsive compositor must never be able to freeze
+// the whole desktop's keyboard along with it (see § launcher hang / keyboard
+// grab bug). Returns false on timeout; the caller proceeds regardless so the
+// grab still gets released.
+bool roundtrip_with_timeout(wl_display* dpy, int timeout_ms) {
+    auto* st = new SyncState();
+    wl_callback* cb = wl_display_sync(dpy);
+    if (!cb) { delete st; return false; }
+    wl_callback_add_listener(cb, &sync_done_listener, st);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (!st->done) {
+        while (wl_display_prepare_read(dpy) != 0)
+            wl_display_dispatch_pending(dpy);
+        wl_display_flush(dpy);
+
+        auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) { wl_display_cancel_read(dpy); break; }
+        int remaining_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+
+        struct pollfd pfd { wl_display_get_fd(dpy), POLLIN, 0 };
+        int n = poll(&pfd, 1, remaining_ms);
+        if (n < 0) {
+            wl_display_cancel_read(dpy);
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (n == 0) { wl_display_cancel_read(dpy); break; }   // timed out
+        if (pfd.revents & POLLIN) {
+            if (wl_display_read_events(dpy) < 0) break;
+        } else {
+            wl_display_cancel_read(dpy);
+        }
+        wl_display_dispatch_pending(dpy);
+    }
+
+    bool ok = st->done;
+    if (st->done) delete st;
+    else st->abandoned = true;   // let the late callback (if any) clean itself up
+    return ok;
 }
 
 std::string to_lower(std::string s) {
@@ -502,8 +565,10 @@ void LauncherUI::run() {
     }
 
     if (switcher_mode_ && switcher_input_) {
-        wl_display_roundtrip(dpy);
-        wl_display_roundtrip(dpy);
+        // Bounded: a slow/unresponsive compositor at startup must delay the
+        // first show, not hang it outright (see roundtrip_with_timeout above).
+        roundtrip_with_timeout(dpy, 500);
+        roundtrip_with_timeout(dpy, 500);
         show_switcher(switcher_reverse_);
         // Map NOW, before entering the loop: poll() below blocks until an fd
         // event arrives, but an unmapped surface gets no events from the
@@ -592,11 +657,14 @@ void LauncherUI::run() {
         // Resident switcher going dormant after a confirm: the activate() request
         // is already queued. Round-trip so the compositor focuses the target
         // window BEFORE we unmap our keyboard-grabbing overlay (an unmap otherwise
-        // refocuses the previously-focused window and eats the switch). Only then
-        // unmap and wait for the next Alt+Tab.
+        // refocuses the previously-focused window and eats the switch). Bounded,
+        // not a plain wl_display_roundtrip(): this runs while the layer surface
+        // still holds the EXCLUSIVE keyboard grab, so a compositor that stalls
+        // here must not be able to freeze the whole desktop's keyboard along with
+        // it — give the ordering guarantee a short window, then unmap regardless.
         if (switcher_go_dormant_) {
             switcher_go_dormant_ = false;
-            wl_display_roundtrip(dpy);
+            roundtrip_with_timeout(dpy, 150);
             wayland_->unmap_surface();
         }
     }
