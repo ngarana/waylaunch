@@ -55,8 +55,14 @@ source      = "matugen"
 # matugen --json hex output. Empty = ~/.config/matugen/colors.json.
 # Generate it with e.g.:  matugen image ~/wallpaper.png --json hex
 # or a template writing {"colors": {"dark": {...}, "light": {...}}}.
-# A template may also emit our slot names directly
-# ({"background": "{{colors.surface.dark.hex}}", ...}); those win.
+# This repo ships matugen/waylaunch-colors.json: copy it to
+# ~/.config/matugen/templates/, register it --
+#   [templates.waylaunch]
+#   input_path = '~/.config/matugen/templates/waylaunch-colors.json'
+#   output_path = '~/.config/matugen/waylaunch-colors.json'
+# -- and point matugen_path at the output (no post_hook needed: waylaunch
+# polls the file and repaints live). A template may also emit our slot names
+# directly ({"background": "{{colors.surface.dark.hex}}", ...}); those win.
 # Semantic warning/success (Material You has no such roles): define them in
 # matugen so they stay meaningful AND harmonize with the wallpaper —
 #   [config.custom_colors]
