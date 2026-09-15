@@ -66,6 +66,9 @@ bool Config::load(const std::string& path) {
             config_.theme.name = get_str(*theme, "name", config_.theme.name);
             config_.theme.mode = get_str(*theme, "mode", config_.theme.mode);
             config_.theme.custom_path = get_str(*theme, "custom_path", config_.theme.custom_path);
+            config_.theme.source = get_str(*theme, "source", config_.theme.source);
+            config_.theme.matugen_path =
+                get_str(*theme, "matugen_path", config_.theme.matugen_path);
 
             if (auto* colors = (*theme)["colors"].as_table()) {
                 config_.theme.colors.background =
@@ -316,7 +319,9 @@ bool Config::save(const std::string& path) const {
     file << "[theme]\n";
     file << "name = \"" << config_.theme.name << "\"\n";
     file << "mode = \"" << config_.theme.mode << "\"\n";
-    file << "custom_path = \"" << config_.theme.custom_path << "\"\n\n";
+    file << "custom_path = \"" << config_.theme.custom_path << "\"\n";
+    file << "source = \"" << config_.theme.source << "\"\n";
+    file << "matugen_path = \"" << config_.theme.matugen_path << "\"\n\n";
 
     auto write_color = [&](const std::string& k, const std::string& v) {
         file << k << " = \"" << v << "\"\n";

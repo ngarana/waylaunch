@@ -19,6 +19,10 @@ int main() {
              << "max_entries = 17\n"
              << "max_age_days = 42\n"
              << "frecency_half_life_days = 12.5\n"
+             << "\n[theme]\n"
+             << "source = \"matugen\"\n"
+             << "matugen_path = \"~/matugen.json\"\n"
+             << "mode = \"light\"\n"
              << "\n[dropdown]\n"
              << "enabled = true\n"
              << "terminal = \"kitty\"\n"
@@ -42,6 +46,9 @@ int main() {
     assert(config.get().history.max_entries == 17);
     assert(config.get().history.max_age_days == 42);
     assert(config.get().history.frecency_half_life_days == 12.5);
+    assert(config.get().theme.source == "matugen");
+    assert(config.get().theme.matugen_path == "~/matugen.json");
+    assert(config.get().theme.mode == "light");
     const auto& dropdown = config.get().dropdown;
     assert(dropdown.enabled);
     assert(dropdown.terminal == "kitty");
@@ -65,6 +72,9 @@ int main() {
     assert(reloaded.get().history.max_entries == 17);
     assert(reloaded.get().history.max_age_days == 42);
     assert(reloaded.get().history.frecency_half_life_days == 12.5);
+    assert(reloaded.get().theme.source == "matugen");
+    assert(reloaded.get().theme.matugen_path == "~/matugen.json");
+    assert(reloaded.get().theme.mode == "light");
     const auto& dd = reloaded.get().dropdown;
     assert(dd.enabled && dd.terminal == "kitty");
     assert(dd.edge == waylaunch::DropdownEdge::Bottom);

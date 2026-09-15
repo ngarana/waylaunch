@@ -150,6 +150,7 @@ set(SOURCES
     src/providers/content_provider.cpp
     src/util/search_util.cpp
     src/config/config.cpp
+    src/config/matugen_theme.cpp
     src/switcher/wlr_toplevel_backend.cpp
     src/switcher/app_switcher_manager.cpp
     src/switcher/switcher_state_machine.cpp
@@ -401,6 +402,12 @@ if(BUILD_TESTING)
     target_include_directories(config_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
     target_compile_options(config_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
     add_test(NAME config_test COMMAND config_test)
+
+    add_executable(matugen_theme_test tests/matugen_theme_test.cpp src/config/matugen_theme.cpp)
+    target_link_libraries(matugen_theme_test PRIVATE tomlplusplus::tomlplusplus)
+    target_include_directories(matugen_theme_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_options(matugen_theme_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    add_test(NAME matugen_theme_test COMMAND matugen_theme_test)
 
     add_executable(renderer_golden_test tests/renderer_golden_test.cpp src/ui/renderer.cpp)
     target_include_directories(renderer_golden_test PRIVATE

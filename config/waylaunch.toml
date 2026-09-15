@@ -45,8 +45,25 @@ backdrop_tint  = 0.55     # darkening laid over the captured+blurred backdrop
 # ============================================================================
 [theme]
 name        = "dark"
-mode        = "dark"
+mode        = "dark"      # also picks the matugen dark/light scheme below
 custom_path = ""
+# source = "static" | "matugen". matugen follows the wallpaper: Material You
+# tokens are overlaid on [theme.colors] (missing tokens/files keep these
+# static values, so enabling without a colors file changes nothing),
+# live-reloaded in every module without a restart.
+source      = "matugen"
+# matugen --json hex output. Empty = ~/.config/matugen/colors.json.
+# Generate it with e.g.:  matugen image ~/wallpaper.png --json hex
+# or a template writing {"colors": {"dark": {...}, "light": {...}}}.
+# A template may also emit our slot names directly
+# ({"background": "{{colors.surface.dark.hex}}", ...}); those win.
+# Semantic warning/success (Material You has no such roles): define them in
+# matugen so they stay meaningful AND harmonize with the wallpaper —
+#   [config.custom_colors]
+#   warning = "#fab387"
+#   success = "#a6e3a1"
+# — otherwise they fall back to the tertiary/secondary palette hues.
+matugen_path = ""
 
 [theme.colors]
 background     = "#1e1e2e"   # panel base (tinted by [appearance] over glass)

@@ -4,6 +4,7 @@
 #include "waylaunch/config.h"
 #include "waylaunch/content/config.h"
 #include "waylaunch/content/store.h"
+#include "waylaunch/matugen_theme.h"
 #include "waylaunch/power/power_action_backend.h"
 #include "waylaunch/power/power_input_controller.h"
 #include "waylaunch/power/power_manager.h"
@@ -345,7 +346,7 @@ bool try_enable_backdrop_blur() {
 
 } // namespace
 
-LauncherUI::LauncherUI() = default;
+LauncherUI::LauncherUI() : matugen_(std::make_unique<MatugenTheme>()) {}
 
 LauncherUI::~LauncherUI() {
     {
@@ -654,9 +655,19 @@ void LauncherUI::run() {
         for (auto& f : fds) f.revents = 0;
         // The only timed work in any overlay is the power dialog's auto-confirm
         // countdown: while it runs, wake ~5×/s to tick it; otherwise block.
+        // Live theming also needs a wakeup: bound the wait while a config path
+        // is known so wallpaper/config edits repaint without a restart (the
+        // resident switcher would otherwise sleep until the next Alt+Tab).
         bool power_counting = power_manager_ && power_manager_->confirm_dialog().is_open() &&
                               power_manager_->confirm_dialog().has_countdown();
-        int n = poll(fds, 5, power_counting ? 200 : -1);
+        bool theme_watch = !config_path_.empty();
+        int timeout = -1;
+        if (power_counting) {
+            timeout = 200;
+        } else if (theme_watch) {
+            timeout = 500;
+        }
+        int n = poll(fds, 5, timeout);
         if (n < 0) {
             wl_display_cancel_read(dpy);
             if (errno == EINTR) continue;
@@ -712,6 +723,11 @@ void LauncherUI::run() {
             }
         }
 
+        // Live theming: config/matugen edits repaint (needs_redraw_) without a
+        // restart. Runs on every wakeup; both checks are mtime-gated (two
+        // stats) and re-parse only when a file actually moved.
+        poll_theme();
+
         if (needs_redraw_) render_frame();
 
         // Resident switcher going dormant after a confirm: the activate() request
@@ -740,20 +756,23 @@ void LauncherUI::quit() { wayland_->quit(); }
 // Theme
 // ---------------------------------------------------------------------------
 
-Theme LauncherUI::build_theme() const {
+Theme LauncherUI::build_theme() {
     const auto& tc = config_->get().theme;
+    // Matugen source: Material tokens overlaid on the static [theme.colors]
+    // (cached by mtime, so this stays cheap enough to call every frame).
+    const ColorConfig cc = (matugen_ != nullptr) ? matugen_->resolve(tc) : tc.colors;
     Theme t;
-    t.background = Color::from_hex(tc.colors.background);
-    t.background_alt = Color::from_hex(tc.colors.background_alt);
-    t.foreground = Color::from_hex(tc.colors.foreground);
-    t.text_muted = Color::from_hex(tc.colors.text_muted);
-    t.accent = Color::from_hex(tc.colors.accent);
-    t.accent_hover = Color::from_hex(tc.colors.accent_hover);
-    t.error = Color::from_hex(tc.colors.error);
-    t.warning = Color::from_hex(tc.colors.warning);
-    t.success = Color::from_hex(tc.colors.success);
-    t.border = Color::from_hex(tc.colors.border);
-    t.selection = Color::from_hex(tc.colors.selection);
+    t.background = Color::from_hex(cc.background);
+    t.background_alt = Color::from_hex(cc.background_alt);
+    t.foreground = Color::from_hex(cc.foreground);
+    t.text_muted = Color::from_hex(cc.text_muted);
+    t.accent = Color::from_hex(cc.accent);
+    t.accent_hover = Color::from_hex(cc.accent_hover);
+    t.error = Color::from_hex(cc.error);
+    t.warning = Color::from_hex(cc.warning);
+    t.success = Color::from_hex(cc.success);
+    t.border = Color::from_hex(cc.border);
+    t.selection = Color::from_hex(cc.selection);
     t.corner_radius = tc.corner_radius;
     t.opacity = tc.opacity;
     auto to_rfc = [](const ConfigFont& cf) -> RenderFontConfig {
@@ -768,6 +787,21 @@ Theme LauncherUI::build_theme() const {
     t.result_font = to_rfc(tc.result_font);
     t.result_detail_font = to_rfc(tc.result_detail_font);
     return t;
+}
+
+void LauncherUI::poll_theme() {
+    if (config_ == nullptr || matugen_ == nullptr || config_path_.empty()) return;
+    // A config edit re-reads [theme] live (providers keep their init-time
+    // snapshot; only colors/fonts/shape repaint). Parse failures keep the
+    // running theme — never blank the overlay over a half-saved file.
+    std::error_code ec;
+    auto mtime = std::filesystem::last_write_time(config_path_, ec);
+    if (!ec && (!config_mtime_.has_value() || *config_mtime_ != mtime)) {
+        config_mtime_ = mtime;
+        Config fresh;
+        if (fresh.load(config_path_)) config_->get().theme = fresh.get().theme;
+    }
+    if (matugen_->poll(config_->get().theme)) needs_redraw_ = true;
 }
 
 // ---------------------------------------------------------------------------

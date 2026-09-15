@@ -5,9 +5,11 @@
 #include "waylaunch/renderer.h"
 #include <condition_variable>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -18,6 +20,7 @@ class WaylandCore;
 class Renderer;
 class Config;
 class AppLauncher;
+class MatugenTheme;
 class WlrForeignToplevelBackend;
 class AppSwitcherManager;
 class SwitcherInputController;
@@ -115,7 +118,10 @@ class LauncherUI {
     int hit_test(double x, double y) const;
     int panel_height() const;
 
-    Theme build_theme() const;
+    Theme build_theme();
+    // Live theming: re-read [theme] when config.toml moves and re-resolve the
+    // matugen file; sets needs_redraw_ when the effective colors changed.
+    void poll_theme();
 
     // --- File-search worker ---
     void file_worker_loop();
@@ -125,6 +131,12 @@ class LauncherUI {
     std::unique_ptr<AppLauncher> apps_;
     Config* config_ = nullptr;
     HistoryStore history_;
+
+    // Matugen live theming (all overlays render through build_theme()).
+    std::unique_ptr<MatugenTheme> matugen_;
+    // config.toml mtime: only the [theme] section is re-read live; everything
+    // else still applies at startup (providers snapshot their config in init).
+    std::optional<std::filesystem::file_time_type> config_mtime_;
 
     // Pluggable search sources (§5.2). Being migrated incrementally; providers
     // already registered here own their query + activation, the rest still runs

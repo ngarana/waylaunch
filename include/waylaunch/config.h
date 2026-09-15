@@ -22,6 +22,8 @@ struct ColorConfig {
     std::string success = "#a6e3a1";
     std::string border = "#45475a";
     std::string selection = "#45475a";
+
+    bool operator==(const ColorConfig&) const = default;
 };
 
 struct ConfigFont {
@@ -51,6 +53,14 @@ struct ThemeConfig {
     std::string name = "dark";
     std::string mode = "dark";
     std::string custom_path;
+    // Color source: "static" ([theme.colors] below) or "matugen" (Material You
+    // tokens from matugen_path overlaid on [theme.colors], which stay as the
+    // fallback for missing tokens/files). theme.mode picks the dark/light scheme.
+    std::string source = "static";
+    // matugen --json hex output ({"colors": {"dark": {...}, "light": {...}}})
+    // or a template emitting our slot names directly. Empty = the default
+    // (~/.config/matugen/colors.json). Tilde-expanded.
+    std::string matugen_path;
     ColorConfig colors;
     ConfigFont input_font;
     ConfigFont result_font;

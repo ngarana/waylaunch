@@ -9,6 +9,7 @@
 #include "waylaunch/dropdown/hyprland_events.h"
 #include "waylaunch/dropdown/session_supervisor.h"
 #include "waylaunch/dropdown/tab_strip.h"
+#include "waylaunch/matugen_theme.h"
 #include "waylaunch/renderer.h"
 #include "waylaunch/subprocess.h"
 #include "waylaunch/wayland_core.h"
@@ -143,6 +144,10 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
     bool dropdown_enabled = true;
     std::optional<std::filesystem::file_time_type> config_mtime;
     DropdownStateStore state_store;
+    // Matugen live theming for the tab strip (same source/mapping as the
+    // launcher overlays; repaints within one poll quantum of a wallpaper
+    // change). Cached by mtime, so per-tick cost is a couple of stats.
+    MatugenTheme matugen;
 
     FocusGuard guard;
     HyprlandEventStream events;
@@ -227,10 +232,11 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
         collect_tabs();
         Buffer* buf = wayland->acquire_buffer();
         if (buf == nullptr) return;
+        const ColorConfig strip_colors = matugen.resolve(repo_config.get().theme);
         TabStrip::Colors colors{
-            .background = Color::from_hex(repo_config.get().theme.colors.background),
-            .foreground = Color::from_hex(repo_config.get().theme.colors.foreground),
-            .accent = Color::from_hex(repo_config.get().theme.colors.accent),
+            .background = Color::from_hex(strip_colors.background),
+            .foreground = Color::from_hex(strip_colors.foreground),
+            .accent = Color::from_hex(strip_colors.accent),
         };
         RenderFontConfig font;
         font.family = repo_config.get().theme.result_font.family;
@@ -627,6 +633,13 @@ int dropdown_main(const std::string& slot, const std::string& config_path) {
     bool running = true;
     while (running) {
         reload_config(false);
+        // Live strip theming: a wallpaper (matugen) or [theme] edit repaints
+        // the visible strip within one poll quantum. reload_config() above
+        // already refreshed repo_config, so poll() sees both file moves.
+        if (matugen.poll(repo_config.get().theme) &&
+            manager.current_state() == DropdownState::Visible) {
+            strip_needs_render = true;
+        }
         events.ensure_connected(std::chrono::steady_clock::now());
         // Wayland dispatch around poll (launcher pattern): prepare before
         // blocking, read-or-cancel after. Only while the strip is up.
