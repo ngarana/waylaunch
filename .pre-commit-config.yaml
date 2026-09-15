@@ -10,8 +10,11 @@ repos:
         args: [--fix=lf]
 
   # Repo-wide C++ quality gates: same configs CI enforces
-  # (.clang-format, .clang-tidy). Requires a configured build dir for
-  # clang-tidy (`cmake -S . -B build`), since it needs compile_commands.json.
+  # (.clang-format, .clang-tidy). Requires a built build dir for
+  # clang-tidy (`cmake -S . -B build && cmake --build build`), since it needs
+  # compile_commands.json AND the wayland-scanner-generated protocol headers
+  # in build/protocols/ (configure alone leaves them missing, which fails
+  # with 'file not found' plus cascading false positives).
   - repo: local
     hooks:
       - id: clang-format-check
