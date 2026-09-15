@@ -31,14 +31,15 @@ void PowerRenderer::render(Renderer& renderer, const PowerManager& manager, cons
     const auto& panel = lay.panel;
     const int icon_size = lay.icon_size;
 
-    // 1. Frosted glass backdrop + glass tint + border (switcher treatment).
     if (renderer.has_backdrop()) {
         renderer.draw_backdrop(panel.x, panel.y, panel.w, panel.h, lay.corner_radius);
     }
-    renderer.rounded_rect(panel.x, panel.y, panel.w, panel.h, lay.corner_radius,
-                          Color::from_rgba(0.1, 0.1, 0.14, 0.82));
-    renderer.rounded_rect(panel.x, panel.y, panel.w, panel.h, lay.corner_radius,
-                          Color::from_rgba(1.0, 1.0, 1.0, 0.12));
+    const Color panel_fill =
+        Color::from_rgba(theme.background.r, theme.background.g, theme.background.b,
+                         renderer.has_backdrop() ? 0.82 : 0.96);
+    renderer.rounded_rect(panel.x, panel.y, panel.w, panel.h, lay.corner_radius, panel_fill);
+    const Color rim = Color::from_rgba(theme.border.r, theme.border.g, theme.border.b, 0.12);
+    renderer.rounded_rect(panel.x, panel.y, panel.w, panel.h, lay.corner_radius, rim);
 
     // 2. Action cards: icon on top, subtle label underneath.
     size_t selected_idx = manager.selected_index();
@@ -67,7 +68,8 @@ void PowerRenderer::render(Renderer& renderer, const PowerManager& manager, cons
         bool is_shutdown = action.id == "shutdown";
         Color circle = is_shutdown
                            ? Color::from_rgba(theme.error.r, theme.error.g, theme.error.b, 0.22)
-                           : Color::from_rgba(1.0, 1.0, 1.0, 0.12);
+                           : Color::from_rgba(theme.background_alt.r, theme.background_alt.g,
+                                              theme.background_alt.b, 0.22);
         renderer.rounded_rect(static_cast<int>(cx) - cr_r, static_cast<int>(cy) - cr_r, icon_size,
                               icon_size, cr_r, circle);
         Color glyph = is_shutdown

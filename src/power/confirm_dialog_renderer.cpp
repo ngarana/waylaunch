@@ -41,21 +41,15 @@ void ConfirmDialogRenderer::render(Renderer& renderer, const ConfirmDialog& dial
     const int corner_radius = lay.corner_radius; // "mostly round" — softer than the HUD
     const int pad = lay.pad;
 
-    // Glassmorphic card: the blurred desktop clipped to the card, a light tint
-    // for contrast, a hairline border, and a top rim highlight — the same glass
-    // recipe as the launcher panel, not an opaque slab.
-    if (renderer.has_backdrop()) {
-        renderer.draw_backdrop(x, y, card_w, card_h, corner_radius);
-        renderer.rounded_rect(x, y, card_w, card_h, corner_radius,
-                              Color::from_rgba(0.08, 0.08, 0.12, 0.60));
-    } else {
-        renderer.rounded_rect(x, y, card_w, card_h, corner_radius,
-                              Color::from_rgba(0.1, 0.1, 0.14, 0.92));
-    }
-    renderer.rounded_rect(x, y, card_w, card_h, corner_radius,
-                          Color::from_rgba(1.0, 1.0, 1.0, 0.10));
+    const Color card_fill =
+        Color::from_rgba(theme.background.r, theme.background.g, theme.background.b,
+                         renderer.has_backdrop() ? 0.60 : 0.92);
+    if (renderer.has_backdrop()) { renderer.draw_backdrop(x, y, card_w, card_h, corner_radius); }
+    renderer.rounded_rect(x, y, card_w, card_h, corner_radius, card_fill);
+    const Color rim = Color::from_rgba(theme.border.r, theme.border.g, theme.border.b, 0.10);
+    renderer.rounded_rect(x, y, card_w, card_h, corner_radius, rim);
     renderer.fill_rect(x + corner_radius, y, card_w - (2 * corner_radius), 1,
-                       Color::from_rgba(1.0, 1.0, 1.0, 0.22));
+                       Color::from_rgba(theme.border.r, theme.border.g, theme.border.b, 0.22));
 
     int inner_x = x + pad;
     int inner_w = card_w - (2 * pad);
@@ -80,7 +74,7 @@ void ConfirmDialogRenderer::render(Renderer& renderer, const ConfirmDialog& dial
         cairo_save(cr);
         cairo_set_line_width(cr, 3.0);
         cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-        cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.10);
+        cairo_set_source_rgba(cr, theme.border.r, theme.border.g, theme.border.b, 0.10);
         cairo_arc(cr, icx, icy, ring_r, 0, 2 * M_PI);
         cairo_stroke(cr);
         double frac = dialog.remaining_fraction();
@@ -121,8 +115,9 @@ void ConfirmDialogRenderer::render(Renderer& renderer, const ConfirmDialog& dial
     auto draw_button = [&](const power_layout::Rect& b, const std::string& label, const Color& fill,
                            const Color& text, bool focused) {
         if (focused) { // 2px halo ring behind the pill
-            renderer.rounded_rect(b.x - 3, b.y - 3, b.w + 6, b.h + 6, (b.h + 6) / 2,
-                                  Color::from_rgba(1.0, 1.0, 1.0, 0.30));
+            renderer.rounded_rect(
+                b.x - 3, b.y - 3, b.w + 6, b.h + 6, (b.h + 6) / 2,
+                Color::from_rgba(theme.border.r, theme.border.g, theme.border.b, 0.30));
         }
         renderer.rounded_rect(b.x, b.y, b.w, b.h, b.h / 2, fill);
         int tw = renderer.text_width(label, btn_font);
@@ -133,14 +128,17 @@ void ConfirmDialogRenderer::render(Renderer& renderer, const ConfirmDialog& dial
     bool confirm_focused = dialog.focused_button() == ConfirmDialog::Button::Confirm;
 
     draw_button(lay.cancel, "Cancel",
-                Color::from_rgba(1.0, 1.0, 1.0, confirm_focused ? 0.10 : 0.22), theme.foreground,
-                !confirm_focused);
+                Color::from_rgba(theme.background_alt.r, theme.background_alt.g,
+                                 theme.background_alt.b, confirm_focused ? 0.10 : 0.22),
+                theme.foreground, !confirm_focused);
 
     std::string confirm_label = action.name;
     if (dialog.has_countdown()) confirm_label += " · " + std::to_string(dialog.remaining_seconds());
     draw_button(lay.confirm, confirm_label,
                 Color::from_rgba(tone.r, tone.g, tone.b, confirm_focused ? 0.92 : 0.45),
-                confirm_focused ? Color::from_rgba(0.08, 0.08, 0.10, 0.96) : theme.foreground,
+                confirm_focused ? Color::from_rgba(theme.background.r, theme.background.g,
+                                                   theme.background.b, 0.96)
+                                : theme.foreground,
                 confirm_focused);
 }
 

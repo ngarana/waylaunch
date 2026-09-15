@@ -5,11 +5,30 @@
 > would buy, what it would cost, and — if yes — in what order.
 >
 > **Companion documents:** [`DESIGN.md`](DESIGN.md) (waylaunch architecture),
-> [`POWER_MANAGER.md`](POWER_MANAGER.md) (the overlay this document proposes
-> qypr adopt), and qypr's `docs/ROADMAP.md` / `docs/STATUS_BAR.md`.
+> [`POWER_MANAGER.md`](POWER_MANAGER.md) (the overlay qypr's bar already
+> delegates to), qypr's `docs/LOCK_SECURITY_REVIEW.md` (the lock-screen
+> invariants this revision relies on), and qypr's `docs/ROADMAP.md` /
+> `docs/STATUS_BAR.md`.
 >
-> **Last updated:** 2026-08-25. Status: **analysis complete, decision open.**
-> §9 lists what the maintainer still has to settle.
+> **Last updated:** 2026-09-15 (revision 2). Status: **analysis complete,
+> decision open.** §9 lists what the maintainer still has to settle.
+>
+> **Revision 2 corrects three errors in the 2026-08-25 version:**
+> 1. It called qypr's no-threads/no-spawn gate a lock-screen security rule and
+>    "the real blocker". It is a footprint rule, and it blocks nothing (§4.1).
+> 2. It said two power menus were live on the desktop. That was already false
+>    when written — the bar has delegated to `waylaunch --power` since
+>    2026-07-25 (§3.2).
+> 3. Stage 1 proposed deleting qypr's `ui/PowerDialog`. That is the **lock
+>    screen's** power confirmation and must stay (§3.2, §8).
+>
+> **Precondition.** This revision assumes the remediations for findings QL-1 …
+> QL-7 in qypr's `docs/LOCK_SECURITY_REVIEW.md` have landed. The invariants in
+> §4.1 are stated as facts on that basis; until those fixes merge, they are
+> targets.
+>
+> Figures in §2–§3 were measured on 2026-08-25 unless marked
+> *re-verified 2026-09-15*.
 
 ---
 
@@ -23,29 +42,31 @@ duplicated seams.
 
 The measured overlap is roughly **4,000 lines in qypr and 2,800 lines in
 waylaunch addressing the same concerns**, of which a realistic consolidation
-recovers **1,500–2,500 net LOC**. Two features are duplicated all the way to the
-user: the **power menu** (both implementations are shipped *and both are bound
-in the live config*) and the **application launcher** (qypr ships a 214-line
-in-bar launcher; waylaunch is a launcher).
+recovers **1,500–2,500 net LOC**. One feature is still duplicated in code: the
+**application launcher** (qypr ships a 228-line in-bar launcher, shelved and off
+by default; waylaunch is a launcher). The **power menu is not** — the bar
+already hands off to `waylaunch --power`; what is left in qypr is 102 lines of
+unreachable bar popover, plus the lock screen's own dialog, which has to stay.
 
 The overlap is also **growing**: qypr's ROADMAP Phase 15 plans "launcher,
 clipboard, keyboard layout, idle inhibitor, system monitors" as utility
 indicators — four of the five are things waylaunch either does or is.
 
-But a full merge is blocked by something real, not stylistic: **the two projects
-have contradictory architectural constitutions.** qypr's ROADMAP lists as a
-non-negotiable gate "no spawned processes, no polling, one shared bus connection
-per bus, **no threads**". waylaunch runs a worker thread, forks sandboxed
-extractor subprocesses, and ships a resident indexing daemon. That gate is not
-decoration — it exists to keep a PAM-authenticating lock surface small and
-auditable.
+The first version of this document said a full merge was blocked by qypr's
+"no threads, no spawned processes" gate. **It isn't.** That gate is a resource
+rule written for the status bar; qypr's own decisions D1 and D4 already narrow
+it; and `qypr-lock` has always used a PAM worker thread and forked `systemctl`.
+What actually protects the lock screen is a set of **security invariants** —
+default-deny interactivity, a wiped and non-dumpable password buffer, a single
+hardened spawn path, and a lock binary that never links the indexer (§4.1). None
+of them forbids threads or subprocesses in *other* binaries. They constrain how
+shared code may be hosted by `qypr-lock`, and each one is testable.
 
-**Recommendation (§8): stage the consolidation.** Deduplicate the two
-*user-visible* features first (days, near-zero risk, no architectural
-commitment), extract a shared core library second (weeks, bounded churn), and
-treat the full monorepo merge as a separate decision that depends on relaxing
-qypr's threading gate — which should be settled deliberately, not as merge
-fallout.
+**Recommendation (§8): stage the consolidation.** Remove the remaining
+duplicate UI code first (days). Extract a shared core second (weeks) — now
+including a hardened spawn primitive both projects need. A full monorepo merge is
+**no longer blocked**; it becomes an optional Stage 4, decided on convention
+churn and release coupling, and gated on the §4.1 invariants running in CI.
 
 ---
 
@@ -60,14 +81,14 @@ fallout.
 | Test LOC | 3,604 | 3,247 |
 | Commits | 131 | 50 |
 | Active span | 2026-04-08 → 2026-08-24 | 2026-07-18 → 2026-08-16 |
-| Working branch | `qol` (dirty) | `feat/spotlight-ui-refinement` |
+| Working branch *(re-verified 2026-09-15)* | `qol@27d7de1` | `feat/dropdown-host@485d9f0` |
 | Language | C++20, CMake ≥ 3.20 | C++20, CMake ≥ 3.20 |
 | Rendering | cairo + pangocairo + `wl_shm`, no GPU | identical |
 | Namespace | `qypr` | `waylaunch` |
 | Header ext. | `.hpp` | `.h` |
 | Naming | `PascalCase.hpp`, `camelCase()` | `snake_case.h`, `snake_case()` |
 | Config format | hand-rolled INI + `import` (decision D2: no new dependency) | TOML via `toml++` |
-| `.clang-format` | present | **absent** |
+| `.clang-format` *(re-verified 2026-09-15)* | present | present, enforced with clang-tidy since `f0a36fc` — **different options** from qypr's |
 | Event loop | epoll reactor, `core/EventLoop` (133 L) | `poll` + `eventfd`, inline in `launcher_ui` |
 
 The repository name `lockscreen` is now inaccurate — qypr ships a full
@@ -76,13 +97,14 @@ KDE-Plasma-calibre panel replacement alongside the locker.
 ### 2.2 The runtime picture — already one suite
 
 From the live Hyprland config (`~/.config/hypr/modules/binds.lua`,
-`autostart.lua`, `hypridle.conf`):
+`autostart.lua`, `hypridle.conf`) and qypr's `bar.conf`:
 
 ```
 Super+D        → waylaunch                    (launcher)
 Alt+Tab        → waylaunch --switcher         (resident overlay)
 Alt+Shift+Tab  → waylaunch --switcher --reverse
 Super+Escape   → waylaunch --power            (power overlay)
+qypr-bar power → Quick Settings → waylaunch --power
 Super+L        → ~/.config/qypr/lock.sh       (locker)
 hypridle       → qypr-lock --idle-timeout 30
 autostart      → qypr-bar                     (panel)
@@ -117,8 +139,8 @@ Catppuccin Mocha palette, down to identical hex values:
 There is **no shared source of truth** for that palette — qypr reads
 `themes/catppuccin-mocha.conf`, waylaunch defaults them in
 `ColorConfig` (`include/waylaunch/config.h`). They match because they were kept
-in sync by hand, and the sync has **already slipped**: `warning` is `#f9e2af`
-in qypr and `#fab387` in waylaunch.
+in sync by hand, and the sync has **already slipped** *(re-verified
+2026-09-15)*: `warning` is `#f9e2af` in qypr and `#fab387` in waylaunch.
 
 ---
 
@@ -133,10 +155,14 @@ in qypr and `#fab387` in waylaunch.
 | Cairo/Pango draw helpers | `render/Painter` — 345 L | part of `ui/renderer.cpp` — 631 L |
 | Layer-shell / shm / seat / xkb / output | `src/wayland/` — 1,735 L | `core/wayland_core.cpp` — 660 L |
 | `wlr-foreign-toplevel` client | `system/ToplevelBackend` — 347 L | `switcher/wlr_toplevel_backend` — 276 L |
-| Power actions | `power/PowerManager` + `ui/PowerDialog` + `PowerMenuIndicator` — 574 L | `src/power/` — 873 L |
-| Application launcher UI | `ui/statusbar/LauncherPopover` — 214 L | the product |
+| Power actions (desktop) | `power/PowerManager` — 62 L + bar `PowerMenuPopover` — 102 L, unreachable | `src/power/` — 873 L |
+| Subprocess spawning | three `fork` call sites (`PowerManager`, `QuickSettingsPanel`, `DesktopIndex`) | `search/subprocess.cpp` — `posix_spawn`, 238 L |
+| Application launcher UI | `ui/statusbar/LauncherPopover` — 228 L *(re-verified 2026-09-15)* | the product |
 | Event loop | `core/EventLoop` — 133 L | inline `poll`/`eventfd` |
 | Config loader | `core/Config` — 181 L | `config/config.cpp` — 338 L |
+
+qypr's `ui/PowerDialog` (320 L) is **not** in this table. It is lock-only
+(`QYPR_LOCK_ONLY_SOURCES`) and nothing in waylaunch can replace it (§3.2).
 
 Both `.desktop` implementations parse a `DesktopEntry`, strip `Exec` field
 codes, rank prefix-then-substring, and spawn detached. Both icon paths walk the
@@ -148,32 +174,44 @@ capability the other lacks — waylaunch's `wlr-screencopy` backdrop blur, qypr'
 multi-output handling and `ext-session-lock-v1` session. The recoverable figure
 is the 1,500–2,500 LOC in §1.
 
-### 3.2 Duplicated *features* — visible to the user, today
+### 3.2 Duplicated *features* — visible to the user
 
-**Two power menus are live simultaneously.** `power` appears in
-`modules-center` of `~/.config/qypr/bar.conf` (line 73), *and* Super+Escape is
-bound to `waylaunch --power`. They differ in substance, not just skin:
+**The power menu is not duplicated on the desktop.** The first version of this
+document said it was; that was already false when it was written. Since qypr
+commit `530998d` (2026-07-25), activating the bar's `power` indicator always
+opens Quick Settings (`StatusBar.cpp:565`), and the Quick Settings power tile runs
+`waylaunch --power` (`QuickSettingsPanel.cpp:103`, overridable through
+`[quick-settings] power-command`, which the live `bar.conf` leaves commented
+out). The desktop has **one** power UI — waylaunch's — reachable from
+Super+Escape and from the bar.
 
-| | qypr `PowerDialog` | waylaunch `--power` |
+Two pieces remain in qypr:
+
+| Code | Status | Action |
 |---|---|---|
-| Command set | hardcoded `systemctl` verbs | config-driven, argv-split, no shell |
-| Init system | systemd assumed | normalized systemd/elogind at action time |
-| Confirmation | anchored popover, countdown → **auto-cancel** | standalone card, countdown → **auto-confirm** |
-| Configurability | none | `enabled_actions`, `commands`, `confirm_text`, `countdown_seconds` |
-| Tests | none dedicated | 5 test binaries |
+| Bar `PowerMenuPopover` (`PowerMenuIndicator.cpp:39-140`, 102 L) | **Unreachable** — `activateIndicator` diverts `power` to Quick Settings, and the tile ignores its `onPower` callback | Delete (Stage 1) |
+| Lock `ui/PowerDialog` (320 L) | Lock-only | **Keep** |
 
-The countdown semantics are **opposite** — qypr's expiry cancels, waylaunch's
-expiry executes. That is a genuine behavioural inconsistency in one desktop.
+**The lock screen's `PowerDialog` must stay**, for two reasons:
+- A layer-shell overlay cannot draw above an `ext-session-lock-v1` surface.
+- Launching another binary from the lock screen before authentication is exactly
+  what invariant I1 forbids (§4.1).
+
+Its countdown **cancels** on expiry, while waylaunch's **confirms**. That
+difference is correct, not an inconsistency: before authentication the safe
+default is to do nothing, and on an unlocked desktop the user has already
+chosen the action.
 
 **Two application launchers exist.** qypr's `LauncherIndicator` +
 `LauncherPopover` is a keyboard-driven `.desktop` search over `DesktopIndex`.
-It is built into `qypr-bar` but **not enabled in the live `bar.conf`** — so it
-is currently 214 lines of compiled, untested-in-practice duplication of the
-thing Super+D already does better.
+qypr's `STATUS_BAR.md` marks it *shelved* — built, tested, off by default — and
+it is not enabled in the live `bar.conf`. It is bar-only; the lock app never
+constructs a `DesktopIndex`.
 
 ### 3.3 Divergent vendored protocol XML
 
-Both repositories vendor `protocols/` independently, and the copies differ:
+Both repositories vendor `protocols/` independently, and the copies differ
+*(re-verified 2026-09-15: unchanged)*:
 
 | Protocol | qypr | waylaunch |
 |---|---|---|
@@ -190,29 +228,51 @@ before. **One canonical `protocols/` directory eliminates the entire bug class**
 
 ---
 
-## 4. Divergences that resist merging
+## 4. Divergences — and what actually constrains a merge
 
-### 4.1 Contradictory architectural constitutions — the real blocker
+### 4.1 The threading/spawning gate is not a blocker
 
 qypr's ROADMAP, "Non-negotiable gates (every phase)", gate 2:
 
 > **Minimal footprint** — no spawned processes, no polling (push via fds in the
 > epoll loop), one shared bus connection per bus, no threads.
 
-waylaunch, in the live path:
+waylaunch, meanwhile, runs a **worker thread** for the async filesystem walk,
+**forks sandboxed extractor subprocesses** (`pdftotext`, `unzip`, `pandoc`,
+`odt2txt`), and ships a **resident indexing daemon** (`waylaunchd`).
 
-- a **worker thread** for the async filesystem walk (`FileWorkerLoop`, woken via
-  `eventfd`),
-- **forked subprocesses** for content extraction (`pdftotext`, `unzip`,
-  `pandoc`, `odt2txt`) under a cgroup sandbox,
-- a **resident indexing daemon** (`waylaunchd`) with inotify watches and a
-  periodic reconcile.
+The first version of this document called that "the real blocker" and claimed
+the gate "exists to keep a PAM-authenticating lock surface small and
+auditable". Neither holds:
 
-These are not reconcilable by style guide. qypr's gate exists because
-`qypr-lock` authenticates with PAM and must stay small and auditable; waylaunch's
-thread and subprocesses exist because full-text indexing cannot be done on a UI
-thread. **A merge requires one side's rule to lose**, and that is a design
-decision the maintainer has to make explicitly.
+- **It is a footprint rule.** The gate is titled *Minimal footprint* and lives
+  in the status-bar roadmap.
+- **qypr's own decisions narrow it.** `STATUS_BAR.md` D1: "the codebase's real
+  rule is narrower than the prose" — spawning *to read state* is banned;
+  user-initiated one-shot launches are allowed. D4: polling is "tolerable on the
+  lock screen but not for an always-running panel" — the gate is *looser* for
+  the locker, not stricter.
+- **`qypr-lock` never followed it literally.** It has always authenticated on a
+  worker thread (`PamAuthenticator.cpp:69`) and forked `systemctl`
+  (`PowerManager.cpp:22`). A non-root PAM locker cannot avoid a subprocess
+  anyway: `pam_unix` runs the setuid `unix_chkpwd` on every password attempt.
+
+**What protects the lock screen is a set of invariants**, which qypr's security
+review made explicit. With its remediations in place:
+
+| Invariant | Established by | What it means for shared code |
+|---|---|---|
+| **I1 — Default-deny interactivity.** Before authentication, an indicator can act only if it explicitly opts in | QL-1, QL-2, QL-4, QL-7 | Any widget or indicator hosted by `qypr-lock` goes through the policy hook. A shared component cannot add pre-authentication surface just by existing |
+| **I2 — The secret is contained.** The password lives only in a `SecureBuffer` (fixed capacity, `mlock`ed, zeroed on every release), and the process is non-dumpable | QL-3 | Shared input and text code never holds the secret, and nothing linked into `qypr-lock` may copy lock-path input into an ordinary string or re-enable dumping |
+| **I3 — One spawn path.** Subprocesses start only through `posix_spawn` with absolute paths and default signal dispositions, reaped by `pidfd` in the event loop. No process-wide signal dispositions | QL-5, QL-6 | A shared spawn primitive is a *requirement*, not a conflict — and waylaunch's `Subprocess` wrapper already uses `posix_spawn` |
+| **I4 — The lock never links the indexer.** `qypr-lock` does not link `waylaunch_content`, the extractors or the launcher's search providers | §4.2 | A build-graph rule, checkable in CMake |
+
+waylaunch's worker thread, extractor subprocesses and `waylaunchd` break none of
+these: they live in other binaries (I4), and its spawn code is already the
+`posix_spawn` model I3 requires. **The conflict the first version described does
+not exist at the binary level.** What a merge has to preserve is I1–I4 — and
+because the security review gives a failing test for each finding, they can be
+enforced as CI gates rather than conventions.
 
 ### 4.2 Dependency and attack surface
 
@@ -227,15 +287,18 @@ screen's process image, or PAM linked into a 17 MB launcher, both enlarge a
 blast radius that is currently well separated. The size asymmetry is
 instructive: `qypr-lock` is 2.0 MB; `waylaunch` is 17.2 MB.
 
-**This argues for keeping distinct binaries even under a single repository** —
-which is fine, and is what qypr already does across its own three.
+**Keep distinct binaries even under a single repository** — which is what qypr
+already does across its own three. Invariant I4 turns that preference into a
+build rule.
 
 ### 4.3 Conventions
 
 `namespace qypr` / `PascalCase.hpp` / `camelCase()` / hand-rolled INI versus
-`namespace waylaunch` / `snake_case.h` / `snake_case()` / `toml++`, with no
-`.clang-format` on the waylaunch side. A wholesale unification is a mass rename
-across ~36,000 lines that destroys `git blame` continuity in both histories.
+`namespace waylaunch` / `snake_case.h` / `snake_case()` / `toml++`. waylaunch now
+has a `.clang-format` enforced repo-wide (`f0a36fc`, 2026-09-05), but its
+options differ from qypr's, so both formatting and naming still diverge. A
+wholesale unification is a mass rename across ~36,000 lines that destroys
+`git blame` continuity in both histories.
 
 Note qypr's INI is an explicit decision (STATUS_BAR.md D2: "no new dependency"),
 so "just move everything to TOML" reverses a recorded decision rather than
@@ -243,10 +306,11 @@ filling a gap.
 
 ### 4.4 Timing
 
-qypr has uncommitted work on `qol` (`WifiBackend`, `QSTile`,
-`QuickSettingsPanel`, `PopoverManager`, `DetailedPopover`) and 131 commits of
-momentum. waylaunch sits on `feat/spotlight-ui-refinement` with four live
-feature branches. A structural merge freezes or rebases both.
+*(Re-verified 2026-09-15.)* Both repositories are active: qypr on
+`qol@27d7de1` with five local branches, waylaunch on
+`feat/dropdown-host@485d9f0` with six and uncommitted work in progress. Stages 1
+and 2 touch few files and tolerate this. A structural merge (Stage 4) still
+freezes or rebases both.
 
 ---
 
@@ -254,65 +318,76 @@ feature branches. A structural merge freezes or rebases both.
 
 | Option | What it is | Verdict |
 |---|---|---|
-| **A. Full monorepo merge** | One repo, one namespace, shared core, N binaries | **Deferred** — blocked on §4.1; mass rename cost in §4.3 |
-| **B. Shared core library** | Extract `libwl-common`; both repos consume it (subtree/submodule) | **Recommended, Stage 2** — bounded churn, no constitutional conflict |
+| **A. Full monorepo merge** | One repo, shared core, separate binaries | **Viable, not yet recommended** — no longer blocked (§4.1). The cost is convention churn (§4.3) and release coupling (§7). Optional Stage 4 |
+| **B. Shared core library** | Extract `libwl-common`; both repos consume it (subtree/submodule) | **Recommended, Stage 2** — bounded churn |
 | **C. Runtime feature dedup** | Keep both repos; delete duplicate *features*; cross-exec | **Recommended, Stage 1** — days, near-zero risk |
 | **D. Status quo** | Nothing | **Rejected** — duplication is growing (ROADMAP Phase 15), and the palette has already drifted |
 
-Options B and C compose: C removes the user-visible inconsistency immediately
-without committing to any code-sharing mechanism; B removes the maintenance
-cost afterwards. Neither forecloses A.
+The options compose in order: C removes the remaining duplicate UI code, B
+removes the maintenance cost, and A becomes a cheap final step if B has already
+moved the shared seams.
 
 ---
 
 ## 6. Pros of consolidating
 
-1. **Removes ~1,500–2,500 net LOC** of genuine duplication, plus one of the two
-   power UIs and one of the two launchers outright.
+1. **Removes ~1,500–2,500 net LOC** of genuine duplication, including the
+   unreachable bar power popover and the shelved in-bar launcher.
 2. **One theme, one config, one look.** A palette change becomes one edit
    instead of a two-repo hand-sync that has already drifted (§2.3).
-3. **Process consolidation is available.** `qypr-bar` is already a resident
+3. **One hardened spawn primitive.** After the lock-screen remediation, both
+   projects need a `posix_spawn` + `pidfd` subprocess helper (I3). Today qypr has
+   three `fork` call sites and waylaunch has its own wrapper.
+4. **Process consolidation is available.** `qypr-bar` is already a resident
    layer-shell client owning an epoll loop, a seat, an icon resolver, and a
    toplevel backend — exactly the set `waylaunch --switcher` keeps resident for
    21.7 MB. Folding the switcher into the bar plausibly recovers ~20 MB and
    removes a lock file, a SIGUSR1/2 protocol, and the single-instance dance.
-4. **Cross-features unlock.** waylaunch's content index could back a qypr-bar
-   search popover; qypr's MPRIS/battery/WiFi/Bluetooth backends could become
-   waylaunch `ResultProvider`s; the bar's launcher button could open the real
-   Spotlight rather than its 214-line stand-in.
-5. **One CI and one test convention.** 3.6k + 3.2k lines of tests currently sit
-   in two different harnesses.
-6. **Protocol vendoring stops being a bug source** (§3.3).
-7. **Naming honesty** — a consolidation is the natural moment to retire the
+5. **Cross-features unlock.** waylaunch's content index could back a qypr-bar
+   search popover (read-only, and never in `qypr-lock` — I4); qypr's
+   MPRIS/battery/Wi-Fi/Bluetooth backends could become waylaunch
+   `ResultProvider`s; the bar's launcher button could open the real Spotlight
+   rather than its 228-line stand-in.
+6. **One CI and one test convention.** 3.6k + 3.2k lines of tests currently sit
+   in two different harnesses — and the I1–I4 tests would guard both.
+7. **Protocol vendoring stops being a bug source** (§3.3).
+8. **Naming honesty** — a consolidation is the natural moment to retire the
    `lockscreen` repository name.
 
 ## 7. Cons and risks
 
-1. **The threading/spawning gate conflict (§4.1)** — the blocker, and a design
-   decision rather than an integration detail.
+1. **Invariant erosion.** In one codebase, shared widget, input or spawn code
+   can quietly re-open lock-screen surface. This is mitigated only if I1–I4 are
+   enforced by tests in CI, not by code review.
 2. **Attack- and dependency-surface growth (§4.2)** if binaries are unified;
-   mitigated by keeping separate binaries even in one repo.
+   prevented by keeping separate binaries (I4).
 3. **Convention churn destroys `git blame` (§4.3)** across both histories.
-4. **Bad timing against two active branches (§4.4).**
+4. **Two active branches (§4.4)** — matters for Stage 4, much less for Stages
+   1–2.
 5. **Coupled release cadence.** Today a launcher regression cannot break the
-   lock screen. After a shared `Painter`, it can. This is the single strongest
-   argument for keeping `qypr-lock` isolated regardless of what else merges.
+   lock screen; after a shared `Painter`, it can. I1–I4 limit what a regression
+   can *expose*, not whether it can *crash* the locker — and for a locker, a
+   crash is a lockout. This is the strongest argument for keeping the
+   lock-hosted part of the shared core small.
 6. **Loss of independent bisectability** across the two histories.
 
 ---
 
 ## 8. Recommendation — staged consolidation
 
-### Stage 1 — deduplicate *features*, not code (days, near-zero risk)
+### Stage 1 — remove the remaining duplicate features (days, near-zero risk)
 
-No shared code, no build changes, no architectural commitment. Purely removes
-the user-visible inconsistency.
+No shared code, no build changes, no architectural commitment.
 
-- [ ] Point qypr's `PowerMenuIndicator` at `waylaunch --power` (spawn on click)
-      and **delete `ui/PowerDialog`** (≈ 320 L). Resolves the opposite-countdown
-      inconsistency in §3.2 in favour of the tested, configurable implementation.
-- [ ] Point qypr's `LauncherIndicator` at `waylaunch` and **delete
-      `ui/statusbar/LauncherPopover`** (≈ 214 L).
+- [x] ~~Route the bar's power entry to `waylaunch --power`~~ — **already done**
+      in qypr `530998d` (2026-07-25).
+- [ ] Delete the unreachable bar `PowerMenuPopover`
+      (`PowerMenuIndicator.cpp:39-140`, 102 L) and the ignored `onPower`
+      callback in `QuickSettingsPanel::buildTiles`. Keep the indicator itself —
+      it is the Quick Settings trigger. **Keep `ui/PowerDialog`**: it is the lock
+      screen's (§3.2).
+- [ ] Point qypr's `LauncherIndicator` at `waylaunch` (through the I3 spawn
+      path) and **delete `ui/statusbar/LauncherPopover`** (228 L).
 - [ ] Copy qypr's full 407-line `wlr-layer-shell-unstable-v1.xml` over
       waylaunch's hand-reduced 151-line copy; re-run `wayland-scanner`; confirm
       no regression in the launcher, switcher, and power overlays.
@@ -320,10 +395,11 @@ the user-visible inconsistency.
       `#fab387`) and record which is canonical.
 - [ ] Document the `--switch` / `--switcher` / `--command-tab` aliases in the
       waylaunch README (`src/main.cpp:66` accepts all three; the live
-      `binds.lua:126` uses `--switcher`, which the README never mentions).
+      `binds.lua:126` uses `--switcher`, which the README still doesn't mention).
 
-**Net:** ≈ 535 LOC deleted (`PowerDialog` 320 + `LauncherPopover` 214), both duplicate UIs gone, one protocol bug class
-closed. Neither architecture is touched.
+**Net:** ≈ 330 LOC deleted (`PowerMenuPopover` 102 + `LauncherPopover` 228), the
+last duplicate UIs gone, one protocol bug class closed. Neither architecture is
+touched.
 
 ### Stage 2 — extract a shared core, keep two repositories (weeks)
 
@@ -336,16 +412,25 @@ Extraction candidates, in dependency order:
    pure data and validates the mechanism at zero risk.
 2. `EventLoop` — take qypr's epoll reactor; it already has `addFd`/`addTimer`/
    `post`/`addPrepare` and is the more general of the two.
-3. `Painter` — qypr's cairo/pango helpers, extended with waylaunch's
+3. `Spawn` — the I3 primitive: `posix_spawn` with absolute paths,
+   `POSIX_SPAWN_SETSIGDEF`, and `pidfd` reaping through `EventLoop`. Start from
+   waylaunch's `search/subprocess.cpp`; it replaces qypr's three `fork` call
+   sites.
+4. `Painter` — qypr's cairo/pango helpers, extended with waylaunch's
    screencopy-backed blur.
-4. `IconResolver` — qypr's (497 L, theme-inheritance aware, bounded LRU) is the
+5. `IconResolver` — qypr's (497 L, theme-inheritance aware, bounded LRU) is the
    more complete implementation.
-5. `DesktopIndex` — qypr's, plus waylaunch's precomputed `search_key`
+6. `DesktopIndex` — qypr's, plus waylaunch's precomputed `search_key`
    optimisation (one `find()` per entry per keystroke instead of re-lowercasing
    four fields).
-6. `ShmBuffer` + layer-shell surface setup.
-7. `ToplevelBackend` — behind waylaunch's existing `IToplevelBackend` seam,
+7. `ShmBuffer` + layer-shell surface setup.
+8. `ToplevelBackend` — behind waylaunch's existing `IToplevelBackend` seam,
    which already exists for exactly this reason.
+
+**Lock-hosted subset.** `qypr-lock` instantiates only `protocols/`, `EventLoop`,
+`Spawn`, `Painter`, `IconResolver` (notification tiles) and `ShmBuffer`; it never
+constructs `DesktopIndex` or `ToplevelBackend`. Changes to that subset should run
+the I1–I4 tests.
 
 Adopt qypr's `.clang-format` and naming **for the shared library only**, so the
 convention churn is bounded to the extracted files and neither product's history
@@ -359,36 +444,52 @@ The largest single runtime win (~20 MB, one fewer resident process). `qypr-bar`
 already owns every dependency the switcher needs. Requires Stage 2's
 `ToplevelBackend` to be shared first.
 
-### Explicitly not doing (for now)
+### Stage 4 — monorepo (optional, no longer blocked)
 
-- **Option A, the full monorepo merge**, until §4.1 is settled.
+One repository with a `common/` directory and separate binaries. Worth doing only
+if Stage 2 has already moved most shared seams, so the remaining churn is small.
+Preconditions:
+
+- I1–I4 run as CI gates (the security review's §6 tests), including a CMake
+  check that the `qypr-lock` target does not link `waylaunch_content` (I4).
+- A decision on the convention split (§4.3) — or an explicit choice to keep both
+  styles per directory.
+
+### Explicitly not doing
+
+- **Replacing the lock screen's `PowerDialog` with `waylaunch --power`** (§3.2).
 - **Unifying the config format.** INI in qypr, TOML in waylaunch. Sharing a
   *palette file* (Stage 1) does not require sharing a *parser*.
-- **Linking waylaunch's indexer into any qypr binary** (§4.2).
+- **Linking waylaunch's indexer into `qypr-lock`** (I4).
 
 ---
 
 ## 9. Open questions for the maintainer
 
-1. **Does qypr's no-threads / no-spawn gate apply to the whole suite, or only
-   to `qypr-lock`?** This single answer determines whether Option A is ever
-   viable. A defensible split: the gate binds `qypr-lock` (a PAM surface)
-   absolutely, and binds `qypr-bar` by default with documented exceptions.
-2. **One repository or two?** Stage 2 works either way — a subtree consumed by
-   two repos, or one repo with a `common/` directory. Two repos preserve
+1. ~~Does qypr's no-threads / no-spawn gate apply to the whole suite, or only to
+   `qypr-lock`?~~ **Resolved in revision 2.** The gate is a footprint rule; the
+   lock screen's security rests on I1–I4 (§4.1). Other binaries may use threads,
+   and may spawn through the shared `Spawn` primitive.
+2. **Which lock-screen interactions does I1 allow?** The security review
+   suggests volume and brightness scroll plus media transport. That list is a
+   product decision — and once widgets are shared, it becomes a contract every
+   shared indicator has to honour.
+3. **One repository or two?** Stages 2 and 4 work either way. Two repos preserve
    independent release cadence (§7.5); one repo removes the sync tax.
-3. **Which name survives?** `qypr` is the broader brand (a desktop suite);
+4. **Which name survives?** `qypr` is the broader brand (a desktop suite);
    `waylaunch` names one component. The `lockscreen` repo name should retire
    regardless.
-4. **Is the ~20 MB from Stage 3 worth coupling the switcher's lifetime to the
+5. **Is the ~20 MB from Stage 3 worth coupling the switcher's lifetime to the
    bar's?** A bar crash would currently take Alt+Tab with it.
 
 ---
 
 ## Appendix A — measurement method
 
-Every figure in this document was measured on 2026-08-25 against
-`waylaunch@feat/spotlight-ui-refinement` and `qypr@qol`.
+Figures in §2–§3 were measured on 2026-08-25 against
+`waylaunch@feat/spotlight-ui-refinement` and `qypr@qol`. Items marked
+*re-verified 2026-09-15* were checked against `waylaunch@feat/dropdown-host`
+(`485d9f0`) and `qypr@qol` (`27d7de1`).
 
 ```sh
 # Source and test LOC (per repo)
@@ -410,4 +511,12 @@ grep -oE '<(request|event|interface) name="[a-z_0-9]+"' <file>   # request inven
 
 # Live desktop wiring
 grep -rn 'qypr\|waylaunch' ~/.config/hypr/
+
+# Revision 2 (2026-09-15): power routing and lock-only sources
+git -C qypr log -S'waylaunch --power' --format='%h %ci %s' \
+    -- src/ui/statusbar/QuickSettingsPanel.cpp        # → 530998d, 2026-07-25
+grep -n 'id() == "power"' qypr/src/ui/statusbar/StatusBar.cpp
+grep -n 'PowerDialog' qypr/CMakeLists.txt             # listed in QYPR_LOCK_ONLY_SOURCES
+grep -n -E '^class PowerMenuPopover|^};' qypr/src/ui/indicators/PowerMenuIndicator.cpp
+wc -l waylaunch/protocols/wlr-layer-shell-unstable-v1.xml
 ```
