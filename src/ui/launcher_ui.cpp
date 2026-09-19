@@ -406,6 +406,7 @@ bool LauncherUI::init(Config& config) {
     if (!power_mode_) {
         switcher_backend_ = std::make_unique<WlrForeignToplevelBackend>();
         switcher_backend_->set_activate_command(config.get().app_switcher.activate_command);
+        switcher_backend_->set_hypr_address_focus(config.get().app_switcher.hypr_address_focus);
         wayland_->set_foreign_toplevel_listener([this](zwlr_foreign_toplevel_manager_v1* mgr) {
             if (switcher_backend_) switcher_backend_->bind_manager(mgr);
         });

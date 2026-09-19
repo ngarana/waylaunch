@@ -19,6 +19,20 @@ int main() {
              << "max_entries = 17\n"
              << "max_age_days = 42\n"
              << "frecency_half_life_days = 12.5\n"
+             << "\n[app_switcher]\n"
+             << "enabled = true\n"
+             << "modifier = \"Alt\"\n"
+             << "icon_size = 48\n"
+             << "card_size = 96\n"
+             << "corner_radius = 12\n"
+             << "show_app_names = false\n"
+             << "group_by_app = false\n"
+             << "quick_actions = false\n"
+             // Quotes + backslashes: save() must escape these, or the reload
+             // below fails to parse (the pre-existing raw-interpolation bug).
+             << "activate_command = \"printf 'dispatch focuswindow class:%s' "
+                "\\\"a\\\\\\\"b\\\"\"\n"
+             << "hypr_address_focus = false\n"
              << "\n[theme]\n"
              << "source = \"matugen\"\n"
              << "matugen_path = \"~/matugen.json\"\n"
@@ -46,6 +60,17 @@ int main() {
     assert(config.get().history.max_entries == 17);
     assert(config.get().history.max_age_days == 42);
     assert(config.get().history.frecency_half_life_days == 12.5);
+    const auto& sw = config.get().app_switcher;
+    assert(sw.enabled);
+    assert(sw.modifier == "Alt");
+    assert(sw.icon_size == 48);
+    assert(sw.card_size == 96);
+    assert(sw.corner_radius == 12);
+    assert(!sw.show_app_names);
+    assert(!sw.group_by_app);
+    assert(!sw.quick_actions);
+    assert(sw.activate_command == "printf 'dispatch focuswindow class:%s' \"a\\\"b\"");
+    assert(!sw.hypr_address_focus);
     assert(config.get().theme.source == "matugen");
     assert(config.get().theme.matugen_path == "~/matugen.json");
     assert(config.get().theme.mode == "light");
@@ -72,6 +97,17 @@ int main() {
     assert(reloaded.get().history.max_entries == 17);
     assert(reloaded.get().history.max_age_days == 42);
     assert(reloaded.get().history.frecency_half_life_days == 12.5);
+    const auto& rsw = reloaded.get().app_switcher;
+    assert(rsw.enabled);
+    assert(rsw.modifier == "Alt");
+    assert(rsw.icon_size == 48);
+    assert(rsw.card_size == 96);
+    assert(rsw.corner_radius == 12);
+    assert(!rsw.show_app_names);
+    assert(!rsw.group_by_app);
+    assert(!rsw.quick_actions);
+    assert(rsw.activate_command == "printf 'dispatch focuswindow class:%s' \"a\\\"b\"");
+    assert(!rsw.hypr_address_focus);
     assert(reloaded.get().theme.source == "matugen");
     assert(reloaded.get().theme.matugen_path == "~/matugen.json");
     assert(reloaded.get().theme.mode == "light");

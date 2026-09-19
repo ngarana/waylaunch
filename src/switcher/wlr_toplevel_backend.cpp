@@ -1,4 +1,5 @@
 #include "waylaunch/switcher/wlr_toplevel_backend.h"
+#include "waylaunch/switcher/hyprland_focus.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -140,6 +141,22 @@ void WlrForeignToplevelBackend::remove_observer(IToplevelObserver* observer) {
 }
 
 void WlrForeignToplevelBackend::activate(uintptr_t handle_id, wl_seat* seat) {
+    // Resolve the window first: the Hyprland address follow below needs no
+    // seat (plain IPC), while the protocol request does.
+    const ToplevelWindow* win = nullptr;
+    for (const auto& w : window_cache_) {
+        if (w.handle_id == handle_id) {
+            win = &w;
+            break;
+        }
+    }
+    // Exact-address workspace follow (Hyprland only; safe no-op elsewhere):
+    // `title:`/`class:` selectors are regexes, so titles like "(17) WhatsApp -
+    // Helium" never match literally. `address:0x...` has no metacharacters and
+    // is compared with exact C++ equality in pick_hypr_address(). Runs before
+    // the protocol request so the workspace is already correct when input
+    // focus lands.
+    if (hypr_address_focus_ && win != nullptr) { hypr_focus_window(win->app_id, win->title); }
     if (!seat) return; // activate requires the seat that owns the input focus
     auto it = handle_map_.find(handle_id);
     if (it == handle_map_.end()) return;
@@ -147,13 +164,8 @@ void WlrForeignToplevelBackend::activate(uintptr_t handle_id, wl_seat* seat) {
     // Optional user hook: run a command to complete focus behaviour the protocol
     // can't express (e.g. following the window to its workspace on compositors
     // where `activate` alone doesn't).
-    if (!activate_command_.empty()) {
-        for (const auto& w : window_cache_) {
-            if (w.handle_id == handle_id) {
-                run_activate_command(activate_command_, w);
-                break;
-            }
-        }
+    if (!activate_command_.empty() && win != nullptr) {
+        run_activate_command(activate_command_, *win);
     }
 }
 

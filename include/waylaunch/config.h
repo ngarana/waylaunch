@@ -126,7 +126,14 @@ struct AppSwitcherConfig {
     // standard protocol request. The selected window is exported as $WL_APP_ID /
     // $WL_CLASS / $WL_TITLE. An escape hatch for compositors where `activate`
     // doesn't follow the window to its workspace; empty = protocol activate only.
+    // NOTE: Hyprland `title:`/`class:` selectors are regexes, so a title-based
+    // command silently misses titles with ()[]..*+? etc. Prefer the built-in
+    // exact-address follow below over a title-based command.
     std::string activate_command;
+    // Hyprland exact-address workspace follow (default on): resolve the
+    // selected window to `address:0x...` via `j/clients` and focus it, using
+    // exact string equality instead of regex selectors. Safe no-op off Hyprland.
+    bool hypr_address_focus = true;
 };
 
 // [power] — the power-actions overlay (waylaunch --power). Additive: omitting

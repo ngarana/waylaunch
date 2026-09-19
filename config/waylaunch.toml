@@ -230,15 +230,27 @@ group_by_app   = true     # true: one entry per app (macOS style). false: one
                           #   instance (e.g. the same app on another workspace).
                           #   Pair false with a title-based activate_command below.
 quick_actions  = true     # enable 'Q' (quit app) and 'H' (hide/minimize)
+hypr_address_focus = true # Hyprland exact-address workspace follow (default on):
+                          #   resolve the selected window to `address:0x...` via
+                          #   `j/clients` and focus it with exact string equality.
+                          #   Unlike title:/class: selectors (regexes!) this matches
+                          #   titles like "(17) WhatsApp - Helium" literally.
+                          #   Safe no-op off Hyprland. Set false to disable.
 
 # Optional command run when a window is activated, *in addition* to the standard
-# wlr-foreign-toplevel activate request. The selected window is exported as
-# $WL_APP_ID / $WL_CLASS / $WL_TITLE. Use this only if your compositor doesn't
-# follow the activate to the window's workspace (most — Hyprland, sway — do).
-#   Standard Hyprland:
+# wlr-foreign-toplevel activate request AND the exact-address follow above.
+# The selected window is exported as $WL_APP_ID / $WL_CLASS / $WL_TITLE.
+# You rarely need this on Hyprland anymore; keep it for non-Hyprland compositors
+# that don't follow activate to the window's workspace (most — Hyprland, sway — do).
+# WARNING: Hyprland title:/class: selectors are regexes — a title-based command
+# silently misses titles containing ()[]..*+? etc. Never match on raw $WL_TITLE.
+#   Standard Hyprland (class-based; ambiguous when one app spans workspaces):
 # activate_command = 'hyprctl dispatch focuswindow class:"$WL_CLASS"'
 #   Lua-scripted Hyprland (hl.dsp.* dispatch over the IPC socket):
 # activate_command = '''printf 'dispatch hl.dsp.focus({window="class:%s"})' "$WL_CLASS" | socat - UNIX-CONNECT:"$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock"'''
+#   (Prefer hypr_address_focus above: a title-based variant of this command
+#   cannot match titles with regex metacharacters like "(17) ...", and naive
+#   escaping breaks across the shell → Lua-string → regex quoting layers.)
 
 
 

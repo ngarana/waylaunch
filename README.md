@@ -122,9 +122,15 @@ Requires a compositor that implements `wlr-foreign-toplevel-management` (Hyprlan
 sway, and other wlroots-based compositors do).
 
 **Cross-workspace:** activating a window is a standard `wlr-foreign-toplevel`
-request; most compositors follow it to the window's workspace. If yours doesn't
-(some custom/scripted setups), set `[app_switcher].activate_command` — it runs on
-confirm with the window exported as `$WL_CLASS`/`$WL_TITLE`/`$WL_APP_ID`, e.g.
+request; most compositors follow it to the window's workspace. On Hyprland,
+waylaunch additionally resolves the selected window to its exact `address:0x...`
+via `j/clients` and focuses that (`[app_switcher].hypr_address_focus`, on by
+default) — exact string equality, so titles like `(17) WhatsApp - Helium` match
+literally. (Hyprland `title:`/`class:` selectors are regexes: a title-based
+`activate_command` silently misses such titles, so prefer the built-in follow.)
+If your non-Hyprland compositor doesn't follow the request, set
+`[app_switcher].activate_command` — it runs on confirm with the window exported
+as `$WL_CLASS`/`$WL_TITLE`/`$WL_APP_ID`, e.g.
 `hyprctl dispatch focuswindow class:"$WL_CLASS"`. See `config/waylaunch.toml`.
 
 ### Power actions
@@ -280,10 +286,15 @@ corner_radius  = 20       # glass HUD corner radius
 show_app_names = true     # show application title below HUD
 group_by_app   = true     # true: one entry per app
 quick_actions  = true     # enable Q (quit app) and H (hide/minimize)
+hypr_address_focus = true # Hyprland: follow to the window's workspace via its
+                          # exact address (matches any title literally; no-op elsewhere)
 
 # Optional: compositor-specific fallback for compositors that don't follow the
 # standard wlr-foreign-toplevel activate request to the window's workspace.
 # activate_command = 'hyprctl dispatch focuswindow class:"$WL_CLASS"'
+# NOTE: Hyprland title:/class: selectors are regexes — never match on raw
+# $WL_TITLE (titles like "(17) ..." won't match). The built-in
+# hypr_address_focus above already handles Hyprland.
 ```
 
 ## Keybindings

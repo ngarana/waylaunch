@@ -1,4 +1,5 @@
 #include "waylaunch/config.h"
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -50,6 +51,37 @@ static bool get_bool(const toml::table& t, const std::string& key, bool def = fa
         if (auto s = node.value<bool>()) return *s;
     }
     return def;
+}
+
+// Escape a value for a TOML basic string ("..."). The existing save() writers
+// interpolate raw values, which silently emits unparseable TOML for strings
+// containing quotes or backslashes — exactly what [app_switcher]
+// activate_command templates contain (socat pipelines with embedded
+// double-quotes). New sections must go through here.
+std::string toml_escape(const std::string& value) {
+    std::string out;
+    out.reserve(value.size() + 2);
+    for (char c : value) {
+        switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '"': out += "\\\""; break;
+            case '\n': out += "\\n"; break;
+            case '\t': out += "\\t"; break;
+            case '\r': out += "\\r"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[7];
+                    std::snprintf(buf, sizeof(buf), "\\u%04X", c);
+                    out += buf;
+                } else {
+                    out.push_back(c);
+                }
+                break;
+        }
+    }
+    return out;
 }
 
 bool Config::load(const std::string& path) {
@@ -200,6 +232,8 @@ bool Config::load(const std::string& path) {
             sw.group_by_app = get_bool(*switcher, "group_by_app", sw.group_by_app);
             sw.quick_actions = get_bool(*switcher, "quick_actions", sw.quick_actions);
             sw.activate_command = get_str(*switcher, "activate_command", sw.activate_command);
+            sw.hypr_address_focus =
+                get_bool(*switcher, "hypr_address_focus", sw.hypr_address_focus);
         }
 
         if (auto* power = tbl["power"].as_table()) {
@@ -380,6 +414,21 @@ bool Config::save(const std::string& path) const {
     file << "max_entries = " << config_.history.max_entries << "\n";
     file << "max_age_days = " << config_.history.max_age_days << "\n";
     file << "frecency_half_life_days = " << config_.history.frecency_half_life_days << "\n";
+
+    // [app_switcher] was previously never written back: `waylaunch --save`
+    // silently dropped group_by_app/activate_command/hypr_address_focus.
+    const auto& sw = config_.app_switcher;
+    file << "\n[app_switcher]\n";
+    file << "enabled = " << (sw.enabled ? "true" : "false") << "\n";
+    file << "modifier = \"" << toml_escape(sw.modifier) << "\"\n";
+    file << "icon_size = " << sw.icon_size << "\n";
+    file << "card_size = " << sw.card_size << "\n";
+    file << "corner_radius = " << sw.corner_radius << "\n";
+    file << "show_app_names = " << (sw.show_app_names ? "true" : "false") << "\n";
+    file << "group_by_app = " << (sw.group_by_app ? "true" : "false") << "\n";
+    file << "quick_actions = " << (sw.quick_actions ? "true" : "false") << "\n";
+    file << "activate_command = \"" << toml_escape(sw.activate_command) << "\"\n";
+    file << "hypr_address_focus = " << (sw.hypr_address_focus ? "true" : "false") << "\n";
 
     file << "\n[power]\n";
     file << "enabled_actions = [";

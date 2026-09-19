@@ -31,6 +31,13 @@ class WlrForeignToplevelBackend : public IToplevelBackend {
     // (e.g. workspace-following).
     void set_activate_command(std::string cmd) { activate_command_ = std::move(cmd); }
 
+    // Hyprland exact-address workspace follow (on by default): resolve the
+    // selected window to `address:0x...` via `j/clients` and focus that.
+    // Exact C++ string equality — unlike title:/class: selectors it is not a
+    // regex, so titles like "(17) WhatsApp - Helium" match. Best-effort no-op
+    // off Hyprland. See hyprland_focus.h.
+    void set_hypr_address_focus(bool enabled) { hypr_address_focus_ = enabled; }
+
     const std::vector<ToplevelWindow>& windows() const override { return window_cache_; }
 
 #ifdef HAS_FOREIGN_TOPLEVEL
@@ -51,6 +58,7 @@ class WlrForeignToplevelBackend : public IToplevelBackend {
     std::vector<IToplevelObserver*> observers_;
     std::vector<ToplevelWindow> window_cache_;
     std::string activate_command_;
+    bool hypr_address_focus_ = true;
 
 #ifdef HAS_FOREIGN_TOPLEVEL
     zwlr_foreign_toplevel_manager_v1* manager_ = nullptr;

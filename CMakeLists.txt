@@ -152,6 +152,7 @@ set(SOURCES
     src/config/config.cpp
     src/config/matugen_theme.cpp
     src/switcher/wlr_toplevel_backend.cpp
+    src/switcher/hyprland_focus.cpp
     src/switcher/app_switcher_manager.cpp
     src/switcher/switcher_state_machine.cpp
     src/switcher/switcher_input_controller.cpp
@@ -253,6 +254,8 @@ if(BUILD_TESTING)
     add_executable(app_switcher_test
         tests/app_switcher_test.cpp
         src/switcher/wlr_toplevel_backend.cpp
+        src/switcher/hyprland_focus.cpp
+        src/dropdown/hyprland_json.cpp
         src/switcher/app_switcher_manager.cpp
         src/switcher/switcher_state_machine.cpp
         src/switcher/switcher_input_controller.cpp
@@ -339,6 +342,14 @@ if(BUILD_TESTING)
     target_include_directories(hyprland_json_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
     target_compile_options(hyprland_json_test PRIVATE -Wall -Wextra -UNDEBUG)
     add_test(NAME hyprland_json_test COMMAND hyprland_json_test)
+
+    # Switcher exact-address follow: pure pick/escape/payload logic, no compositor.
+    add_executable(hyprland_focus_test tests/hyprland_focus_test.cpp
+        src/switcher/hyprland_focus.cpp
+        src/dropdown/hyprland_json.cpp)
+    target_include_directories(hyprland_focus_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_options(hyprland_focus_test PRIVATE -Wall -Wextra -UNDEBUG)
+    add_test(NAME hyprland_focus_test COMMAND hyprland_focus_test)
 
     # Dropdown phase 3: event-stream framing + retract policy, no compositor.
     add_executable(hyprland_events_test tests/hyprland_events_test.cpp
