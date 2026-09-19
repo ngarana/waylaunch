@@ -482,10 +482,10 @@ bool WaylandCore::create_layer_surface() {
     if (!layer_shell_ || !surface_) return false;
     static const zwlr_layer_surface_v1_listener ls_listener = {
         .configure =
-            [](void* data, zwlr_layer_surface_v1*, uint32_t serial, int32_t w, int32_t h) {
+            [](void* data, zwlr_layer_surface_v1*, uint32_t serial, uint32_t w, uint32_t h) {
                 auto* self = static_cast<WaylandCore*>(data);
-                if (w > 0) self->pending_width_ = w;
-                if (h > 0) self->pending_height_ = h;
+                if (w > 0) self->pending_width_ = static_cast<int32_t>(w);
+                if (h > 0) self->pending_height_ = static_cast<int32_t>(h);
                 self->configured_ = true;
                 zwlr_layer_surface_v1_ack_configure(self->layer_surface_, serial);
                 if (self->redraw_handler_) self->redraw_handler_();

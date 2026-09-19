@@ -57,6 +57,12 @@ add_custom_command(
     OUTPUT ${PROTOCOL_BUILD_DIR}/wlr-layer-shell-protocol.c ${PROTOCOL_BUILD_DIR}/wlr-layer-shell-client-protocol.h
     COMMAND ${WAYLAND_SCANNER} private-code ${LAYER_SHELL_XML} ${PROTOCOL_BUILD_DIR}/wlr-layer-shell-protocol.c
     COMMAND ${WAYLAND_SCANNER} client-header ${LAYER_SHELL_XML} ${PROTOCOL_BUILD_DIR}/wlr-layer-shell-client-protocol.h
+    # get_layer_surface has an argument literally named `namespace` — a C++
+    # keyword that breaks the generated header when included from C++. Rename
+    # it via a CMake script (a bare sed \b-word-boundary does not survive
+    # /bin/sh under the Makefile generator). Mirrors qypr's qypr_gen_protocol
+    # firewall, portably. See cmake/fix_scanner_keywords.cmake.
+    COMMAND ${CMAKE_COMMAND} -DHEADER=${PROTOCOL_BUILD_DIR}/wlr-layer-shell-client-protocol.h -P ${CMAKE_SOURCE_DIR}/cmake/fix_scanner_keywords.cmake
     DEPENDS ${LAYER_SHELL_XML}
 )
 set(HAS_LAYER_SHELL TRUE)
