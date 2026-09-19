@@ -83,7 +83,8 @@ waylaunch -q "fire"
 # Save current config (merged defaults + overrides) to a file
 waylaunch --save [path]
 
-# Open the app switcher (normally bound to Alt+Tab — see below)
+# Open the app switcher (normally bound to Alt+Tab — see below).
+# Aliases: --switcher, --command-tab (all three accept --reverse too).
 waylaunch --switch
 
 # Open the power-actions overlay (see below)
@@ -95,7 +96,8 @@ waylaunch --debug
 
 ### App switcher (Alt+Tab)
 
-`waylaunch --switch` opens a full-screen overlay that grabs the keyboard and
+`waylaunch --switch` (aliases: `--switcher`, `--command-tab`) opens a
+full-screen overlay that grabs the keyboard and
 lists open windows grouped by application, most-recently-used first, with the
 previous app preselected — so a quick Alt+Tab flips to the last window.
 

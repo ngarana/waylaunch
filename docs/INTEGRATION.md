@@ -10,8 +10,19 @@
 > invariants this revision relies on), and qypr's `docs/ROADMAP.md` /
 > `docs/STATUS_BAR.md`.
 >
-> **Last updated:** 2026-09-15 (revision 2). Status: **analysis complete,
+> **Last updated:** 2026-09-19 (revision 3). Status: **analysis complete,
 > decision open.** §9 lists what the maintainer still has to settle.
+>
+> **Revision 3 (2026-09-19) notes, not a re-measurement:**
+> 1. waylaunch HEAD moved to `main@4243893`, which adds
+>    `switcher/hyprland_focus.cpp` — an exact-`address:0x...` workspace follow
+>    for the switcher (Hyprland `title:`/`class:` selectors are regexes and miss
+>    titles like `(17) WhatsApp - Helium`). It belongs with item 8 of the Stage
+>    2 extraction list below.
+> 2. The `--switch` / `--switcher` / `--command-tab` aliases are now documented
+>    in the waylaunch README — the last Stage 1 checkbox below is ticked.
+> 3. `Config::save()` now round-trips `[app_switcher]` (previously dropped).
+>    Figures in §2–§3 are still measured at 2026-09-15 and unchanged by this.
 >
 > **Revision 2 corrects three errors in the 2026-08-25 version:**
 > 1. It called qypr's no-threads/no-spawn gate a lock-screen security rule and
@@ -393,9 +404,8 @@ No shared code, no build changes, no architectural commitment.
       no regression in the launcher, switcher, and power overlays.
 - [ ] Reconcile the one drifted palette value (`warning`: `#f9e2af` vs
       `#fab387`) and record which is canonical.
-- [ ] Document the `--switch` / `--switcher` / `--command-tab` aliases in the
-      waylaunch README (`src/main.cpp:66` accepts all three; the live
-      `binds.lua:126` uses `--switcher`, which the README still doesn't mention).
+- [x] ~~Document the `--switch` / `--switcher` / `--command-tab` aliases in the
+      waylaunch README~~ — done 2026-09-19 (`src/main.cpp:71` accepts all three).
 
 **Net:** ≈ 330 LOC deleted (`PowerMenuPopover` 102 + `LauncherPopover` 228), the
 last duplicate UIs gone, one protocol bug class closed. Neither architecture is
@@ -425,7 +435,10 @@ Extraction candidates, in dependency order:
    four fields).
 7. `ShmBuffer` + layer-shell surface setup.
 8. `ToplevelBackend` — behind waylaunch's existing `IToplevelBackend` seam,
-   which already exists for exactly this reason.
+   which already exists for exactly this reason. Since rev 3 this includes
+   `switcher/hyprland_focus.cpp` (exact-address follow over `j/clients`);
+   folding it into the shared core removes the switcher's last
+   title-matching hack with it.
 
 **Lock-hosted subset.** `qypr-lock` instantiates only `protocols/`, `EventLoop`,
 `Spawn`, `Painter`, `IconResolver` (notification tiles) and `ShmBuffer`; it never
