@@ -22,7 +22,21 @@
 > 2. The `--switch` / `--switcher` / `--command-tab` aliases are now documented
 >    in the waylaunch README — the last Stage 1 checkbox below is ticked.
 > 3. `Config::save()` now round-trips `[app_switcher]` (previously dropped).
+> 4. **Stage 1 executed 2026-09-19** (revision 4 ticks the boxes): the
+>    unreachable bar `PowerMenuPopover` and the shelved `LauncherPopover`
+>    (330 L) are deleted from qypr (`qol` branch) — `LauncherIndicator` now
+>    spawns `waylaunch` via the loopless double-fork path, overridable with
+>    `[quick-settings] launcher-command`; the dead `onPower` plumbing is gone.
+>    `protocols/wlr-layer-shell-unstable-v1.xml` is unified on qypr's upstream
+>    v5 copy (waylaunch adapts: v5 uint configure sizes + a CMake-scripted
+>    `namespace`→`wl_namespace` firewall, since a bare sed `\b` does not
+>    survive /bin/sh and CMake regex has no `\b`). `warning` reconciled to
+>    `#fab387` (maintainer decision: waylaunch peach is canonical).
 >    Figures in §2–§3 are still measured at 2026-09-15 and unchanged by this.
+> 5. Revision 4 corrects the 2026-09-15 claim that "Stage 1 touches few files
+>    and tolerates active branches": the layer-shell unification required a
+>    `wayland_core.cpp` adaptation (v5 configure sizes) plus a generator-proof
+>    scanner firewall — small but load-bearing, caught only by rebuilding.
 >
 > **Revision 2 corrects three errors in the 2026-08-25 version:**
 > 1. It called qypr's no-threads/no-spawn gate a lock-screen security rule and
@@ -392,18 +406,26 @@ No shared code, no build changes, no architectural commitment.
 
 - [x] ~~Route the bar's power entry to `waylaunch --power`~~ — **already done**
       in qypr `530998d` (2026-07-25).
-- [ ] Delete the unreachable bar `PowerMenuPopover`
+- [x] ~~Delete the unreachable bar `PowerMenuPopover`
       (`PowerMenuIndicator.cpp:39-140`, 102 L) and the ignored `onPower`
-      callback in `QuickSettingsPanel::buildTiles`. Keep the indicator itself —
-      it is the Quick Settings trigger. **Keep `ui/PowerDialog`**: it is the lock
-      screen's (§3.2).
-- [ ] Point qypr's `LauncherIndicator` at `waylaunch` (through the I3 spawn
-      path) and **delete `ui/statusbar/LauncherPopover`** (228 L).
-- [ ] Copy qypr's full 407-line `wlr-layer-shell-unstable-v1.xml` over
+      callback in `QuickSettingsPanel::buildTiles`~~ — done 2026-09-19 (qypr
+      `qol`). Popover class deleted; indicator kept as the Quick Settings
+      trigger with `createDetailedView() == nullptr`. **Kept `ui/PowerDialog`**:
+      it is the lock screen's (§3.2).
+- [x] ~~Point qypr's `LauncherIndicator` at `waylaunch` (through the I3 spawn
+      path) and **delete `ui/statusbar/LauncherPopover`** (228 L)~~ — done
+      2026-09-19. Trigger spawns `waylaunch` via loopless double-fork,
+      `[quick-settings] launcher-command` override; `DesktopIndex` stays for
+      notification icons.
+- [x] ~~Copy qypr's full 407-line `wlr-layer-shell-unstable-v1.xml` over
       waylaunch's hand-reduced 151-line copy; re-run `wayland-scanner`; confirm
-      no regression in the launcher, switcher, and power overlays.
-- [ ] Reconcile the one drifted palette value (`warning`: `#f9e2af` vs
-      `#fab387`) and record which is canonical.
+      no regression in the launcher, switcher, and power overlays~~ — done
+      2026-09-19 (`ca6b67e`): full build, 26/26 tests, `--power` smoke-tested
+      against live Hyprland.
+- [x] ~~Reconcile the one drifted palette value (`warning`: `#f9e2af` vs
+      `#fab387`) and record which is canonical~~ — done 2026-09-19:
+      **`#fab387` (waylaunch peach) is canonical**; qypr's `warning` slot
+      updated, its distinct `yellow` slot untouched.
 - [x] ~~Document the `--switch` / `--switcher` / `--command-tab` aliases in the
       waylaunch README~~ — done 2026-09-19 (`src/main.cpp:71` accepts all three).
 
